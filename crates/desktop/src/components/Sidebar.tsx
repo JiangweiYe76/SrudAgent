@@ -23,7 +23,7 @@ function formatTime(ts: number): string {
 export function Sidebar({ sessions, activeId, onSelect, onNew }: SidebarProps) {
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-muted">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3.5">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
         <span className="text-[15px] font-semibold">SrudAgent</span>
         <Button
           variant="outline"

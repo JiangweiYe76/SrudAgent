@@ -17,7 +17,7 @@ function App() {
     <div className="flex h-full">
       <Sidebar sessions={sessions} activeId={activeId} onSelect={select} onNew={addSession} />
       <main className="relative flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-border px-5 py-3.5 text-sm font-medium">
+        <header className="flex h-12 shrink-0 items-center border-b border-border px-5 text-sm font-medium">
           {active?.title ?? 'SrudAgent'}
         </header>
         <MessageList turns={active?.turns ?? []} />
