@@ -1,5 +1,3 @@
-// Minimal i18n layer. To add a locale, extend `dictionaries` and switch `current`.
-
 export type Locale = 'en';
 
 const en = {
@@ -21,6 +19,19 @@ const en = {
   'turn.ended': 'turn {reason}',
 
   'msg.copy': 'Copy',
+
+  'common.close': 'Close',
+
+  'settings.open': 'Settings',
+  'settings.title': 'Settings',
+  'settings.appearance': 'Appearance',
+  'settings.about': 'About',
+  'settings.theme': 'Theme',
+  'settings.theme.hint': 'Follows your system preference unless you pick a side.',
+  'settings.theme.system': 'System',
+  'settings.theme.light': 'Light',
+  'settings.theme.dark': 'Dark',
+  'settings.about.line': 'SrudAgent 0.1.0 — a coding agent runtime in Rust.',
 
   'chat.placeholder': 'Type a message… (Enter to send, Shift+Enter for newline)',
   'chat.send': 'Send',

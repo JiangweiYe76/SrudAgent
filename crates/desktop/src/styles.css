@@ -1,12 +1,6 @@
 @import 'tailwindcss';
 
-/* ---------- Theme tokens ----------
- * Single source of truth for colors. Components use semantic utilities
- * (bg-muted, border-border, text-accent, ...) and never raw palette classes.
- * Values reference Tailwind's built-in palette; to switch theme (e.g. dark
- * mode), override these variables under a `.dark` selector — nothing else
- * in the codebase needs to change.
- */
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
   --color-background: var(--bg);
@@ -37,6 +31,20 @@
   --warn: var(--color-amber-500);
 }
 
+.dark {
+  --bg: var(--color-neutral-900);
+  --bg-elevated: var(--color-neutral-800);
+  --bg-hover: var(--color-neutral-700);
+  --border: color-mix(in oklab, var(--color-neutral-700) 70%, var(--color-neutral-900));
+  --text: var(--color-neutral-100);
+  --text-dim: var(--color-neutral-400);
+  --accent: var(--color-blue-500);
+  --accent-hover: var(--color-blue-400);
+  --user-bubble: var(--color-neutral-800);
+  --danger: var(--color-red-500);
+  --warn: var(--color-amber-400);
+}
+
 html,
 body,
 #root {
@@ -50,7 +58,6 @@ body {
   color: var(--text);
 }
 
-/* Markdown content rendered inside assistant steps. */
 .message-markdown {
   font-size: 14px;
   line-height: 1.6;
