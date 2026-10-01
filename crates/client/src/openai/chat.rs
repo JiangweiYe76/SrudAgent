@@ -15,7 +15,7 @@ use async_openai::types::chat::{
     ChatCompletionRequestToolMessage, ChatCompletionRequestToolMessageContent,
     ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent, ChatCompletionTool,
     ChatCompletionTools, CreateChatCompletionRequest, CreateChatCompletionRequestArgs,
-    CreateChatCompletionStreamResponse, FunctionCall, FunctionObject,
+    FunctionCall, FunctionObject,
 };
 use async_openai::Client;
 use futures::StreamExt;
@@ -73,7 +73,7 @@ impl ModelClient for ChatClient {
         let mut source = self
             .client
             .chat()
-            .create_stream(sdk_request)
+            .create_stream_byot::<_, StreamChunk>(sdk_request)
             .await
             .map_err(|error| ModelError::Rejected(error.to_string()))?;
 
@@ -111,13 +111,50 @@ impl ModelClient for ChatClient {
     }
 }
 
+/// One streamed chunk of a chat-completions response.
+///
+/// The SDK's own chunk type has nowhere to put `reasoning_content` — a
+/// non-standard field that DeepSeek, Kimi, Qwen and others stream their
+/// thinking in. Serde drops unknown fields, so streaming parses into this type
+/// instead, which declares the field.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct StreamChunk {
+    /// One entry per sampled alternative; only the first is requested here.
+    ///
+    /// Empty on the trailing usage-only chunk some providers send.
+    #[serde(default)]
+    pub choices: Vec<ChunkChoice>,
+}
+
+/// One alternative of a streamed chunk.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct ChunkChoice {
+    /// What arrived for this alternative in this chunk.
+    #[serde(default)]
+    pub delta: ChunkDelta,
+}
+
+/// The increment a chunk carries.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct ChunkDelta {
+    /// Assistant-visible text.
+    pub content: Option<String>,
+    /// Reasoning text, on providers that expose it.
+    pub reasoning_content: Option<String>,
+    /// Tool-call fragments, keyed by index across chunks.
+    pub tool_calls: Option<Vec<ChatCompletionMessageToolCallChunk>>,
+}
+
 /// Folds one chunk into whatever it carries, returning the events to forward.
-fn fold_chunk(
-    chunk: CreateChatCompletionStreamResponse,
-    calls: &mut CallAssembly,
-) -> Vec<ModelEvent> {
+fn fold_chunk(chunk: StreamChunk, calls: &mut CallAssembly) -> Vec<ModelEvent> {
     let mut events = Vec::new();
     for choice in chunk.choices {
+        // Reasoning is emitted ahead of the text it precedes.
+        if let Some(reasoning) = choice.delta.reasoning_content {
+            if !reasoning.is_empty() {
+                events.push(ModelEvent::ThoughtDelta { delta: reasoning });
+            }
+        }
         if let Some(content) = choice.delta.content {
             if !content.is_empty() {
                 events.push(ModelEvent::TextDelta { delta: content });
@@ -195,6 +232,9 @@ pub fn to_request(model: &str, request: &ModelRequest) -> CreateChatCompletionRe
         .model(model)
         .messages(messages)
         .tools(request.tools.iter().map(to_tool).collect::<Vec<_>>())
+        // The BYOT streaming call sends this request as built, so the flag the
+        // SDK would otherwise set for a stream has to be set here.
+        .stream(true)
         .build()
         .unwrap_or_default()
 }
@@ -266,7 +306,7 @@ mod tests {
     use super::*;
 
     /// Builds a chunk the way the wire delivers it.
-    fn chunk(value: serde_json::Value) -> CreateChatCompletionStreamResponse {
+    fn chunk(value: serde_json::Value) -> StreamChunk {
         serde_json::from_value(serde_json::json!({
             "id": "chatcmpl-1",
             "object": "chat.completion.chunk",
@@ -281,6 +321,14 @@ mod tests {
         serde_json::json!({
             "index": 0,
             "delta": { "content": content },
+            "finish_reason": null,
+        })
+    }
+
+    fn reasoning(content: &str) -> serde_json::Value {
+        serde_json::json!({
+            "index": 0,
+            "delta": { "reasoning_content": content },
             "finish_reason": null,
         })
     }
@@ -323,6 +371,92 @@ mod tests {
     fn empty_content_is_not_emitted() {
         let mut calls = CallAssembly::default();
         assert!(fold_chunk(chunk(serde_json::json!([text("")])), &mut calls).is_empty());
+    }
+
+    #[test]
+    fn reasoning_chunks_become_thought_events() {
+        let mut calls = CallAssembly::default();
+        assert_eq!(
+            fold_chunk(
+                chunk(serde_json::json!([reasoning("let me think")])),
+                &mut calls
+            ),
+            vec![ModelEvent::ThoughtDelta {
+                delta: "let me think".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn empty_reasoning_is_not_emitted() {
+        let mut calls = CallAssembly::default();
+        assert!(fold_chunk(chunk(serde_json::json!([reasoning("")])), &mut calls).is_empty());
+    }
+
+    #[test]
+    fn reasoning_precedes_text_in_a_chunk_carrying_both() {
+        let mut calls = CallAssembly::default();
+        let both = serde_json::json!({
+            "index": 0,
+            "delta": { "reasoning_content": "hmm", "content": "answer" },
+            "finish_reason": null,
+        });
+        assert_eq!(
+            fold_chunk(chunk(serde_json::json!([both])), &mut calls),
+            vec![
+                ModelEvent::ThoughtDelta {
+                    delta: "hmm".into()
+                },
+                ModelEvent::TextDelta {
+                    delta: "answer".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_delta_with_an_empty_content_beside_reasoning_emits_only_the_thought() {
+        let mut calls = CallAssembly::default();
+        // The shape Qwen streams while it reasons: both keys are present and
+        // the one not being written yet is empty.
+        let both = serde_json::json!({
+            "index": 0,
+            "delta": { "content": "", "reasoning_content": "We" },
+            "finish_reason": null,
+        });
+        assert_eq!(
+            fold_chunk(chunk(serde_json::json!([both])), &mut calls),
+            vec![ModelEvent::ThoughtDelta { delta: "We".into() }]
+        );
+    }
+
+    #[test]
+    fn a_chunk_whose_delta_carries_nothing_emits_nothing() {
+        let mut calls = CallAssembly::default();
+        let empty = serde_json::json!({ "index": 0, "delta": {}, "finish_reason": "stop" });
+        assert!(fold_chunk(chunk(serde_json::json!([empty])), &mut calls).is_empty());
+    }
+
+    #[test]
+    fn a_usage_only_chunk_carries_no_choices() {
+        let mut calls = CallAssembly::default();
+        let usage_only = serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "gpt-x",
+            "choices": [],
+            "usage": { "total_tokens": 3 },
+        });
+        let parsed: StreamChunk = serde_json::from_value(usage_only).expect("a chunk deserializes");
+        assert!(fold_chunk(parsed, &mut calls).is_empty());
+    }
+
+    #[test]
+    fn a_choice_without_a_delta_is_tolerated() {
+        let mut calls = CallAssembly::default();
+        let no_delta = serde_json::json!({ "index": 0, "finish_reason": "stop" });
+        assert!(fold_chunk(chunk(serde_json::json!([no_delta])), &mut calls).is_empty());
     }
 
     #[test]
@@ -476,6 +610,17 @@ mod tests {
         let sdk_request = to_request("gpt-x", &request);
         let messages = serde_json::to_value(&sdk_request.messages).expect("messages serialize");
         assert_eq!(messages[0]["role"], "user");
+    }
+
+    #[test]
+    fn the_request_asks_for_a_stream() {
+        let request = ModelRequest {
+            items: Vec::new(),
+            tools: Vec::new(),
+            instructions: None,
+        };
+
+        assert_eq!(to_request("gpt-x", &request).stream, Some(true));
     }
 
     #[test]

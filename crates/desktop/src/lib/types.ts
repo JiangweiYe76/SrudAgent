@@ -13,6 +13,8 @@ export interface ToolCall {
 // One model sampling request-response pair, plus the tool calls it issued.
 export interface Step {
   id: string;
+  // Reasoning streamed before the answer, when the model exposes it.
+  thought?: string;
   assistantText: string;
   toolCalls: ToolCall[];
 }

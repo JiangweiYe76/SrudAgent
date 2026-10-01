@@ -130,6 +130,9 @@ pub fn to_request(model: &str, request: &ModelRequest) -> CreateResponse {
         .input(InputParam::Items(items))
         .instructions(request.instructions.clone().unwrap_or_default())
         .tools(request.tools.iter().map(to_tool).collect::<Vec<_>>())
+        // The `byot` feature this workspace enables removes the SDK's own
+        // stream flag handling, so the request has to ask for a stream itself.
+        .stream(true)
         .build()
         .unwrap_or_default()
 }
@@ -484,6 +487,17 @@ mod tests {
             InputParam::Items(items) => assert_eq!(items.len(), 3),
             InputParam::Text(_) => panic!("expected items"),
         }
+    }
+
+    #[test]
+    fn the_request_asks_for_a_stream() {
+        let request = ModelRequest {
+            items: Vec::new(),
+            tools: Vec::new(),
+            instructions: None,
+        };
+
+        assert_eq!(to_request("gpt-x", &request).stream, Some(true));
     }
 
     fn sample_response() -> async_openai::types::responses::Response {

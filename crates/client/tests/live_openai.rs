@@ -38,6 +38,7 @@ const SECRET: &str = "ZQ-4417";
 
 const PLAIN_PROMPT: &str = "Reply with the single word: pong";
 const TOOL_PROMPT: &str = "Call the get_secret_code tool, then tell me the code it returned.";
+const THINKING_PROMPT: &str = "Is 17 * 23 larger than 391? Work it out before answering.";
 
 /// Records events so the test can assert on what happened.
 #[derive(Default)]
@@ -97,6 +98,22 @@ impl Outcome {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The reasoning text, reassembled from its deltas.
+    fn thought(&self) -> String {
+        self.events
+            .iter()
+            .filter_map(|event| match event {
+                Event::AgentThoughtDelta { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Position of the first event matching a predicate.
+    fn first_index(&self, wanted: impl Fn(&Event) -> bool) -> Option<usize> {
+        self.events.iter().position(wanted)
     }
 
     /// Names of the tools that ran.
@@ -283,4 +300,48 @@ async fn chat_completions_round_trips_a_tool_call() {
     };
     let outcome = run(&chat, TOOL_PROMPT, true).await;
     assert_tool_round_trip(&outcome, "chat completions");
+}
+
+/// Requires a model that exposes its reasoning — a provider that streams
+/// `reasoning_content`. Such a model makes this test prove the mapping;
+/// without one it reports a skip, because that is a property of the endpoint
+/// rather than of this crate.
+#[tokio::test]
+#[ignore = "requires a live endpoint and credentials"]
+async fn chat_completions_streams_reasoning_as_thoughts() {
+    let Some((_, chat)) = clients() else {
+        return;
+    };
+    let outcome = run(&chat, THINKING_PROMPT, false).await;
+    assert_eq!(outcome.reason, TurnEndReason::Completed);
+
+    let thought = outcome.thought();
+    if thought.trim().is_empty() {
+        eprintln!("skipping: the configured model exposed no reasoning");
+        return;
+    }
+    eprintln!("thought ({} chars): {:.160}", thought.len(), thought);
+
+    assert!(
+        outcome
+            .history
+            .iter()
+            .any(|item| matches!(item, ResponseItem::Reasoning { .. })),
+        "the reasoning was not recorded in the session"
+    );
+
+    let first_thought = outcome
+        .first_index(|event| matches!(event, Event::AgentThoughtDelta { .. }))
+        .expect("reasoning arrived, so a thought delta exists");
+    let first_text = outcome
+        .first_index(|event| matches!(event, Event::AgentMessageDelta { .. }))
+        .expect("the answer arrived as text");
+    assert!(
+        first_thought < first_text,
+        "reasoning must precede the answer it produced"
+    );
+    assert!(
+        !outcome.reply().trim().is_empty(),
+        "the model produced no answer after reasoning"
+    );
 }

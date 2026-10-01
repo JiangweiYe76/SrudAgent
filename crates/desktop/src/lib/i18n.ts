@@ -16,6 +16,8 @@ const en = {
 
   'toolCall.noResult': '(no result)',
 
+  'thought.title': 'Thinking',
+
   'turn.running': 'Working…',
   'turn.ended': 'turn {reason}',
 
