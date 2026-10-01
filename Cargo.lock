@@ -793,10 +793,19 @@ dependencies = [
 name = "desktop"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "dotenvy",
+ "futures",
  "serde",
  "serde_json",
+ "srud-client",
+ "srud-core",
+ "srud-protocol",
+ "srud-server",
  "tauri",
  "tauri-build",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
