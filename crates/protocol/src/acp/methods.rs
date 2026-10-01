@@ -44,3 +44,8 @@ pub const SRUD_SESSION_FORK: &str = "_srud/unstable/session/fork";
 pub const SRUD_SESSION_STEER: &str = "_srud/unstable/session/steer";
 /// Client -> agent: read raw rollout entries for a session.
 pub const SRUD_SESSION_ROLLOUT_READ: &str = "_srud/unstable/session/rollout/read";
+/// Client -> agent: set a session's display title.
+///
+/// ACP lets the *agent* name a session (`SessionInfoUpdate`) but defines no
+/// client-to-agent method for the user to rename one, so this fills that gap.
+pub const SRUD_SESSION_SET_TITLE: &str = "_srud/unstable/session/set_title";
