@@ -17,3 +17,5 @@ tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "ti
 futures = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
+srud-client = { workspace = true }
+dotenvy = { workspace = true }

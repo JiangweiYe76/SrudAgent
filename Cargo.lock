@@ -3591,9 +3591,11 @@ name = "srud-server"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "dotenvy",
  "futures",
  "serde",
  "serde_json",
+ "srud-client",
  "srud-core",
  "srud-protocol",
  "thiserror 2.0.21",
