@@ -136,9 +136,19 @@ async fn rpc_request(
 #[tauri::command]
 fn default_cwd() -> String {
     std::env::current_dir()
-        .or_else(|_| std::env::var("HOME").map(std::path::PathBuf::from))
+        .or_else(|_| home_dir())
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| ".".to_owned())
+}
+
+/// The user's home directory.
+///
+/// The variable is named differently per platform: `HOME` on Unix,
+/// `USERPROFILE` on Windows.
+fn home_dir() -> Result<PathBuf, std::env::VarError> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
