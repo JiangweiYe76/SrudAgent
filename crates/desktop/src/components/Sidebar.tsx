@@ -1,11 +1,19 @@
 import { useState } from 'react';
-import { Pencil, Plus, Trash2 } from 'lucide-react';
+import { MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { deleteWarning, displayTitle } from '@/lib/sessionStore';
 import { DeleteSessionModal } from '@/components/DeleteSessionModal';
 import { RenameSessionModal } from '@/components/RenameSessionModal';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuItemDestructive,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 interface SidebarProps {
   sessions: Session[];
@@ -28,38 +36,44 @@ function formatTime(ts: number): string {
   return t('time.daysAgo', { n: Math.floor(hours / 24) });
 }
 
-// The hover-revealed row actions. Each stops propagation so acting on a session
-// does not also select it.
-function RowAction({
-  label,
-  onActivate,
-  children,
+// The per-session actions, behind one trigger so the row stays quiet. Sessions
+// will collect more actions than fit, so this is a menu rather than an icon row.
+function SessionActions({
+  onRename,
+  onDelete,
 }: {
-  label: string;
-  onActivate: () => void;
-  children: React.ReactNode;
+  onRename: () => void;
+  onDelete: () => void;
 }) {
   return (
-    <span
-      role="button"
-      tabIndex={0}
-      aria-label={label}
-      title={label}
-      className="flex shrink-0 cursor-pointer items-center justify-center rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-      onClick={(e) => {
-        e.stopPropagation();
-        onActivate();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          e.stopPropagation();
-          onActivate();
-        }
-      }}
-    >
-      {children}
-    </span>
+    // The menu must not bubble to the row, or opening it would also select the
+    // session behind it.
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <span
+          role="button"
+          tabIndex={-1}
+          aria-label={t('sidebar.actions')}
+          title={t('sidebar.actions')}
+          className="flex shrink-0 cursor-pointer items-center justify-center rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MoreHorizontal className="h-3.5 w-3.5" />
+        </span>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={onRename}>
+          <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+          {t('sidebar.renameTitle')}
+        </DropdownMenuItem>
+        {/* Delete is separated and coloured: it cannot be undone. */}
+        <DropdownMenuSeparator />
+        <DropdownMenuItemDestructive onSelect={onDelete}>
+          <Trash2 className="h-3.5 w-3.5" />
+          {t('sidebar.deleteTitle')}
+        </DropdownMenuItemDestructive>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -112,17 +126,10 @@ export function Sidebar({
               <span className="w-full truncate text-[13px]">{displayTitle(s)}</span>
               <span className="text-[11px] text-muted-foreground">{formatTime(s.updatedAt)}</span>
             </span>
-            <span className="flex shrink-0 items-center gap-0.5">
-              <RowAction label={t('sidebar.renameTitle')} onActivate={() => setRenamingId(s.id)}>
-                <Pencil className="h-3 w-3" />
-              </RowAction>
-              <RowAction
-                label={t('sidebar.deleteTitle')}
-                onActivate={() => setDeletingId(s.id)}
-              >
-                <Trash2 className="h-3 w-3" />
-              </RowAction>
-            </span>
+            <SessionActions
+              onRename={() => setRenamingId(s.id)}
+              onDelete={() => setDeletingId(s.id)}
+            />
           </button>
         ))}
       </nav>

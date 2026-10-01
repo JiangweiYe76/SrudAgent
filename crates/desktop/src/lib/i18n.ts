@@ -12,6 +12,7 @@ const en = {
   'sidebar.deleteWarningWithTurns':
     'Delete "{title}" and its {n} message(s)? This cannot be undone.',
   'sidebar.deleteConfirm': 'Delete',
+  'sidebar.actions': 'Session actions',
 
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',
