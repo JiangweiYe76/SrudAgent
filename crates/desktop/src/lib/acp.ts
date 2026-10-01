@@ -82,6 +82,12 @@ export async function sendPrompt(sessionId: string, text: string): Promise<strin
   return String(result.stopReason ?? 'end_turn');
 }
 
+// Renames a session. ACP lets the agent name a session but defines no
+// client-to-agent method for renaming one, so this is a SrudAgent extension.
+export async function setSessionTitle(sessionId: string, title: string): Promise<void> {
+  await rpcRequest('_srud/unstable/session/set_title', { sessionId, title });
+}
+
 // Asks the agent to interrupt the session's active turn. The in-flight
 // `session/prompt` is what resolves, with `stopReason: "cancelled"`; this call
 // only signals the turn's cancellation token and returns straight away.

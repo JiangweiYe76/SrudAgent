@@ -2,6 +2,7 @@
 // streaming updates folded into turns/steps, and turn completion.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Session } from './types';
+import { displayTitle } from './sessionStore';
 
 const mocks = vi.hoisted(() => ({
   invoke: async (_cmd: string, _args?: Record<string, unknown>): Promise<unknown> => {
@@ -60,6 +61,8 @@ async function boot() {
           return prompt.promise.then((r) => reply(payload.id, r));
         case 'session/cancel':
           return reply(payload.id, {});
+        case '_srud/unstable/session/set_title':
+          return reply(payload.id, { title: 'Renamed' });
       }
     }
     throw new Error(`unexpected invoke: ${cmd}`);
@@ -95,6 +98,48 @@ describe('sessionStore live path', () => {
     expect(s.sessions).toHaveLength(1);
     expect(active().id).toBe('S1');
     expect(active().turns).toEqual([]);
+  });
+
+  it('takes the title the agent announces, with or without an open turn', async () => {
+    const { active, fire } = await boot();
+    // A session starts unnamed, so the UI shows the placeholder.
+    expect(active().title).toBeNull();
+    expect(displayTitle(active())).toBe('New session');
+
+    // The agent names the session on the first prompt, before any turn output.
+    fire({
+      sessionUpdate: 'session_info_update',
+      title: 'Why is the timestamp wrong?',
+    });
+    expect(active().title).toBe('Why is the timestamp wrong?');
+
+    // A later rename applies the same way, including a clear.
+    fire({ sessionUpdate: 'session_info_update', title: 'Chosen by hand' });
+    expect(active().title).toBe('Chosen by hand');
+    fire({ sessionUpdate: 'session_info_update', title: null });
+    expect(active().title).toBeNull();
+    expect(displayTitle(active())).toBe('New session');
+  });
+
+  it('a title update with no turn open still applies', async () => {
+    const { active, fire } = await boot();
+    // Regression guard: an update that needs no turn must not be dropped just
+    // because the session has none.
+    expect(active().turns).toEqual([]);
+    fire({ sessionUpdate: 'session_info_update', title: 'Named before any turn' });
+    expect(active().title).toBe('Named before any turn');
+  });
+
+  it('renaming asks the agent and leaves the local title to its reply', async () => {
+    const { useSessionStore, active, fire, calls } = await boot();
+    fire({ sessionUpdate: 'session_info_update', title: 'Derived' });
+
+    useSessionStore.getState().renameSession('S1', '  Chosen by hand  ');
+    await vi.waitFor(() => {
+      expect(calls).toContain('_srud/unstable/session/set_title');
+    });
+    // The agent echoes the accepted title back; nothing is written locally.
+    expect(active().title).toBe('Derived');
   });
 
   it('streams agent text into the open turn and closes it on prompt completion', async () => {

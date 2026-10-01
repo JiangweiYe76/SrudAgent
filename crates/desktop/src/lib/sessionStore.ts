@@ -8,6 +8,7 @@ import {
   newSession,
   onNotify,
   sendPrompt,
+  setSessionTitle,
   type Json,
 } from './acp';
 
@@ -44,9 +45,18 @@ function resultOf(update: Json): string {
 // newest turn is always the one the backend is currently writing.
 function applyUpdate(session: Session, params: Json): Session | null {
   const update = params.update as Json | undefined;
-  if (!update || session.turns.length === 0) return null;
+  if (!update) return null;
   const kind = String(update.sessionUpdate ?? '');
   if (kind === 'user_message_chunk') return null;
+
+  // A title change is session-level, not turn-level, so it applies whether or
+  // not a turn is open — the first prompt names the session before any output.
+  if (kind === 'session_info_update') {
+    const title = typeof update.title === 'string' ? update.title : null;
+    return { ...session, title, updatedAt: Date.now() };
+  }
+
+  if (session.turns.length === 0) return null;
 
   const turns = [...session.turns];
   let turn = { ...turns[turns.length - 1] };
@@ -117,6 +127,7 @@ interface SessionState {
   addSession: () => void;
   sendTurn: (userInput: string) => void;
   stopTurn: () => void;
+  renameSession: (id: string, title: string) => void;
 }
 
 // A session is busy while its newest turn has not been closed. Cancellation is
@@ -127,9 +138,16 @@ export function isBusy(session: Session | undefined): boolean {
   return session.turns[session.turns.length - 1].endReason === undefined;
 }
 
+// A session starts unnamed; the agent derives a title from the first message and
+// announces it over `session/update`.
 function freshSession(id: string): Session {
   const now = Date.now();
-  return { id, title: t('app.newSession'), turns: [], createdAt: now, updatedAt: now };
+  return { id, title: null, turns: [], createdAt: now, updatedAt: now };
+}
+
+// The label shown for a session that has no title yet.
+export function displayTitle(session: Session | undefined): string {
+  return session?.title?.trim() || t('app.newSession');
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -199,6 +217,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // The turn is not closed here: `session/cancel` only signals the token, and
     // the open `session/prompt` is what resolves it, as `interrupted`.
     void cancelTurn(sessionId).catch((err) => set({ initError: String(err) }));
+  },
+
+  renameSession: (id, title) => {
+    // The agent is the source of truth and echoes the accepted title back as a
+    // `session_info_update`, so nothing is written locally here. A blank title
+    // clears the name rather than storing an empty one.
+    void setSessionTitle(id, title.trim()).catch((err) => set({ initError: String(err) }));
   },
 }));
 

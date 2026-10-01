@@ -32,7 +32,9 @@ export interface Turn {
 
 export interface Session {
   id: string;
-  title: string;
+  // The agent's title, from the first message or a user rename. Absent until
+  // the agent announces one.
+  title: string | null;
   turns: Turn[];
   createdAt: number;
   updatedAt: number;

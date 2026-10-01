@@ -4,6 +4,9 @@ const en = {
   'sidebar.newChat': 'New chat',
   'sidebar.backendLive': 'backend: live',
   'sidebar.backendMock': 'backend: mock',
+  'sidebar.renameTitle': 'Rename session',
+  'sidebar.renamePlaceholder': 'Session name',
+  'sidebar.renameSave': 'Save',
 
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',
@@ -24,6 +27,7 @@ const en = {
   'msg.copy': 'Copy',
 
   'common.close': 'Close',
+  'common.cancel': 'Cancel',
 
   'settings.open': 'Settings',
   'settings.title': 'Settings',
