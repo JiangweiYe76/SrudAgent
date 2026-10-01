@@ -14,14 +14,17 @@ interface MessageListProps {
   turns: Turn[];
 }
 
+// Wall-clock time of an event, 24-hour. The hour must be included: minutes
+// alone repeat every hour, so `mm:ss` alone made a turn at 23:50 and one at
+// 00:10 render as `50` and `10`.
 function fmtTime(ts: number): string {
   const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${mm}:${ss}`;
+  return `${hh}:${mm}`;
 }
 
-// Copy icon + mm:ss timestamp shown under a finished message.
+// Copy icon + HH:MM timestamp shown under a finished message.
 function MetaRow({ text, ts, className = '' }: { text: string; ts: number; className?: string }) {
   const [copied, setCopied] = useState(false);
 
