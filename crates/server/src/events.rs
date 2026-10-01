@@ -7,6 +7,10 @@
 //! `session/update` notification, so a host can `subscribe` and drain the
 //! stream without touching the runtime.
 //!
+//! The channel carries session-level notifications too — a title change, for
+//! one — which no turn produces and which therefore go out through
+//! [`EventHub::send`] rather than a sink.
+//!
 //! The turn id is not known when a turn is started — the runtime generates it
 //! and reports it in the first `TurnStarted` event. The sink captures it there
 //! and stamps it onto every later notification of the same turn under
@@ -48,6 +52,16 @@ impl EventHub {
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<Notification<SessionNotification>> {
         self.tx.subscribe()
+    }
+
+    /// Broadcasts a notification that did not come from a turn.
+    ///
+    /// Session-level changes such as a new title are not runtime events, so
+    /// they have no [`EventSink`] to travel through and are sent directly.
+    pub fn send(&self, notification: Notification<SessionNotification>) {
+        // A send error only means there are no subscribers right now; a missing
+        // listener must never fail the request that caused the notification.
+        let _ = self.tx.send(notification);
     }
 
     /// Binds a sink for one session's turns.
@@ -102,6 +116,18 @@ impl EventSink for TurnSink {
 mod tests {
     use super::*;
     use srud_core::types::TurnEndReason;
+    use srud_protocol::acp::{SessionInfoUpdate, SessionUpdate, CLIENT_METHOD_NAMES};
+
+    /// A `session_info_update` notification, as a title change produces.
+    fn title_notification(title: &str) -> Notification<SessionNotification> {
+        Notification {
+            method: CLIENT_METHOD_NAMES.session_update.into(),
+            params: Some(SessionNotification::new(
+                SessionId::new("s1"),
+                SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title(title)),
+            )),
+        }
+    }
 
     #[test]
     fn sink_broadcasts_mapped_notifications() {
@@ -147,6 +173,27 @@ mod tests {
             value["params"]["_meta"]["srud"]["turnId"],
             serde_json::json!(turn_id.to_string())
         );
+    }
+
+    #[test]
+    fn a_direct_notification_reaches_subscribers() {
+        let hub = EventHub::new();
+        let mut rx = hub.subscribe();
+        hub.send(title_notification("named"));
+
+        let received = rx.try_recv().expect("the notification is broadcast");
+        let value = serde_json::to_value(&received).unwrap();
+        assert_eq!(
+            value["params"]["update"]["sessionUpdate"],
+            "session_info_update"
+        );
+        assert_eq!(value["params"]["update"]["title"], "named");
+    }
+
+    #[test]
+    fn sending_without_subscribers_does_not_panic() {
+        let hub = EventHub::new();
+        hub.send(title_notification("named"));
     }
 
     #[test]

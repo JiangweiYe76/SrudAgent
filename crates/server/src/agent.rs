@@ -16,9 +16,10 @@
 //! | `session/list`    | snapshot live sessions                               |
 //! | `session/close`   | interrupt + deregister                               |
 //! | `session/delete`  | deregister                                           |
+//! | `_srud/unstable/session/set_title` | rename a session               |
 //!
 //! Everything else — `session/load`, `session/resume`, config/mode setters,
-//! `authenticate`, and the `_srud/unstable/*` extensions — answers
+//! `authenticate`, and the remaining `_srud/unstable/*` extensions — answers
 //! `METHOD_NOT_FOUND`, matching what the advertised capabilities promise.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,18 +31,20 @@ use srud_core::session::Session;
 use srud_core::tools::ToolRegistry;
 use srud_protocol::acp::methods::{
     INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_NEW,
-    SESSION_PROMPT,
+    SESSION_PROMPT, SRUD_SESSION_SET_TITLE,
 };
 use srud_protocol::acp::{
     AcpError, CancelNotification, CloseSessionRequest, CloseSessionResponse, ContentBlock,
     DeleteSessionRequest, DeleteSessionResponse, Implementation, InitializeRequest,
-    InitializeResponse, JsonRpcMessage, ListSessionsResponse, NewSessionRequest,
+    InitializeResponse, JsonRpcMessage, ListSessionsResponse, MaybeUndefined, NewSessionRequest,
     NewSessionResponse, Notification, PromptRequest, PromptResponse, ProtocolVersion, Request,
-    RequestId, Response, SessionId, SessionNotification,
+    RequestId, Response, SessionId, SessionInfoUpdate, SessionNotification, SessionUpdate,
+    CLIENT_METHOD_NAMES,
 };
 use srud_protocol::error::{
     INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_BUSY, SESSION_NOT_FOUND,
 };
+use srud_protocol::srud::methods::{SetSessionTitleRequest, SetSessionTitleResponse};
 use srud_protocol::srud::turn_end::TurnEndWire;
 
 use crate::convert::{prompt_outcome, prompt_text};
@@ -127,6 +130,7 @@ impl Agent {
             SESSION_DELETE => self
                 .handle_delete(params)
                 .map(|()| serialize(DeleteSessionResponse::new())),
+            SRUD_SESSION_SET_TITLE => self.handle_set_title(params).map(serialize),
             // Known-but-unimplemented methods get the same treatment as
             // unknown ones: the capabilities never advertised them.
             _ => Err(AcpError::new(
@@ -169,6 +173,7 @@ impl Agent {
         let request: PromptRequest = parse_params(params)?;
         let session = self.require_session(&request.session_id)?;
         let text = prompt_with_validation(&request.prompt)?;
+        self.name_from_first_prompt(&request.session_id, &text);
 
         let sink = self.hub.sink_for(session.id());
         let result = srud_core::turn::run_turn(
@@ -218,8 +223,74 @@ impl Agent {
         Ok(())
     }
 
+    /// Names an unnamed session after the message that opened it.
+    ///
+    /// A session is named by its first prompt and never re-derived: later turns
+    /// must not overwrite it, and a rename the user has already made wins. When
+    /// this call is the one that named the session, it broadcasts the title so
+    /// every attached client renders it without asking.
+    fn name_from_first_prompt(&self, session_id: &SessionId, text: &str) {
+        let title = title_from_prompt(text);
+        if self.sessions.name_if_unnamed(session_id, &title) {
+            self.broadcast_title(session_id, Some(title));
+        }
+    }
+
+    fn handle_set_title(&self, params: Value) -> Result<SetSessionTitleResponse, AcpError> {
+        let request: SetSessionTitleRequest = parse_params(params)?;
+        if !self.sessions.set_title(&request.session_id, &request.title) {
+            return Err(session_not_found(&request.session_id));
+        }
+        // Echo the effective title rather than the request's, so a blank title
+        // is reported as the clear it was.
+        let title = self.sessions.title(&request.session_id);
+        self.broadcast_title(&request.session_id, title.clone());
+        Ok(SetSessionTitleResponse { title, meta: None })
+    }
+
+    /// Publishes a title change on the `session/update` stream.
+    ///
+    /// ACP routes this through the standard progress channel as a
+    /// `SessionInfoUpdate` variant rather than a method of its own, so a client
+    /// already following `session/update` sees renames for free.
+    fn broadcast_title(&self, session_id: &SessionId, title: Option<String>) {
+        // The builder takes `IntoMaybeUndefined`, so a `String` becomes a set
+        // title and `MaybeUndefined::Null` clears it — how ACP spells "no title".
+        let title: MaybeUndefined<String> = match title {
+            Some(title) => MaybeUndefined::Value(title),
+            None => MaybeUndefined::Null,
+        };
+        let update = SessionInfoUpdate::new().title(title);
+        self.hub.send(Notification {
+            method: CLIENT_METHOD_NAMES.session_update.into(),
+            params: Some(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::SessionInfoUpdate(update),
+            )),
+        });
+    }
+
     fn require_session(&self, id: &SessionId) -> Result<Arc<Session>, AcpError> {
         self.sessions.get(id).ok_or_else(|| session_not_found(id))
+    }
+}
+
+/// Derives a session title from the message that opened it.
+///
+/// The message is a whole paragraph, so it is flattened to one line and cut to
+/// a length a sidebar row can show. Truncation is on a character boundary, not
+/// a byte one, so multi-byte text cannot panic.
+fn title_from_prompt(text: &str) -> String {
+    const MAX_CHARS: usize = 60;
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= MAX_CHARS {
+        return flat;
+    }
+    let cut: String = flat.chars().take(MAX_CHARS).collect();
+    // Drop a trailing partial word so the title does not end mid-word.
+    match cut.rfind(' ') {
+        Some(idx) if idx > MAX_CHARS / 2 => cut[..idx].to_string(),
+        _ => cut,
     }
 }
 
@@ -286,7 +357,8 @@ mod tests {
     use serde_json::json;
     use srud_core::client::{ModelEvent, ModelRequest, ModelStream};
     use srud_protocol::acp::methods::{
-        SRUD_SESSION_FORK, SRUD_SESSION_ROLLOUT_READ, SRUD_SESSION_STEER,
+        SESSION_LIST, SRUD_SESSION_FORK, SRUD_SESSION_ROLLOUT_READ, SRUD_SESSION_SET_TITLE,
+        SRUD_SESSION_STEER,
     };
     use srud_protocol::acp::TextContent;
     use srud_protocol::acp::AGENT_METHOD_NAMES;
@@ -306,6 +378,44 @@ mod tests {
         SRUD_SESSION_STEER,
         SRUD_SESSION_ROLLOUT_READ,
     ];
+
+    /// Prompts a session, drains its turn, and returns the broadcast titles.
+    ///
+    /// The subscriber is attached before the prompt so the title broadcast on
+    /// the first turn cannot be missed.
+    async fn prompt_titles(
+        agent: &Agent,
+        session_id: &SessionId,
+        text: &str,
+    ) -> Vec<Option<String>> {
+        let mut rx = agent.subscribe();
+        agent
+            .handle(request(
+                SESSION_PROMPT,
+                json!({
+                    "sessionId": session_id.0.as_ref(),
+                    "prompt": [{ "type": "text", "text": text }]
+                }),
+            ))
+            .await;
+        let mut titles = Vec::new();
+        while let Ok(notification) = rx.try_recv() {
+            let value = serde_json::to_value(&notification).unwrap();
+            if value["params"]["sessionId"] != serde_json::json!(session_id.0.as_ref()) {
+                continue;
+            }
+            if value["params"]["update"]["sessionUpdate"]
+                == serde_json::json!("session_info_update")
+            {
+                titles.push(
+                    value["params"]["update"]["title"]
+                        .as_str()
+                        .map(ToString::to_string),
+                );
+            }
+        }
+        titles
+    }
 
     struct Scripted {
         events: Vec<ModelEvent>,
@@ -491,17 +601,25 @@ mod tests {
         while let Ok(notification) = rx.try_recv() {
             let value = serde_json::to_value(&notification).unwrap();
             assert_eq!(value["params"]["sessionId"], json!(session_id.0.as_ref()));
-            assert!(value["params"]["_meta"]["srud"]["turnId"].is_string());
-            kinds.push(
-                value["params"]["update"]["sessionUpdate"]
-                    .as_str()
-                    .unwrap()
-                    .to_string(),
-            );
+            let kind = value["params"]["update"]["sessionUpdate"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            // Session-metadata updates are not turn output, so they carry no
+            // turn id; everything the turn loop emits does.
+            if kind != "session_info_update" {
+                assert!(
+                    value["params"]["_meta"]["srud"]["turnId"].is_string(),
+                    "{kind} carries a turn id"
+                );
+            }
+            kinds.push(kind);
         }
         assert_eq!(
             kinds,
             vec![
+                // The first prompt names the session, before any turn output.
+                "session_info_update",
                 "user_message_chunk",
                 "agent_message_chunk",
                 "agent_message_chunk"
@@ -591,6 +709,121 @@ mod tests {
             ))
             .await;
         let _ = first.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_first_prompt_names_the_session_and_broadcasts_it() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+
+        let titles = prompt_titles(&agent, &session_id, "Why is the timestamp wrong?").await;
+        assert_eq!(
+            titles,
+            vec![Some("Why is the timestamp wrong?".to_string())],
+            "the first prompt names the session once"
+        );
+
+        // A later turn must not rename it.
+        let later = prompt_titles(&agent, &session_id, "A completely different question").await;
+        assert!(
+            later.is_empty(),
+            "a later prompt does not rename the session"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_title_renames_and_broadcasts() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+
+        let mut rx = agent.subscribe();
+        let result = result_of(
+            agent
+                .handle(request(
+                    SRUD_SESSION_SET_TITLE,
+                    json!({ "sessionId": session_id.0.as_ref(), "title": "Chosen by hand" }),
+                ))
+                .await,
+        );
+        assert_eq!(result["title"], json!("Chosen by hand"));
+
+        let notification = rx.try_recv().expect("the rename is broadcast");
+        let value = serde_json::to_value(&notification).unwrap();
+        assert_eq!(value["method"], json!("session/update"));
+        assert_eq!(
+            value["params"]["update"]["sessionUpdate"],
+            json!("session_info_update")
+        );
+        assert_eq!(value["params"]["update"]["title"], json!("Chosen by hand"));
+
+        // A rename outranks the derived name, so the next prompt leaves it alone.
+        let titles = prompt_titles(&agent, &session_id, "another question").await;
+        assert!(titles.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_blank_rename_clears_the_title_and_reports_it() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+        agent
+            .handle(request(
+                SRUD_SESSION_SET_TITLE,
+                json!({ "sessionId": session_id.0.as_ref(), "title": "Named" }),
+            ))
+            .await;
+
+        let mut rx = agent.subscribe();
+        let result = result_of(
+            agent
+                .handle(request(
+                    SRUD_SESSION_SET_TITLE,
+                    json!({ "sessionId": session_id.0.as_ref(), "title": "  " }),
+                ))
+                .await,
+        );
+        assert!(
+            result.get("title").is_none(),
+            "a blank title is reported as the clear it was"
+        );
+
+        let notification = rx.try_recv().expect("the clear is broadcast");
+        let value = serde_json::to_value(&notification).unwrap();
+        assert_eq!(value["params"]["update"]["title"], json!(null));
+    }
+
+    #[tokio::test]
+    async fn renaming_an_unknown_session_is_session_not_found() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let error = error_of(
+            agent
+                .handle(request(
+                    SRUD_SESSION_SET_TITLE,
+                    json!({ "sessionId": "missing", "title": "x" }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), SESSION_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_reports_the_derived_title() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+        prompt_titles(&agent, &session_id, "Name me").await;
+
+        let result = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
+        let listed = result["sessions"]
+            .as_array()
+            .expect("sessions is an array")
+            .iter()
+            .find(|info| info["sessionId"] == json!(session_id.0.as_ref()))
+            .expect("the prompted session is listed");
+        assert_eq!(listed["title"], json!("Name me"));
     }
 
     #[tokio::test]
