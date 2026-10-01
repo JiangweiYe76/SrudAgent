@@ -3578,6 +3578,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "srud-server"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "srud-core",
+ "srud-protocol",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/client", "crates/core", "crates/desktop/src-tauri", "crates/protocol"]
+members = ["crates/client", "crates/core", "crates/desktop/src-tauri", "crates/protocol", "crates/server"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ edition = "2021"
 srud-core = { path = "crates/core" }
 srud-client = { path = "crates/client" }
 srud-protocol = { path = "crates/protocol" }
+srud-server = { path = "crates/server" }
 # Pinned exactly: upgrading this is a protocol review, not a dependency bump.
 agent-client-protocol-schema = { version = "=1.9.1", default-features = false }
 serde = { version = "1", features = ["derive"] }
