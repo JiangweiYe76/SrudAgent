@@ -27,6 +27,7 @@ All commit messages in English.
 - Use `///` for public API docs
 - Use `//` for inline explanations
 - Avoid obvious comments — let code speak for itself
+- Comments explain what the code does and why; never decision history, dates, or roadmap ("reserved for future...", "the plan was...")
 
 ### Git Safety
 
