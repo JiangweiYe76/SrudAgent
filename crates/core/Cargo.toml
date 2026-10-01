@@ -1,0 +1,18 @@
+[package]
+name = "srud-core"
+version.workspace = true
+edition.workspace = true
+description = "Transport-agnostic agent runtime: session/turn domain model and the turn loop."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
