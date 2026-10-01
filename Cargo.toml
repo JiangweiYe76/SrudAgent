@@ -21,6 +21,8 @@ tokio-util = "0.7"
 thiserror = "2"
 futures = "0.3"
 async-trait = "0.1"
-async-openai = { version = "0.42", features = ["responses", "chat-completion"] }
+# `byot` lets the chat adapter stream into its own chunk type, which is the
+# only way to see `reasoning_content` — a field the SDK's types do not model.
+async-openai = { version = "0.42", features = ["responses", "chat-completion", "byot"] }
 async-stream = "0.3"
 dotenvy = "0.15"

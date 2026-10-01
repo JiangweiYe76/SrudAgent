@@ -3556,6 +3556,7 @@ dependencies = [
  "async-trait",
  "dotenvy",
  "futures",
+ "serde",
  "serde_json",
  "srud-core",
  "thiserror 2.0.21",

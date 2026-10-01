@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Check, ChevronDown, Circle, Copy, Wrench } from 'lucide-react';
+import { Brain, Check, ChevronDown, Circle, Copy, Wrench } from 'lucide-react';
 import type { Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import {
@@ -45,6 +45,38 @@ function MetaRow({ text, ts, className = '' }: { text: string; ts: number; class
   );
 }
 
+// The model's reasoning, folded into a block above the answer it produced.
+// It follows the run: expanded while the turn streams, folded once it ends.
+function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
+  const [open, setOpen] = useState(live);
+  useEffect(() => {
+    setOpen(live);
+  }, [live]);
+
+  const preview = thought.split('\n').find((line) => line.trim() !== '') ?? '';
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="rounded-lg border border-border bg-muted text-[12.5px]">
+        <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
+          <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="shrink-0 text-muted-foreground">{t('thought.title')}</span>
+          <span className="min-w-0 flex-1 truncate text-muted-foreground [[data-state=open]_&]:hidden">
+            {preview}
+          </span>
+          <span className="flex-1 [[data-state=closed]_&]:hidden" />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="message-markdown border-t border-border px-3 py-2 text-muted-foreground">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{thought}</ReactMarkdown>
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
 export function MessageList({ turns }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -80,6 +112,9 @@ export function MessageList({ turns }: MessageListProps) {
               </div>
               {turn.steps.map((step) => (
                 <div key={step.id} className="flex flex-col gap-2">
+                  {step.thought && (
+                    <ThoughtBlock thought={step.thought} live={turn.endReason === undefined} />
+                  )}
                   {step.assistantText && (
                     <div className="message-markdown">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.assistantText}</ReactMarkdown>

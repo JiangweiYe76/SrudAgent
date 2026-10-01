@@ -52,7 +52,18 @@ function applyUpdate(session: Session, params: Json): Session | null {
   const steps = turn.steps.map((st) => ({ ...st, toolCalls: [...st.toolCalls] }));
   const last = steps[steps.length - 1];
 
-  if (kind === 'agent_message_chunk') {
+  if (kind === 'agent_thought_chunk') {
+    const text = textOf(update.content);
+    if (text === null) return null;
+    // Reasoning opens a step the way message text does — a step is one
+    // sampling, and thinking is what that sampling produced first. Reasoning
+    // seen after the step's tool calls belongs to the next sampling.
+    if (!last || last.toolCalls.length > 0) {
+      steps.push({ id: uid('st'), thought: text, assistantText: '', toolCalls: [] });
+    } else {
+      last.thought = (last.thought ?? '') + text;
+    }
+  } else if (kind === 'agent_message_chunk') {
     const text = textOf(update.content);
     if (text === null) return null;
     // A step ends at its tool calls; text after them opens a new step.

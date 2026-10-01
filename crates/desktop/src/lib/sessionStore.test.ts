@@ -109,6 +109,46 @@ describe('sessionStore live path', () => {
     });
   });
 
+  it('folds reasoning into the step whose answer it precedes', async () => {
+    const { useSessionStore, active, fire, prompt } = await boot();
+    useSessionStore.getState().sendTurn('why');
+
+    fire({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Let me ' } });
+    fire({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'consider.' } });
+    fire({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Because.' } });
+
+    const steps = active().turns[0].steps;
+    expect(steps).toHaveLength(1);
+    expect(steps[0].thought).toBe('Let me consider.');
+    expect(steps[0].assistantText).toBe('Because.');
+
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+  });
+
+  it('opens a new step for reasoning that follows a tool call', async () => {
+    const { useSessionStore, active, fire, prompt } = await boot();
+    useSessionStore.getState().sendTurn('run it');
+
+    fire({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'first' } });
+    fire({ sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'bash', rawInput: { command: 'ls' } });
+    fire({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'second' } });
+
+    const steps = active().turns[0].steps;
+    expect(steps).toHaveLength(2);
+    expect(steps[0].thought).toBe('first');
+    expect(steps[0].toolCalls[0].id).toBe('tc1');
+    expect(steps[1].thought).toBe('second');
+    expect(steps[1].toolCalls).toEqual([]);
+
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+  });
+
   it('maps tool calls and their results onto steps', async () => {
     const { useSessionStore, active, fire, prompt } = await boot();
     useSessionStore.getState().sendTurn('run it');
