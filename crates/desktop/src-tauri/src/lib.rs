@@ -222,7 +222,7 @@ mod tests {
             .await;
         let mut payloads = Vec::new();
         while let Ok(notification) = rx.try_recv() {
-            payloads.push(serde_json::to_value(&notify_payload(notification)).unwrap());
+            payloads.push(serde_json::to_value(notify_payload(notification)).unwrap());
         }
         payloads
     }
@@ -323,7 +323,7 @@ mod tests {
 
         let mut streamed = String::new();
         while let Ok(notification) = rx.try_recv() {
-            let value = serde_json::to_value(&notify_payload(notification)).unwrap();
+            let value = serde_json::to_value(notify_payload(notification)).unwrap();
             if value["params"]["update"]["sessionUpdate"] == json!("agent_message_chunk") {
                 if let Some(text) = value["params"]["update"]["content"]["text"].as_str() {
                     streamed.push_str(text);
