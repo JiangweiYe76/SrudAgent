@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Session, Turn, TurnEndReason } from './types';
 import { t } from './i18n';
 import {
+  cancelTurn,
   defaultCwd,
   initialize,
   newSession,
@@ -115,6 +116,15 @@ interface SessionState {
   select: (id: string) => void;
   addSession: () => void;
   sendTurn: (userInput: string) => void;
+  stopTurn: () => void;
+}
+
+// A session is busy while its newest turn has not been closed. Cancellation is
+// cooperative, so the turn stays open until `session/prompt` resolves — the
+// stop button must stay enabled for that whole window.
+export function isBusy(session: Session | undefined): boolean {
+  if (!session || session.turns.length === 0) return false;
+  return session.turns[session.turns.length - 1].endReason === undefined;
 }
 
 function freshSession(id: string): Session {
@@ -181,6 +191,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       .catch((err) => {
         closeTurn(state.activeId, turn.id, 'error', String(err));
       });
+  },
+
+  stopTurn: () => {
+    const sessionId = get().activeId;
+    if (!isBusy(get().sessions.find((s) => s.id === sessionId))) return;
+    // The turn is not closed here: `session/cancel` only signals the token, and
+    // the open `session/prompt` is what resolves it, as `interrupted`.
+    void cancelTurn(sessionId).catch((err) => set({ initError: String(err) }));
   },
 }));
 

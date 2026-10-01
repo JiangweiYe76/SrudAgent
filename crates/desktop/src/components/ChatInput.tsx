@@ -1,19 +1,23 @@
 import { useState } from 'react';
-import { ArrowUp, Plus } from 'lucide-react';
+import { ArrowUp, Plus, Square } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
 
 interface ChatInputProps {
   onSend: (text: string) => void;
   onNew: () => void;
+  // True while the session has a turn in flight. Stop is always rendered, so
+  // the row does not shift when a turn starts; it is only clickable while busy.
+  busy: boolean;
+  onStop: () => void;
 }
 
-export function ChatInput({ onSend, onNew }: ChatInputProps) {
+export function ChatInput({ onSend, onNew, busy, onStop }: ChatInputProps) {
   const [value, setValue] = useState('');
 
   const submit = () => {
     const text = value.trim();
-    if (!text) return;
+    if (!text || busy) return;
     onSend(text);
     setValue('');
   };
@@ -37,15 +41,29 @@ export function ChatInput({ onSend, onNew }: ChatInputProps) {
         <Button variant="ghost" size="icon" onClick={onNew} title={t('sidebar.newChat')}>
           <Plus className="h-4 w-4" />
         </Button>
-        <Button
-          size="icon"
-          onClick={submit}
-          disabled={!value.trim()}
-          title={t('chat.send')}
-          className="h-8 w-8 rounded-full disabled:bg-border disabled:text-muted-foreground"
-        >
-          <ArrowUp className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={onStop}
+            disabled={!busy}
+            title={t('chat.stop')}
+            aria-label={t('chat.stop')}
+            className="h-8 w-8 rounded-full"
+          >
+            <Square className="h-3 w-3 fill-current" />
+          </Button>
+          <Button
+            size="icon"
+            onClick={submit}
+            disabled={!value.trim() || busy}
+            title={t('chat.send')}
+            aria-label={t('chat.send')}
+            className="h-8 w-8 rounded-full disabled:bg-border disabled:text-muted-foreground"
+          >
+            <ArrowUp className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
     </div>
   );
