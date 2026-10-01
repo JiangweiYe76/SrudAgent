@@ -2,6 +2,7 @@ export type Locale = 'en';
 
 const en = {
   'sidebar.newChat': 'New chat',
+  'sidebar.backendLive': 'backend: live',
   'sidebar.backendMock': 'backend: mock',
 
   'time.justNow': 'just now',

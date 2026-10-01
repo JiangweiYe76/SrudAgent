@@ -1,0 +1,709 @@
+//! The ACP agent: JSON-RPC dispatch over the core runtime.
+//!
+//! [`Agent`] is the whole protocol surface. A host feeds it `rpc_request`
+//! envelopes through [`Agent::handle`] and gets the JSON-RPC reply back, and
+//! subscribes with [`Agent::subscribe`] for the `session/update` stream. It
+//! owns no socket and no connection state beyond the `initialize` gate.
+//!
+//! Method coverage:
+//!
+//! | Method            | Behaviour                                            |
+//! |-------------------|------------------------------------------------------|
+//! | `initialize`      | version + capability negotiation (must come first)   |
+//! | `session/new`     | register an in-memory session                        |
+//! | `session/prompt`  | run one turn; the reply is the turn's end            |
+//! | `session/cancel`  | interrupt the active turn                            |
+//! | `session/list`    | snapshot live sessions                               |
+//! | `session/close`   | interrupt + deregister                               |
+//! | `session/delete`  | deregister                                           |
+//!
+//! Everything else — `session/load`, `session/resume`, config/mode setters,
+//! `authenticate`, and the `_srud/unstable/*` extensions — answers
+//! `METHOD_NOT_FOUND`, matching what the advertised capabilities promise.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use serde_json::Value;
+use srud_core::client::ModelClient;
+use srud_core::session::Session;
+use srud_core::tools::ToolRegistry;
+use srud_protocol::acp::methods::{
+    INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_NEW,
+    SESSION_PROMPT,
+};
+use srud_protocol::acp::{
+    AcpError, CancelNotification, CloseSessionRequest, CloseSessionResponse, ContentBlock,
+    DeleteSessionRequest, DeleteSessionResponse, Implementation, InitializeRequest,
+    InitializeResponse, JsonRpcMessage, ListSessionsResponse, NewSessionRequest,
+    NewSessionResponse, Notification, PromptRequest, PromptResponse, ProtocolVersion, Request,
+    RequestId, Response, SessionId, SessionNotification,
+};
+use srud_protocol::error::{
+    INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_BUSY, SESSION_NOT_FOUND,
+};
+use srud_protocol::srud::turn_end::TurnEndWire;
+
+use crate::convert::{prompt_outcome, prompt_text};
+use crate::events::EventHub;
+use crate::sessions::SessionManager;
+
+/// The JSON-RPC reply to one `rpc_request` envelope.
+pub type RpcReply = JsonRpcMessage<Response<Value>>;
+
+/// The agent-side success reply the host resolves its promise with.
+#[must_use]
+pub fn reply_ok(id: RequestId, result: Value) -> RpcReply {
+    JsonRpcMessage::wrap(Response::new(id, Ok(result)))
+}
+
+/// The agent-side error reply.
+#[must_use]
+pub fn reply_err(id: RequestId, error: AcpError) -> RpcReply {
+    JsonRpcMessage::wrap(Response::new(id, Err(error)))
+}
+
+/// An ACP v1 agent backed by the core runtime.
+pub struct Agent {
+    model: Arc<dyn ModelClient>,
+    tools: Arc<ToolRegistry>,
+    sessions: Arc<SessionManager>,
+    hub: EventHub,
+    initialized: AtomicBool,
+}
+
+impl Agent {
+    /// Creates an agent over a model client and a tool registry.
+    #[must_use]
+    pub fn new(model: Arc<dyn ModelClient>, tools: Arc<ToolRegistry>) -> Self {
+        Self {
+            model,
+            tools,
+            sessions: Arc::new(SessionManager::new()),
+            hub: EventHub::new(),
+            initialized: AtomicBool::new(false),
+        }
+    }
+
+    /// Subscribes to the outgoing `session/update` notifications.
+    #[must_use]
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Notification<SessionNotification>> {
+        self.hub.subscribe()
+    }
+
+    /// Handles one JSON-RPC request and produces its reply.
+    ///
+    /// `session/prompt` resolves only when the turn ends — that is the
+    /// protocol's completion signal. All other methods reply immediately.
+    pub async fn handle(&self, request: JsonRpcMessage<Request<Value>>) -> RpcReply {
+        let request = request.into_inner();
+        let id = request.id;
+        let params = request.params.unwrap_or(Value::Null);
+        let method = request.method.as_ref();
+
+        // `initialize` is the mandatory first request; everything else is
+        // refused until the negotiation has happened.
+        if method != INITIALIZE && !self.initialized.load(Ordering::Acquire) {
+            return reply_err(
+                id,
+                AcpError::new(
+                    INVALID_REQUEST,
+                    "initialize must be the first request on the connection",
+                ),
+            );
+        }
+
+        let outcome = match method {
+            INITIALIZE => self.handle_initialize(params).map(serialize),
+            SESSION_NEW => self.handle_new_session(params).map(serialize),
+            SESSION_PROMPT => self.handle_prompt(params).await.map(serialize),
+            SESSION_CANCEL => self
+                .handle_cancel(params)
+                .map(|()| Value::Object(Default::default())),
+            SESSION_LIST => self.handle_list().map(serialize),
+            SESSION_CLOSE => self
+                .handle_close(params)
+                .map(|()| serialize(CloseSessionResponse::new())),
+            SESSION_DELETE => self
+                .handle_delete(params)
+                .map(|()| serialize(DeleteSessionResponse::new())),
+            // Known-but-unimplemented methods get the same treatment as
+            // unknown ones: the capabilities never advertised them.
+            _ => Err(AcpError::new(
+                METHOD_NOT_FOUND,
+                format!("method `{method}` is not supported"),
+            )),
+        };
+
+        match outcome {
+            Ok(result) => reply_ok(id, result),
+            Err(error) => reply_err(id, error),
+        }
+    }
+
+    fn handle_initialize(&self, params: Value) -> Result<InitializeResponse, AcpError> {
+        let request: InitializeRequest = parse_params(params)?;
+        if request.protocol_version != ProtocolVersion::V1 {
+            return Err(AcpError::new(
+                INVALID_PARAMS,
+                format!(
+                    "unsupported protocol version {}; this agent speaks v1 only",
+                    request.protocol_version
+                ),
+            ));
+        }
+        self.initialized.store(true, Ordering::Release);
+        Ok(InitializeResponse::new(ProtocolVersion::V1)
+            .agent_capabilities(srud_protocol::acp::capabilities::agent_capabilities())
+            .agent_info(Implementation::new("srud-agent", env!("CARGO_PKG_VERSION")))
+            .auth_methods(vec![]))
+    }
+
+    fn handle_new_session(&self, params: Value) -> Result<NewSessionResponse, AcpError> {
+        let request: NewSessionRequest = parse_params(params)?;
+        let session_id = self.sessions.create(request.cwd);
+        Ok(NewSessionResponse::new(session_id))
+    }
+
+    async fn handle_prompt(&self, params: Value) -> Result<PromptResponse, AcpError> {
+        let request: PromptRequest = parse_params(params)?;
+        let session = self.require_session(&request.session_id)?;
+        let text = prompt_with_validation(&request.prompt)?;
+
+        let sink = self.hub.sink_for(session.id());
+        let result = srud_core::turn::run_turn(
+            &session,
+            srud_core::types::TurnInput { text },
+            self.model.as_ref(),
+            self.tools.as_ref(),
+            &sink,
+        )
+        .await
+        .map_err(|_| AcpError::new(SESSION_BUSY, "session already has an active turn"))?;
+
+        let wire: TurnEndWire = prompt_outcome(result.reason)?;
+        let response = PromptResponse::new(wire.stop_reason);
+        Ok(match wire.meta {
+            Some(meta) => response.meta(meta.to_meta()),
+            None => response,
+        })
+    }
+
+    fn handle_cancel(&self, params: Value) -> Result<(), AcpError> {
+        let request: CancelNotification = parse_params(params)?;
+        let session = self.require_session(&request.session_id)?;
+        // Cooperative: this signals the turn's token; the prompt reply then
+        // carries `stopReason: "cancelled"`.
+        session.interrupt();
+        Ok(())
+    }
+
+    fn handle_list(&self) -> Result<ListSessionsResponse, AcpError> {
+        Ok(ListSessionsResponse::new(self.sessions.list()))
+    }
+
+    fn handle_close(&self, params: Value) -> Result<(), AcpError> {
+        let request: CloseSessionRequest = parse_params(params)?;
+        let session = self.require_session(&request.session_id)?;
+        session.interrupt();
+        self.sessions.remove(&request.session_id);
+        Ok(())
+    }
+
+    fn handle_delete(&self, params: Value) -> Result<(), AcpError> {
+        let request: DeleteSessionRequest = parse_params(params)?;
+        if !self.sessions.remove(&request.session_id) {
+            return Err(session_not_found(&request.session_id));
+        }
+        Ok(())
+    }
+
+    fn require_session(&self, id: &SessionId) -> Result<Arc<Session>, AcpError> {
+        self.sessions.get(id).ok_or_else(|| session_not_found(id))
+    }
+}
+
+fn session_not_found(id: &SessionId) -> AcpError {
+    AcpError::new(
+        SESSION_NOT_FOUND,
+        format!("no session with id `{}`", id.0.as_ref()),
+    )
+}
+
+/// Deserialises method params, reporting invalid payloads as
+/// `INVALID_PARAMS` with the serde message attached.
+fn parse_params<T>(params: Value) -> Result<T, AcpError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(params)
+        .map_err(|err| AcpError::new(INVALID_PARAMS, format!("invalid method params: {err}")))
+}
+
+fn serialize<T: serde::Serialize>(value: T) -> Value {
+    serde_json::to_value(value)
+        .unwrap_or_else(|err| Value::String(format!("response serialization failed: {err}")))
+}
+
+/// A prompt block that the declared capabilities do not accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedContent {
+    /// An image block, refused while `promptCapabilities.image` is false.
+    Image,
+    /// An audio block, refused while `promptCapabilities.audio` is false.
+    Audio,
+    /// Any other non-text block (resources, links, tool references).
+    Other(&'static str),
+}
+
+/// Validates a prompt against the declared text-only capabilities.
+///
+/// Returns the concatenated text, or an error naming the first block the
+/// agent cannot accept — dropping multimodal input silently would make the
+/// model answer a prompt the user never sent.
+pub fn prompt_with_validation(blocks: &[ContentBlock]) -> Result<String, AcpError> {
+    for block in blocks {
+        let kind = match block {
+            ContentBlock::Text(_) => continue,
+            ContentBlock::Image(_) => UnsupportedContent::Image,
+            ContentBlock::Audio(_) => UnsupportedContent::Audio,
+            ContentBlock::Resource(_) => UnsupportedContent::Other("resource"),
+            ContentBlock::ResourceLink(_) => UnsupportedContent::Other("resource_link"),
+            _ => UnsupportedContent::Other("unknown"),
+        };
+        return Err(AcpError::new(
+            INVALID_PARAMS,
+            format!("this agent accepts text prompts only, got {kind:?}"),
+        ));
+    }
+    Ok(prompt_text(blocks))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::{stream, StreamExt};
+    use serde_json::json;
+    use srud_core::client::{ModelEvent, ModelRequest, ModelStream};
+    use srud_protocol::acp::methods::{
+        SRUD_SESSION_FORK, SRUD_SESSION_ROLLOUT_READ, SRUD_SESSION_STEER,
+    };
+    use srud_protocol::acp::TextContent;
+    use srud_protocol::acp::AGENT_METHOD_NAMES;
+    use srud_protocol::error::INTERNAL_ERROR;
+    use srud_protocol::transport::tauri::RpcRequest;
+    use tokio_util::sync::CancellationToken;
+
+    /// The method names that answer `METHOD_NOT_FOUND`, so tests can assert
+    /// the coverage boundary.
+    const UNIMPLEMENTED_METHODS: &[&str] = &[
+        AGENT_METHOD_NAMES.session_load,
+        AGENT_METHOD_NAMES.session_resume,
+        AGENT_METHOD_NAMES.session_set_mode,
+        AGENT_METHOD_NAMES.session_set_config_option,
+        AGENT_METHOD_NAMES.authenticate,
+        SRUD_SESSION_FORK,
+        SRUD_SESSION_STEER,
+        SRUD_SESSION_ROLLOUT_READ,
+    ];
+
+    struct Scripted {
+        events: Vec<ModelEvent>,
+        /// When set, the stream stalls until the turn's cancellation token
+        /// fires, then yields one more delta so the loop notices.
+        stall_until_cancel: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelClient for Scripted {
+        async fn stream(
+            &self,
+            _request: ModelRequest,
+            cancel: CancellationToken,
+        ) -> Result<ModelStream, srud_core::client::ModelError> {
+            let head: ModelStream = Box::pin(stream::iter(self.events.clone().into_iter().map(Ok)));
+            let tail: ModelStream = if self.stall_until_cancel {
+                // Stall until the turn is cancelled, emit one more delta to
+                // wake the loop, then end. The loop's next cancellation check
+                // turns this into `Interrupted`.
+                Box::pin(stream::unfold(Some(cancel), |state| async move {
+                    let token = state?;
+                    token.cancelled().await;
+                    Some((
+                        Ok(ModelEvent::TextDelta {
+                            delta: "after-cancel".into(),
+                        }),
+                        None,
+                    ))
+                }))
+            } else {
+                Box::pin(stream::iter(std::iter::once(Ok(ModelEvent::Done))))
+            };
+            Ok(Box::pin(head.chain(tail)))
+        }
+    }
+
+    fn scripted(events: Vec<ModelEvent>) -> Arc<dyn ModelClient> {
+        Arc::new(Scripted {
+            events,
+            stall_until_cancel: false,
+        })
+    }
+
+    fn stalling(events: Vec<ModelEvent>) -> Arc<dyn ModelClient> {
+        Arc::new(Scripted {
+            events,
+            stall_until_cancel: true,
+        })
+    }
+
+    fn agent(model: Arc<dyn ModelClient>) -> Agent {
+        Agent::new(model, Arc::new(ToolRegistry::new()))
+    }
+
+    fn request(method: &str, params: Value) -> RpcRequest {
+        JsonRpcMessage::wrap(Request {
+            id: RequestId::Number(1),
+            method: method.into(),
+            params: Some(params),
+        })
+    }
+
+    async fn initialize(agent: &Agent) {
+        let reply = agent
+            .handle(request(
+                INITIALIZE,
+                json!({ "protocolVersion": 1, "clientCapabilities": {} }),
+            ))
+            .await;
+        assert!(
+            matches!(reply.inner(), Response::Result { .. }),
+            "initialize should succeed: {reply:?}"
+        );
+    }
+
+    async fn new_session(agent: &Agent) -> SessionId {
+        let reply = agent
+            .handle(request(
+                SESSION_NEW,
+                json!({ "cwd": "/tmp/srud-test", "mcpServers": [] }),
+            ))
+            .await;
+        let Response::Result { result, .. } = reply.into_inner() else {
+            panic!("session/new should succeed");
+        };
+        SessionId::new(result["sessionId"].as_str().unwrap().to_string())
+    }
+
+    fn result_of(reply: RpcReply) -> Value {
+        match reply.into_inner() {
+            Response::Result { result, .. } => result,
+            Response::Error { error, .. } => panic!("expected success, got {error:?}"),
+        }
+    }
+
+    fn error_of(reply: RpcReply) -> AcpError {
+        match reply.into_inner() {
+            Response::Error { error, .. } => error,
+            Response::Result { result, .. } => panic!("expected error, got {result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn requests_before_initialize_are_refused() {
+        let agent = agent(scripted(vec![]));
+        let error = error_of(
+            agent
+                .handle(request(SESSION_NEW, json!({ "cwd": "/" })))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INVALID_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn initialize_negotiates_v1_and_capabilities() {
+        let agent = agent(scripted(vec![]));
+        let result = result_of(
+            agent
+                .handle(request(
+                    INITIALIZE,
+                    json!({ "protocolVersion": 1, "clientCapabilities": {} }),
+                ))
+                .await,
+        );
+        assert_eq!(result["protocolVersion"], json!(1));
+        assert_eq!(result["agentCapabilities"]["loadSession"], json!(false));
+        assert!(result["agentCapabilities"]["sessionCapabilities"]["list"].is_object());
+        assert!(result.get("authMethods").is_some());
+    }
+
+    #[tokio::test]
+    async fn wrong_protocol_version_is_invalid_params() {
+        let agent = agent(scripted(vec![]));
+        let error = error_of(
+            agent
+                .handle(request(
+                    INITIALIZE,
+                    json!({ "protocolVersion": 99, "clientCapabilities": {} }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn session_new_returns_an_opaque_id() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let id = new_session(&agent).await;
+        assert!(!id.0.is_empty());
+        let listed = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
+        assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["sessions"][0]["cwd"], json!("/tmp/srud-test"));
+    }
+
+    #[tokio::test]
+    async fn prompt_streams_updates_and_returns_stop_reason() {
+        let agent = agent(scripted(vec![
+            ModelEvent::TextDelta { delta: "he".into() },
+            ModelEvent::TextDelta {
+                delta: "llo".into(),
+            },
+        ]));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+        let mut rx = agent.subscribe();
+
+        let result = result_of(
+            agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "hi" }]
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(result["stopReason"], json!("end_turn"));
+
+        let mut kinds = Vec::new();
+        while let Ok(notification) = rx.try_recv() {
+            let value = serde_json::to_value(&notification).unwrap();
+            assert_eq!(value["params"]["sessionId"], json!(session_id.0.as_ref()));
+            assert!(value["params"]["_meta"]["srud"]["turnId"].is_string());
+            kinds.push(
+                value["params"]["update"]["sessionUpdate"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            );
+        }
+        assert_eq!(
+            kinds,
+            vec![
+                "user_message_chunk",
+                "agent_message_chunk",
+                "agent_message_chunk"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_makes_prompt_return_cancelled() {
+        let model = stalling(vec![ModelEvent::TextDelta {
+            delta: "partial".into(),
+        }]);
+        let agent = Arc::new(agent(model));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+
+        let prompt_agent = Arc::clone(&agent);
+        let prompt_session = session_id.clone();
+        let prompt = tokio::spawn(async move {
+            prompt_agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": prompt_session.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "go" }]
+                    }),
+                ))
+                .await
+        });
+
+        // Give the turn a moment to claim the slot and emit its first delta.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let cancel_reply = agent
+            .handle(request(
+                SESSION_CANCEL,
+                json!({ "sessionId": session_id.0.as_ref() }),
+            ))
+            .await;
+        assert!(matches!(cancel_reply.inner(), Response::Result { .. }));
+
+        let result = result_of(prompt.await.unwrap());
+        assert_eq!(result["stopReason"], json!("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn prompt_again_while_busy_is_session_busy() {
+        let model = stalling(vec![ModelEvent::TextDelta {
+            delta: "partial".into(),
+        }]);
+        let agent = Arc::new(agent(model));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+
+        let prompt_agent = Arc::clone(&agent);
+        let prompt_session = session_id.clone();
+        let first = tokio::spawn(async move {
+            prompt_agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": prompt_session.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "go" }]
+                    }),
+                ))
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "second" }]
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), SESSION_BUSY);
+
+        // Clean up: cancel so the in-flight turn finishes.
+        agent
+            .handle(request(
+                SESSION_CANCEL,
+                json!({ "sessionId": session_id.0.as_ref() }),
+            ))
+            .await;
+        let _ = first.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unknown_and_unimplemented_methods_are_not_found() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        for method in UNIMPLEMENTED_METHODS {
+            let error = error_of(agent.handle(request(method, json!({}))).await);
+            assert_eq!(i32::from(error.code), METHOD_NOT_FOUND, "for {method}");
+        }
+        let error = error_of(agent.handle(request("bogus/method", json!({}))).await);
+        assert_eq!(i32::from(error.code), METHOD_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn prompt_on_unknown_session_is_session_not_found() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": "missing",
+                        "prompt": [{ "type": "text", "text": "hi" }]
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), SESSION_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn close_and_delete_deregister_the_session() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+
+        let reply = agent
+            .handle(request(
+                SESSION_CLOSE,
+                json!({ "sessionId": session_id.0.as_ref() }),
+            ))
+            .await;
+        assert!(matches!(reply.inner(), Response::Result { .. }));
+
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_DELETE,
+                    json!({ "sessionId": session_id.0.as_ref() }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), SESSION_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn malformed_params_are_invalid_params() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let error = error_of(
+            agent
+                .handle(request(SESSION_NEW, json!({ "notCwd": 1 })))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn non_text_prompt_is_invalid_params() {
+        let agent = agent(scripted(vec![ModelEvent::TextDelta { delta: "ok".into() }]));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+        let blocks = vec![
+            ContentBlock::Text(TextContent::new("a")),
+            ContentBlock::Image(srud_protocol::acp::ImageContent::new("data", "image/png")),
+        ];
+        let params = json!({
+            "sessionId": session_id.0.as_ref(),
+            "prompt": serde_json::to_value(&blocks).unwrap(),
+        });
+        let error = error_of(agent.handle(request(SESSION_PROMPT, params)).await);
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
+    }
+
+    #[test]
+    fn prompt_validation_rejects_images_and_accepts_text() {
+        let blocks = vec![ContentBlock::Text(TextContent::new("hello"))];
+        assert_eq!(prompt_with_validation(&blocks).unwrap(), "hello");
+
+        let blocks = vec![ContentBlock::Image(srud_protocol::acp::ImageContent::new(
+            "d",
+            "image/png",
+        ))];
+        let err = prompt_with_validation(&blocks).unwrap_err();
+        assert_eq!(i32::from(err.code), INVALID_PARAMS);
+        assert!(err.message.contains("text prompts only"));
+    }
+
+    #[test]
+    fn reply_helpers_produce_well_formed_envelopes() {
+        let ok = reply_ok(RequestId::Number(3), json!({ "a": 1 }));
+        let value = serde_json::to_value(&ok).unwrap();
+        assert_eq!(value["jsonrpc"], json!("2.0"));
+        assert_eq!(value["id"], json!(3));
+        assert_eq!(value["result"]["a"], json!(1));
+
+        let err = reply_err(
+            RequestId::Str("x".into()),
+            AcpError::new(INTERNAL_ERROR, "boom"),
+        );
+        let value = serde_json::to_value(&err).unwrap();
+        assert_eq!(value["error"]["code"], json!(INTERNAL_ERROR));
+    }
+}

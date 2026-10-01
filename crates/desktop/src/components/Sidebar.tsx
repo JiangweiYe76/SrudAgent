@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button';
 interface SidebarProps {
   sessions: Session[];
   activeId: string;
+  // True once the ACP backend handshake succeeded.
+  connected: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
 }
@@ -20,7 +22,7 @@ function formatTime(ts: number): string {
   return t('time.daysAgo', { n: Math.floor(hours / 24) });
 }
 
-export function Sidebar({ sessions, activeId, onSelect, onNew }: SidebarProps) {
+export function Sidebar({ sessions, activeId, connected, onSelect, onNew }: SidebarProps) {
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-muted">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
@@ -50,8 +52,8 @@ export function Sidebar({ sessions, activeId, onSelect, onNew }: SidebarProps) {
         ))}
       </nav>
       <div className="flex items-center gap-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
-        <span className="h-2 w-2 rounded-full bg-warning" />
-        <span>{t('sidebar.backendMock')}</span>
+        <span className={`h-2 w-2 rounded-full ${connected ? 'bg-success' : 'bg-warning'}`} />
+        <span>{t(connected ? 'sidebar.backendLive' : 'sidebar.backendMock')}</span>
       </div>
     </aside>
   );

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the main chat window: core APIs plus the event channel the rpc_notify pump uses.",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:default"]
+}
