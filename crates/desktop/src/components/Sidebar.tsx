@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Pencil, Plus } from 'lucide-react';
+import { Pencil, Plus, Trash2 } from 'lucide-react';
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
-import { displayTitle } from '@/lib/sessionStore';
+import { deleteWarning, displayTitle } from '@/lib/sessionStore';
+import { DeleteSessionModal } from '@/components/DeleteSessionModal';
 import { RenameSessionModal } from '@/components/RenameSessionModal';
 import { Button } from '@/components/ui/button';
 
@@ -14,6 +15,7 @@ interface SidebarProps {
   onSelect: (id: string) => void;
   onNew: () => void;
   onRename: (id: string, title: string) => void;
+  onDelete: (id: string) => void;
 }
 
 function formatTime(ts: number): string {
@@ -26,7 +28,7 @@ function formatTime(ts: number): string {
   return t('time.daysAgo', { n: Math.floor(hours / 24) });
 }
 
-// The hover-revealed row action. It stops propagation so acting on a session
+// The hover-revealed row actions. Each stops propagation so acting on a session
 // does not also select it.
 function RowAction({
   label,
@@ -68,14 +70,18 @@ export function Sidebar({
   onSelect,
   onNew,
   onRename,
+  onDelete,
 }: SidebarProps) {
-  // Which session is being renamed, if any. Renaming is a dialog rather than an
-  // inline field so the row layout never shifts while editing.
+  // Which dialog is open, if any. Renaming and deleting are dialogs rather than
+  // inline fields so the row layout never shifts.
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Read from `sessions` on every render, so a session closed while the dialog is
+  // Read from `sessions` on every render, so a session closed while a dialog is
   // open resolves to undefined instead of acting on one that is gone.
   const renameTarget = renamingId ? sessions.find((s) => s.id === renamingId) : undefined;
+  const deleteTarget = deletingId ? sessions.find((s) => s.id === deletingId) : undefined;
+  const deleteTurns = deleteWarning(deleteTarget);
 
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-muted">
@@ -100,15 +106,23 @@ export function Sidebar({
             }`}
             onClick={() => onSelect(s.id)}
           >
-            {/* The title and its timestamp stack; the action centres against both
-                lines rather than sitting on the title alone. */}
+            {/* The title and its timestamp stack; the actions centre against
+                both lines rather than sitting on the title alone. */}
             <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
               <span className="w-full truncate text-[13px]">{displayTitle(s)}</span>
               <span className="text-[11px] text-muted-foreground">{formatTime(s.updatedAt)}</span>
             </span>
-            <RowAction label={t('sidebar.renameTitle')} onActivate={() => setRenamingId(s.id)}>
-              <Pencil className="h-3 w-3" />
-            </RowAction>
+            <span className="flex shrink-0 items-center gap-0.5">
+              <RowAction label={t('sidebar.renameTitle')} onActivate={() => setRenamingId(s.id)}>
+                <Pencil className="h-3 w-3" />
+              </RowAction>
+              <RowAction
+                label={t('sidebar.deleteTitle')}
+                onActivate={() => setDeletingId(s.id)}
+              >
+                <Trash2 className="h-3 w-3" />
+              </RowAction>
+            </span>
           </button>
         ))}
       </nav>
@@ -123,6 +137,16 @@ export function Sidebar({
         onClose={() => setRenamingId(null)}
         onRename={(title) => {
           if (renameTarget) onRename(renameTarget.id, title);
+        }}
+      />
+      <DeleteSessionModal
+        open={deleteTarget !== undefined}
+        title={displayTitle(deleteTarget)}
+        turns={deleteTurns}
+        onClose={() => setDeletingId(null)}
+        onConfirm={() => {
+          if (deleteTarget) onDelete(deleteTarget.id);
+          setDeletingId(null);
         }}
       />
     </aside>

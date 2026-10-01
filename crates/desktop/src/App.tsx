@@ -18,6 +18,7 @@ function App() {
   const sendTurn = useSessionStore((s) => s.sendTurn);
   const stopTurn = useSessionStore((s) => s.stopTurn);
   const renameSession = useSessionStore((s) => s.renameSession);
+  const deleteSession = useSessionStore((s) => s.deleteSession);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -39,6 +40,7 @@ function App() {
         onSelect={select}
         onNew={addSession}
         onRename={renameSession}
+        onDelete={deleteSession}
       />
       <main className="relative flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-5 text-sm font-medium">

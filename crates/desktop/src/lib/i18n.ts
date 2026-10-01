@@ -7,6 +7,11 @@ const en = {
   'sidebar.renameTitle': 'Rename session',
   'sidebar.renamePlaceholder': 'Session name',
   'sidebar.renameSave': 'Save',
+  'sidebar.deleteTitle': 'Delete session',
+  'sidebar.deleteWarning': 'Delete "{title}"? This cannot be undone.',
+  'sidebar.deleteWarningWithTurns':
+    'Delete "{title}" and its {n} message(s)? This cannot be undone.',
+  'sidebar.deleteConfirm': 'Delete',
 
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',

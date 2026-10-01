@@ -42,11 +42,12 @@ const reply = (id: number, result: unknown) => ({ jsonrpc: '2.0', id, result });
 
 // Boots a fresh store with a scripted backend: handshake succeeds, and the
 // first `session/prompt` resolves only when the returned deferred settles.
-async function boot() {
+async function boot(options: { failDelete?: boolean } = {}) {
   vi.resetModules();
   mocks.notifyCb = null;
   const prompt = deferred<{ stopReason: string }>();
   const calls: string[] = [];
+  let created = 0;
   mocks.invoke = async (cmd, args) => {
     if (cmd === 'default_cwd') return '/work';
     if (cmd === 'rpc_request') {
@@ -56,13 +57,18 @@ async function boot() {
         case 'initialize':
           return reply(payload.id, { protocolVersion: 1, agentCapabilities: {} });
         case 'session/new':
-          return reply(payload.id, { sessionId: 'S1' });
+          // Distinct ids so a test can tell a fallback session from the first.
+          created += 1;
+          return reply(payload.id, { sessionId: `S${created}` });
         case 'session/prompt':
           return prompt.promise.then((r) => reply(payload.id, r));
         case 'session/cancel':
           return reply(payload.id, {});
         case '_srud/unstable/session/set_title':
           return reply(payload.id, { title: 'Renamed' });
+        case 'session/delete':
+          if (options.failDelete) throw new Error('delete refused');
+          return reply(payload.id, {});
       }
     }
     throw new Error(`unexpected invoke: ${cmd}`);
@@ -140,6 +146,55 @@ describe('sessionStore live path', () => {
     });
     // The agent echoes the accepted title back; nothing is written locally.
     expect(active().title).toBe('Derived');
+  });
+
+  it('deletes a session and falls back to another', async () => {
+    const { useSessionStore, calls } = await boot();
+    useSessionStore.getState().addSession();
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().sessions).toHaveLength(2);
+    });
+    const [newest, older] = useSessionStore.getState().sessions.map((s) => s.id);
+    expect(useSessionStore.getState().activeId).toBe(newest);
+
+    useSessionStore.getState().deleteSession(newest);
+    await vi.waitFor(() => {
+      expect(calls).toContain('session/delete');
+      expect(useSessionStore.getState().sessions).toHaveLength(1);
+    });
+    // Deleting the session on screen moves the view to what is left.
+    expect(useSessionStore.getState().sessions[0].id).toBe(older);
+    expect(useSessionStore.getState().activeId).toBe(older);
+  });
+
+  it('deleting the last session opens a fresh one', async () => {
+    const { useSessionStore, calls } = await boot();
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
+    const only = useSessionStore.getState().sessions[0].id;
+
+    useSessionStore.getState().deleteSession(only);
+    // Wait for the agent's reply before asserting on the list: it already holds
+    // one session beforehand, so a length check alone would pass immediately.
+    await vi.waitFor(() => {
+      expect(calls).toContain('session/delete');
+      expect(useSessionStore.getState().sessions[0].id).not.toBe(only);
+    });
+    // An empty sidebar would be a dead end, so a replacement is opened.
+    const replacement = useSessionStore.getState().sessions[0].id;
+    expect(replacement).not.toBe(only);
+    expect(useSessionStore.getState().activeId).toBe(replacement);
+    expect(calls).toContain('session/new');
+  });
+
+  it('keeps a session visible when the agent refuses the delete', async () => {
+    const { useSessionStore } = await boot({ failDelete: true });
+    useSessionStore.getState().deleteSession('S1');
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().initError).toContain('delete refused');
+    });
+    // The row is dropped only after the agent agrees, so a failed delete loses
+    // nothing.
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
   });
 
   it('streams agent text into the open turn and closes it on prompt completion', async () => {

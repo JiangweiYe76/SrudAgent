@@ -4,6 +4,7 @@ import { t } from './i18n';
 import {
   cancelTurn,
   defaultCwd,
+  deleteSession as requestDelete,
   initialize,
   newSession,
   onNotify,
@@ -128,6 +129,7 @@ interface SessionState {
   sendTurn: (userInput: string) => void;
   stopTurn: () => void;
   renameSession: (id: string, title: string) => void;
+  deleteSession: (id: string) => void;
 }
 
 // A session is busy while its newest turn has not been closed. Cancellation is
@@ -143,6 +145,12 @@ export function isBusy(session: Session | undefined): boolean {
 function freshSession(id: string): Session {
   const now = Date.now();
   return { id, title: null, turns: [], createdAt: now, updatedAt: now };
+}
+
+// How many turns a confirmation dialog should mention when deleting: a session
+// holding a conversation is worth warning about more loudly than an empty one.
+export function deleteWarning(session: Session | undefined): number {
+  return session?.turns.length ?? 0;
 }
 
 // The label shown for a session that has no title yet.
@@ -225,7 +233,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // clears the name rather than storing an empty one.
     void setSessionTitle(id, title.trim()).catch((err) => set({ initError: String(err) }));
   },
+
+  deleteSession: (id) => {
+    void requestDelete(id)
+      .then(() => removeSession(id))
+      .catch((err) => set({ initError: String(err) }));
+  },
 }));
+
+// Drops a session from the store once the agent has confirmed the delete, and
+// picks what to show next.
+//
+// The row is removed only after the agent agrees, so a failed delete leaves the
+// session visible instead of silently losing it from the UI. A turn still in
+// flight keeps streaming updates into the old turn, which `applyUpdate` no
+// longer matches — harmless, since the session is gone from the list.
+function removeSession(id: string) {
+  useSessionStore.setState((s) => {
+    const remaining = s.sessions.filter((sess) => sess.id !== id);
+    if (remaining.length === s.sessions.length) return s;
+    // Deleting the session on screen moves the view to its neighbour; deleting
+    // the last one leaves no session to fall back to.
+    const activeId =
+      s.activeId === id ? (remaining[0]?.id ?? '') : s.activeId;
+    return { sessions: remaining, activeId };
+  });
+  if (!useSessionStore.getState().activeId) useSessionStore.getState().addSession();
+}
 
 function closeTurn(sessionId: string, turnId: string, endReason: TurnEndReason, error?: string) {
   useSessionStore.setState((s) => ({

@@ -74,6 +74,12 @@ export async function newSession(cwd: string): Promise<string> {
   return String(result.sessionId);
 }
 
+// Deletes a session and everything the agent holds for it. Standard ACP, so no
+// SrudAgent extension is involved.
+export async function deleteSession(sessionId: string): Promise<void> {
+  await rpcRequest('session/delete', { sessionId });
+}
+
 export async function sendPrompt(sessionId: string, text: string): Promise<string> {
   const result = await rpcRequest('session/prompt', {
     sessionId,
