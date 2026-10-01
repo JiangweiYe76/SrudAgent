@@ -38,6 +38,7 @@ const en = {
 
   'chat.placeholder': 'Type a message… (Enter to send, Shift+Enter for newline)',
   'chat.send': 'Send',
+  'chat.stop': 'Stop',
 
   'mock.reply': '(mock) Got it. Real replies will appear here once the backend is wired up.',
 } as const;

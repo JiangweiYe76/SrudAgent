@@ -5,7 +5,7 @@ import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
-import { useSessionStore } from './lib/sessionStore';
+import { useSessionStore, isBusy } from './lib/sessionStore';
 import { useTheme } from './lib/theme';
 import { t } from './lib/i18n';
 import './styles.css';
@@ -16,6 +16,7 @@ function App() {
   const select = useSessionStore((s) => s.select);
   const addSession = useSessionStore((s) => s.addSession);
   const sendTurn = useSessionStore((s) => s.sendTurn);
+  const stopTurn = useSessionStore((s) => s.stopTurn);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -56,7 +57,7 @@ function App() {
           </div>
         )}
         <MessageList turns={active?.turns ?? []} />
-        <ChatInput onSend={sendTurn} onNew={addSession} />
+        <ChatInput onSend={sendTurn} onNew={addSession} busy={isBusy(active)} onStop={stopTurn} />
       </main>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>

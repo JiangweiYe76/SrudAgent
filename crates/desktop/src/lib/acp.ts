@@ -82,6 +82,13 @@ export async function sendPrompt(sessionId: string, text: string): Promise<strin
   return String(result.stopReason ?? 'end_turn');
 }
 
+// Asks the agent to interrupt the session's active turn. The in-flight
+// `session/prompt` is what resolves, with `stopReason: "cancelled"`; this call
+// only signals the turn's cancellation token and returns straight away.
+export async function cancelTurn(sessionId: string): Promise<void> {
+  await rpcRequest('session/cancel', { sessionId });
+}
+
 export function defaultCwd(): Promise<string> {
   return invoke<string>('default_cwd');
 }

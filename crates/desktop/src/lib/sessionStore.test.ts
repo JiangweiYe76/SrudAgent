@@ -45,10 +45,12 @@ async function boot() {
   vi.resetModules();
   mocks.notifyCb = null;
   const prompt = deferred<{ stopReason: string }>();
+  const calls: string[] = [];
   mocks.invoke = async (cmd, args) => {
     if (cmd === 'default_cwd') return '/work';
     if (cmd === 'rpc_request') {
       const payload = args!.payload as { method: string; id: number };
+      calls.push(payload.method);
       switch (payload.method) {
         case 'initialize':
           return reply(payload.id, { protocolVersion: 1, agentCapabilities: {} });
@@ -56,6 +58,8 @@ async function boot() {
           return reply(payload.id, { sessionId: 'S1' });
         case 'session/prompt':
           return prompt.promise.then((r) => reply(payload.id, r));
+        case 'session/cancel':
+          return reply(payload.id, {});
       }
     }
     throw new Error(`unexpected invoke: ${cmd}`);
@@ -76,7 +80,7 @@ async function boot() {
     const s = useSessionStore.getState();
     return s.sessions.find((x) => x.id === s.activeId) as Session;
   };
-  return { useSessionStore, prompt, fire, active };
+  return { useSessionStore, prompt, fire, active, calls };
 }
 
 beforeEach(() => {
@@ -181,6 +185,40 @@ describe('sessionStore live path', () => {
     await vi.waitFor(() => {
       expect(active().turns[0].endReason).toBe('interrupted');
     });
+  });
+
+  it('cancels the active turn and closes it as interrupted', async () => {
+    const { useSessionStore, active, prompt, calls } = await boot();
+    const { isBusy } = await import('./sessionStore');
+    useSessionStore.getState().sendTurn('go');
+
+    // Busy from send until the prompt resolves, so the stop button is live.
+    expect(isBusy(active())).toBe(true);
+
+    useSessionStore.getState().stopTurn();
+    await vi.waitFor(() => {
+      expect(calls).toContain('session/cancel');
+    });
+    // Cancel only signals the token; the turn stays open until the prompt replies.
+    expect(isBusy(active())).toBe(true);
+
+    prompt.resolve({ stopReason: 'cancelled' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('interrupted');
+    });
+    expect(isBusy(active())).toBe(false);
+  });
+
+  it('does not cancel when no turn is running', async () => {
+    const { useSessionStore, active, calls } = await boot();
+    const { isBusy } = await import('./sessionStore');
+    expect(isBusy(active())).toBe(false);
+
+    useSessionStore.getState().stopTurn();
+    // Flush the microtask queue and a macrotask, so a request that did fire
+    // would have reached the mock before the assertion.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).not.toContain('session/cancel');
   });
 
   it('marks the turn as error when the prompt fails', async () => {
