@@ -30,6 +30,9 @@ crates/desktop/src-tauri/target/
 *.swp
 *.swo
 
+# Agent workspace
+.workbuddy/
+
 # OS
 .DS_Store
 Thumbs.db

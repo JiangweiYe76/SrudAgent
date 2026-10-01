@@ -1,0 +1,8 @@
+# aws-lc-sys ships prebuilt NASM objects for x86_64-pc-windows-msvc. Opting in
+# lets it link those objects instead of requiring NASM on the machine.
+#
+# The crate consults this only when `target_os` is windows, and it still prefers
+# a real NASM executable whenever one is on PATH — so other targets and machines
+# with NASM installed behave exactly as before.
+[env]
+AWS_LC_SYS_PREBUILT_NASM = "1"
