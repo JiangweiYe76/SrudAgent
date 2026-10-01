@@ -31,7 +31,7 @@ const en = {
   'settings.theme.system': 'System',
   'settings.theme.light': 'Light',
   'settings.theme.dark': 'Dark',
-  'settings.about.line': 'SrudAgent 0.1.0 — a coding agent runtime in Rust.',
+  'settings.about.line': 'SrudAgent 0.1.0 — an AI agent runtime in Rust.',
 
   'chat.placeholder': 'Type a message… (Enter to send, Shift+Enter for newline)',
   'chat.send': 'Send',
