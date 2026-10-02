@@ -165,11 +165,8 @@ impl Agent {
     }
 
     fn handle_new_session(&self, params: Value) -> Result<NewSessionResponse, AcpError> {
-        let _request: NewSessionRequest = parse_params(params)?;
-        // The client names no workspace yet, so every session gets one of its
-        // own. `SessionManager::create` takes the client's directory when one
-        // arrives.
-        let session_id = self.sessions.create(None).map_err(|err| {
+        let request: NewSessionRequest = parse_params(params)?;
+        let session_id = self.sessions.create(Some(request.cwd)).map_err(|err| {
             AcpError::new(
                 INTERNAL_ERROR,
                 format!("could not create the session workspace: {err}"),
@@ -513,7 +510,10 @@ mod tests {
         let reply = agent
             .handle(request(
                 SESSION_NEW,
-                json!({ "cwd": "/tmp/srud-test", "mcpServers": [] }),
+                // No working directory named, so the session gets a workspace of
+                // its own. Spelled out rather than left to a path that may or may
+                // not exist on the machine running the test.
+                json!({ "cwd": "", "mcpServers": [] }),
             ))
             .await;
         let Response::Result { result, .. } = reply.into_inner() else {
@@ -599,6 +599,40 @@ mod tests {
             std::path::Path::new(cwd).is_dir(),
             "the workspace exists: {cwd}"
         );
+    }
+
+    #[tokio::test]
+    async fn session_new_works_where_the_client_said_to() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let chosen = std::env::temp_dir().join(format!("srud-chosen-{}", std::process::id()));
+        std::fs::create_dir_all(&chosen).expect("a directory to work in");
+
+        let reply = agent
+            .handle(request(
+                SESSION_NEW,
+                json!({ "cwd": chosen.to_str(), "mcpServers": [] }),
+            ))
+            .await;
+        let Response::Result { result, .. } = reply.into_inner() else {
+            panic!("session/new should succeed");
+        };
+        let id = SessionId::new(result["sessionId"].as_str().unwrap().to_string());
+
+        let listed = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
+        assert_eq!(listed["sessions"][0]["cwd"], chosen.to_str().unwrap());
+
+        // A directory the client named is the user's, so deleting the session
+        // must leave it standing.
+        result_of(
+            agent
+                .handle(request(
+                    SESSION_DELETE,
+                    json!({ "sessionId": id.0.as_ref() }),
+                ))
+                .await,
+        );
+        assert!(chosen.is_dir(), "{chosen:?} is not the agent's to delete");
     }
 
     #[tokio::test]

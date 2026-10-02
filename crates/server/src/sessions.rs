@@ -9,6 +9,10 @@
 //! the configuration directory, so one session's files are never another's.
 //! Removing a session removes a workspace this agent created for it; a directory
 //! the user pointed at is theirs and is left alone.
+//!
+//! The second half of that is a departure from ACP, which requires a session to
+//! work in the directory [`session/new`] named. [`usable_directory`] says when
+//! the agent overrides that and why.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -39,6 +43,28 @@ fn workspace_for(id: srud_core::types::SessionId) -> Result<PathBuf, config::Con
     config::home()
         .map(|home| home.join(WORKSPACES_DIR).join(id.to_string()))
         .ok_or(config::ConfigError::NoHome)
+}
+
+/// The directory a client named, if it named one the session can work in.
+///
+/// ACP makes the working directory part of `session/new`, requires it to be an
+/// absolute path, and requires the agent to use it for the session regardless
+/// of where the agent itself was spawned:
+/// <https://agentclientprotocol.com/protocol/session-setup#working-directory>
+///
+/// SrudAgent also keeps a session that works on its own, and this is where the
+/// client's choice yields to it. A client that named nothing, a path that has
+/// since been deleted, and a file where a directory belongs all mean the same
+/// thing — the session has no working directory to work in — and each of them
+/// gives the session a workspace of its own instead. That is a deliberate
+/// departure from the rule above.
+///
+/// A relative path is refused rather than resolved. Resolving it against the
+/// agent process's own directory would give an answer that holds only until the
+/// agent is spawned somewhere else, which is the situation the same rule exists
+/// to rule out.
+fn usable_directory(cwd: Option<PathBuf>) -> Option<PathBuf> {
+    cwd.filter(|dir| dir.is_absolute() && dir.is_dir())
 }
 
 /// Collapses a candidate title to a single line, or drops it when it holds no
@@ -87,20 +113,22 @@ impl SessionManager {
 
     /// Registers a fresh session and returns its wire id.
     ///
-    /// `cwd` is where the client wants the session to work. Given `None`, the
-    /// session is given a workspace of its own under the configuration
-    /// directory; given a directory, that directory is used as it stands and
-    /// nothing is created for it.
+    /// `cwd` is where the client wants the session to work. A directory that
+    /// exists is used as it stands and nothing is created for it. Anything else
+    /// — nothing at all, a path that is not there, a file, a relative path —
+    /// leaves the session with a workspace of its own under the configuration
+    /// directory; see [`usable_directory`] for why.
     ///
     /// # Errors
     ///
-    /// Returns [`CreateError`] when the session has no working directory to run
-    /// in: a session without one cannot call a tool, and without a configuration
-    /// directory there is nowhere to make one. Returns [`CreateError::Workspace`]
-    /// when the workspace cannot be created.
+    /// Returns [`CreateError::Config`] when the session needs a workspace and
+    /// there is no configuration directory to put it in, and
+    /// [`CreateError::Workspace`] when that workspace cannot be created. A
+    /// session with no working directory cannot call a tool, so neither failure
+    /// leaves a session half-started.
     pub fn create(&self, cwd: Option<PathBuf>) -> Result<SessionId, CreateError> {
         let session_id = srud_core::types::SessionId::new();
-        let (cwd, workspace_is_ours) = match cwd {
+        let (cwd, workspace_is_ours) = match usable_directory(cwd) {
             Some(cwd) => (cwd, false),
             None => {
                 let path = workspace_for(session_id)?;
@@ -316,6 +344,70 @@ mod tests {
             !workspaces.exists(),
             "a named directory is used, not one made for the session: {}",
             workspaces.display()
+        );
+    }
+
+    /// The workspace the session would have been given, whether or not it has
+    /// been created yet.
+    fn workspaces_root() -> PathBuf {
+        config::home()
+            .expect("a configuration directory")
+            .join(WORKSPACES_DIR)
+    }
+
+    /// Asserts a session was given a workspace of its own rather than working
+    /// where it was pointed.
+    fn assert_given_a_workspace(manager: &SessionManager, id: &SessionId, why: &str) {
+        let cwd = manager.get(id).expect("registered").cwd().to_path_buf();
+        assert!(cwd.is_dir(), "{why}, and it exists: {cwd:?}");
+        assert!(
+            cwd.starts_with(workspaces_root()),
+            "{why}: {cwd:?} is not under {}",
+            workspaces_root().display()
+        );
+    }
+
+    #[test]
+    fn nothing_named_for_the_client_means_a_workspace() {
+        let (manager, _env) = manager();
+        let id = manager.create(Some(PathBuf::new())).expect("created");
+
+        assert_given_a_workspace(&manager, &id, "an empty path names no directory");
+    }
+
+    #[test]
+    fn a_path_that_does_not_exist_means_a_workspace() {
+        let (manager, _env) = manager();
+        let gone = test_env::unique_dir("srud-gone").join("never-created");
+
+        let id = manager.create(Some(gone)).expect("created");
+
+        assert_given_a_workspace(&manager, &id, "a directory that is not there");
+    }
+
+    #[test]
+    fn a_file_where_a_directory_belongs_means_a_workspace() {
+        let (manager, _env) = manager();
+        let file = test_env::unique_dir("srud-file").join("a-file");
+        std::fs::write(&file, "not a directory").expect("a file");
+
+        let id = manager.create(Some(file)).expect("created");
+
+        assert_given_a_workspace(&manager, &id, "a file is not a working directory");
+    }
+
+    #[test]
+    fn a_relative_path_means_a_workspace() {
+        let (manager, _env) = manager();
+
+        let id = manager
+            .create(Some(PathBuf::from("relative/path")))
+            .expect("created");
+
+        assert_given_a_workspace(
+            &manager,
+            &id,
+            "a relative path would resolve against the agent's own directory",
         );
     }
 
