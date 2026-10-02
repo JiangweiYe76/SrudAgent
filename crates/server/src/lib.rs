@@ -19,11 +19,20 @@
 //!   tool calls run unconditionally.
 //! - Text-only prompts — non-text content blocks are rejected with
 //!   `INVALID_PARAMS`, matching the declared prompt capabilities.
+//!
+//! What a host supplies and what it does not:
+//!
+//! - The model client — [`Agent::new`] takes one, so a test can hand over a
+//!   scripted model and a live host can pick a provider.
+//! - Nothing else. The tool set comes from [`standard_tools`], because the
+//!   tools are read by the turn loop, which runs here rather than in the host.
 
 mod agent;
 mod convert;
 mod events;
 mod sessions;
+mod tools;
 
 pub use agent::{Agent, RpcReply};
 pub use sessions::SessionManager;
+pub use tools::standard_tools;
