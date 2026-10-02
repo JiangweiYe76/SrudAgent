@@ -140,11 +140,12 @@ export function isBusy(session: Session | undefined): boolean {
   return session.turns[session.turns.length - 1].endReason === undefined;
 }
 
-// A session starts unnamed; the agent derives a title from the first message and
-// announces it over `session/update`.
-function freshSession(id: string): Session {
+// A session starts as a local draft: no backend session and no workspace
+// directory until the first message materializes it. The agent derives a title
+// from the first message and announces it over `session/update`.
+function freshSession(): Session {
   const now = Date.now();
-  return { id, title: null, turns: [], createdAt: now, updatedAt: now };
+  return { id: uid('s'), backendId: null, title: null, turns: [], createdAt: now, updatedAt: now };
 }
 
 // How many turns a confirmation dialog should mention when deleting: a session
@@ -166,13 +167,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   init: async () => {
     try {
       await initialize();
-      const sessionId = await newSession(await defaultCwd());
       onNotify((params) => {
         const target = String(params.sessionId ?? '');
         const { sessions } = get();
         let changed = false;
         const next = sessions.map((s) => {
-          if (s.id !== target) return s;
+          if (s.backendId !== target) return s;
           const updated = applyUpdate(s, params);
           if (updated) {
             changed = true;
@@ -182,7 +182,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         });
         if (changed) set({ sessions: next });
       });
-      set({ sessions: [freshSession(sessionId)], activeId: sessionId, initError: null });
+      const draft = freshSession();
+      set({ sessions: [draft], activeId: draft.id, initError: null });
     } catch (err) {
       set({ initError: String(err) });
     }
@@ -191,58 +192,102 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   select: (id) => set({ activeId: id }),
 
   addSession: () => {
-    void defaultCwd()
-      .then((cwd) => newSession(cwd))
-      .then((sessionId) => {
-        set((s) => ({ sessions: [freshSession(sessionId), ...s.sessions], activeId: sessionId }));
-      })
-      .catch((err) => set({ initError: String(err) }));
+    const draft = freshSession();
+    set((s) => ({ sessions: [draft, ...s.sessions], activeId: draft.id }));
   },
 
   sendTurn: (userInput) => {
     const state = get();
+    const session = state.sessions.find((s) => s.id === state.activeId);
+    if (!session || isBusy(session)) return;
+    const sessionId = session.id;
     const now = Date.now();
     const turn: Turn = { id: uid('t'), userInput, steps: [], createdAt: now };
 
     set((s) => ({
       sessions: s.sessions.map((sess) =>
-        sess.id === s.activeId ? { ...sess, turns: [...sess.turns, turn], updatedAt: now } : sess,
+        sess.id === sessionId ? { ...sess, turns: [...sess.turns, turn], updatedAt: now } : sess,
       ),
     }));
 
-    void sendPrompt(state.activeId, userInput)
-      .then((reason) => {
-        closeTurn(state.activeId, turn.id, mapStopReason(reason));
-      })
-      .catch((err) => {
-        closeTurn(state.activeId, turn.id, 'error', String(err));
-      });
+    void (async () => {
+      let backendId = get().sessions.find((s) => s.id === sessionId)?.backendId ?? null;
+      if (!backendId) {
+        try {
+          const created = await newSession(await defaultCwd());
+          const draftTitle = get().sessions.find((s) => s.id === sessionId)?.title?.trim() || '';
+          useSessionStore.setState((s) => ({
+            sessions: s.sessions.map((sess) =>
+              sess.id === sessionId ? { ...sess, backendId: created } : sess,
+            ),
+          }));
+          backendId = created;
+          if (draftTitle) {
+            try {
+              await setSessionTitle(backendId, draftTitle);
+            } catch (err) {
+              useSessionStore.setState({ initError: String(err) });
+            }
+          }
+        } catch (err) {
+          closeTurn(sessionId, turn.id, 'error', String(err));
+          return;
+        }
+      }
+
+      try {
+        const reason = await sendPrompt(backendId, userInput);
+        closeTurn(sessionId, turn.id, mapStopReason(reason));
+      } catch (err) {
+        closeTurn(sessionId, turn.id, 'error', String(err));
+      }
+    })();
   },
 
   stopTurn: () => {
-    const sessionId = get().activeId;
-    if (!isBusy(get().sessions.find((s) => s.id === sessionId))) return;
+    const session = get().sessions.find((s) => s.id === get().activeId);
+    if (!isBusy(session) || !session?.backendId) return;
     // The turn is not closed here: `session/cancel` only signals the token, and
     // the open `session/prompt` is what resolves it, as `interrupted`.
-    void cancelTurn(sessionId).catch((err) => set({ initError: String(err) }));
+    void cancelTurn(session.backendId).catch((err) => set({ initError: String(err) }));
   },
 
   renameSession: (id, title) => {
+    const session = get().sessions.find((s) => s.id === id);
+    if (!session) return;
+    if (!session.backendId) {
+      // A draft has no agent to echo a rename, so the title is stored locally.
+      // It is pushed to the backend when the draft materializes.
+      const next = title.trim() || null;
+      set((s) => ({
+        sessions: s.sessions.map((sess) => (sess.id === id ? { ...sess, title: next } : sess)),
+      }));
+      return;
+    }
     // The agent is the source of truth and echoes the accepted title back as a
     // `session_info_update`, so nothing is written locally here. A blank title
     // clears the name rather than storing an empty one.
-    void setSessionTitle(id, title.trim()).catch((err) => set({ initError: String(err) }));
+    void setSessionTitle(session.backendId, title.trim()).catch((err) =>
+      set({ initError: String(err) }),
+    );
   },
 
   deleteSession: (id) => {
-    void requestDelete(id)
+    const session = get().sessions.find((s) => s.id === id);
+    if (!session) return;
+    if (!session.backendId) {
+      removeSession(id);
+      return;
+    }
+    void requestDelete(session.backendId)
       .then(() => removeSession(id))
       .catch((err) => set({ initError: String(err) }));
   },
 }));
 
-// Drops a session from the store once the agent has confirmed the delete, and
-// picks what to show next.
+// Drops a session from the store once the agent has confirmed the delete (or
+// immediately for a draft, which holds nothing backend-side), and picks what
+// to show next.
 //
 // The row is removed only after the agent agrees, so a failed delete leaves the
 // session visible instead of silently losing it from the UI. A turn still in
@@ -254,8 +299,7 @@ function removeSession(id: string) {
     if (remaining.length === s.sessions.length) return s;
     // Deleting the session on screen moves the view to its neighbour; deleting
     // the last one leaves no session to fall back to.
-    const activeId =
-      s.activeId === id ? (remaining[0]?.id ?? '') : s.activeId;
+    const activeId = s.activeId === id ? (remaining[0]?.id ?? '') : s.activeId;
     return { sessions: remaining, activeId };
   });
   if (!useSessionStore.getState().activeId) useSessionStore.getState().addSession();
