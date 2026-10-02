@@ -28,6 +28,7 @@
 //!   tools are read by the turn loop, which runs here rather than in the host.
 
 mod agent;
+pub mod config;
 mod convert;
 mod events;
 mod sessions;

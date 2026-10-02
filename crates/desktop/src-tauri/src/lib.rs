@@ -17,7 +17,7 @@ use srud_core::client::ModelClient;
 use srud_protocol::acp::{AcpError, JsonRpcMessage, Notification, Response, SessionNotification};
 use srud_protocol::error::INTERNAL_ERROR;
 use srud_protocol::transport::tauri::{NotifyBody, RpcNotify, RpcRequest, RPC_NOTIFY_EVENT};
-use srud_server::{standard_tools, Agent, RpcReply};
+use srud_server::{config, standard_tools, Agent, RpcReply};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Environment variable naming the dotenv file to load before building the
@@ -157,6 +157,11 @@ fn home_dir() -> Result<PathBuf, std::env::VarError> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     load_env_file();
+    // Reported, not fatal: nothing reads the directory yet, so a home that
+    // cannot be written to is worth saying out loud and no more.
+    if let Err(error) = config::ensure() {
+        eprintln!("{error}");
+    }
     tauri::Builder::default()
         .setup(|app| {
             let agent = build_agent();
