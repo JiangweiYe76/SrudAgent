@@ -14,11 +14,10 @@ use std::sync::Arc;
 use serde_json::Value;
 use srud_client::openai::ChatClient;
 use srud_core::client::ModelClient;
-use srud_core::tools::{read::ReadTool, ToolRegistry};
 use srud_protocol::acp::{AcpError, JsonRpcMessage, Notification, Response, SessionNotification};
 use srud_protocol::error::INTERNAL_ERROR;
 use srud_protocol::transport::tauri::{NotifyBody, RpcNotify, RpcRequest, RPC_NOTIFY_EVENT};
-use srud_server::{Agent, RpcReply};
+use srud_server::{standard_tools, Agent, RpcReply};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Environment variable naming the dotenv file to load before building the
@@ -60,14 +59,14 @@ fn load_env_file() {
 }
 
 /// Builds the agent from the environment.
+///
+/// The model client is the one thing this shell decides: which provider to talk
+/// to is a property of the machine the app runs on. The tool set is not — it
+/// comes from the agent, which is what executes tool calls.
 fn build_agent() -> Option<Arc<Agent>> {
     let model = ChatClient::from_env().ok()?;
     let model: Arc<dyn ModelClient> = Arc::new(model);
-    let mut tools = ToolRegistry::new();
-    tools
-        .register(Arc::new(ReadTool))
-        .expect("the registry is fresh");
-    Some(Arc::new(Agent::new(model, Arc::new(tools))))
+    Some(Arc::new(Agent::new(model, standard_tools())))
 }
 
 /// Builds the `rpc_notify` payload for one agent notification.
@@ -180,6 +179,7 @@ mod tests {
     use futures::stream;
     use serde_json::json;
     use srud_core::client::{ModelEvent, ModelRequest, ModelStream};
+    use srud_core::tools::ToolRegistry;
     use srud_protocol::acp::{Request, RequestId};
     use tokio_util::sync::CancellationToken;
 
