@@ -49,7 +49,7 @@ fn unreachable() -> ClientConfig {
 /// Runs a turn against a client that cannot connect, asserting the loop reports
 /// the failure instead of panicking.
 async fn assert_fails_cleanly(client: &dyn ModelClient) {
-    let session = Session::new();
+    let session = Session::new("workspace");
     let sink = Recorder::default();
     let mut tools = ToolRegistry::new();
     assert!(tools.register(Arc::new(Static)).is_ok());

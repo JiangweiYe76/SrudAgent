@@ -1,9 +1,12 @@
 //! The in-memory session registry.
 //!
 //! Owns the mapping between the wire's opaque `sessionId` strings and the
-//! core runtime's [`Session`] values, plus the per-session `cwd` the runtime
-//! itself does not track. Sessions live only as long as the process: there is
-//! no rollout store, so a restart empties the registry.
+//! core runtime's [`Session`] values, and creates each session's working
+//! directory. Sessions live only as long as the process: there is no rollout
+//! store, so a restart empties the registry.
+//!
+//! Every session works in a directory of its own under the system temp
+//! directory, so one session's files are never another's.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,13 +15,22 @@ use std::sync::{Arc, Mutex};
 use srud_core::session::Session;
 use srud_protocol::acp::{SessionId, SessionInfo};
 
+/// The directory per-session workspaces are created under, inside the system
+/// temp directory.
+const WORKSPACES_DIR: &str = "SrudAgentWorkspaces";
+
 /// A tracked session: the runtime handle plus the wire-level context.
 struct Tracked {
     session: Arc<Session>,
-    cwd: PathBuf,
     /// The agent's display title. `None` until the first prompt names the
     /// session, or until a client renames it.
     title: Option<String>,
+}
+
+fn workspace_for(id: srud_core::types::SessionId) -> PathBuf {
+    std::env::temp_dir()
+        .join(WORKSPACES_DIR)
+        .join(id.to_string())
 }
 
 /// Collapses a candidate title to a single line, or drops it when it holds no
@@ -48,9 +60,17 @@ impl SessionManager {
         Self::default()
     }
 
-    /// Registers a fresh session for `cwd` and returns its wire id.
-    pub fn create(&self, cwd: PathBuf) -> SessionId {
-        let session = Arc::new(Session::new());
+    /// Registers a fresh session and returns its wire id.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error if the session's working directory
+    /// could not be created: a session without one cannot run tools.
+    pub fn create(&self) -> std::io::Result<SessionId> {
+        let session_id = srud_core::types::SessionId::new();
+        let cwd = workspace_for(session_id);
+        std::fs::create_dir_all(&cwd)?;
+        let session = Arc::new(Session::with_id(session_id, cwd));
         let id = SessionId::new(session.id().to_string());
         self.sessions
             .lock()
@@ -59,11 +79,10 @@ impl SessionManager {
                 id.to_string(),
                 Tracked {
                     session,
-                    cwd,
                     title: None,
                 },
             );
-        id
+        Ok(id)
     }
 
     /// Sets a session's display title, returning whether the session existed.
@@ -140,7 +159,10 @@ impl SessionManager {
             .expect("session map lock poisoned")
             .iter()
             .map(|(id, tracked)| {
-                let mut info = SessionInfo::new(SessionId::new(id.clone()), tracked.cwd.clone());
+                let mut info = SessionInfo::new(
+                    SessionId::new(id.clone()),
+                    tracked.session.cwd().to_path_buf(),
+                );
                 info.title = tracked.title.clone();
                 info.updated_at = None;
                 info
@@ -168,12 +190,43 @@ impl SessionManager {
 mod tests {
     use super::*;
 
+    /// Creates a session, failing the test rather than the caller when the
+    /// workspace cannot be made.
+    fn create(manager: &SessionManager) -> SessionId {
+        manager.create().expect("the workspace is creatable")
+    }
+
     #[test]
     fn create_then_get_round_trips_the_id() {
         let manager = SessionManager::new();
-        let id = manager.create(PathBuf::from("/tmp/a"));
+        let id = create(&manager);
         let session = manager.get(&id).expect("the session is registered");
         assert_eq!(session.id().to_string(), id.0.as_ref());
+    }
+
+    #[test]
+    fn create_makes_a_working_directory_for_the_session() {
+        let manager = SessionManager::new();
+        let id = create(&manager);
+        let session = manager.get(&id).expect("the session is registered");
+        let cwd = session.cwd();
+        assert!(cwd.is_dir(), "the working directory exists: {cwd:?}");
+
+        let root = std::env::temp_dir().join(WORKSPACES_DIR);
+        assert!(cwd.starts_with(&root), "{cwd:?} lives under {root:?}");
+        assert_eq!(
+            cwd.file_name().map(|name| name.to_string_lossy()),
+            Some(id.0.as_ref().into()),
+            "the directory is named by the session id"
+        );
+    }
+
+    #[test]
+    fn sessions_get_their_own_working_directory() {
+        let manager = SessionManager::new();
+        let a = manager.get(&create(&manager)).expect("registered");
+        let b = manager.get(&create(&manager)).expect("registered");
+        assert_ne!(a.cwd(), b.cwd());
     }
 
     #[test]
@@ -185,7 +238,7 @@ mod tests {
     #[test]
     fn remove_drops_the_session() {
         let manager = SessionManager::new();
-        let id = manager.create(PathBuf::from("/tmp/a"));
+        let id = create(&manager);
         assert!(manager.remove(&id));
         assert!(!manager.remove(&id), "a second removal finds nothing");
         assert!(manager.is_empty());
@@ -194,7 +247,7 @@ mod tests {
     #[test]
     fn a_new_session_has_no_title() {
         let manager = SessionManager::new();
-        let id = manager.create(PathBuf::from("/tmp/a"));
+        let id = create(&manager);
         assert_eq!(manager.title(&id), None);
         assert!(manager.list()[0].title.is_none());
     }
@@ -202,7 +255,7 @@ mod tests {
     #[test]
     fn name_if_unnamed_only_the_first_caller_wins() {
         let manager = SessionManager::new();
-        let id = manager.create(PathBuf::from("/tmp/a"));
+        let id = create(&manager);
         assert!(manager.name_if_unnamed(&id, "first message"));
         // A later prompt must not clobber the name the session already has.
         assert!(!manager.name_if_unnamed(&id, "second message"));
@@ -212,7 +265,7 @@ mod tests {
     #[test]
     fn set_title_overwrites_and_reports_unknown_ids() {
         let manager = SessionManager::new();
-        let id = manager.create(PathBuf::from("/tmp/a"));
+        let id = create(&manager);
         assert!(manager.name_if_unnamed(&id, "derived"));
         assert!(manager.set_title(&id, "chosen by the user"));
         assert_eq!(manager.title(&id).as_deref(), Some("chosen by the user"));
@@ -222,7 +275,7 @@ mod tests {
     #[test]
     fn a_blank_title_clears_the_name() {
         let manager = SessionManager::new();
-        let id = manager.create(PathBuf::from("/tmp/a"));
+        let id = create(&manager);
         manager.name_if_unnamed(&id, "named");
         assert!(manager.set_title(&id, "   \n  "));
         assert_eq!(manager.title(&id), None);
@@ -233,7 +286,7 @@ mod tests {
     #[test]
     fn titles_collapse_to_a_single_line() {
         let manager = SessionManager::new();
-        let id = manager.create(PathBuf::from("/tmp/a"));
+        let id = create(&manager);
         manager.set_title(&id, "  fix   the\n\n  timestamp  ");
         assert_eq!(manager.title(&id).as_deref(), Some("fix the timestamp"));
     }
@@ -241,7 +294,7 @@ mod tests {
     #[test]
     fn list_reports_the_title() {
         let manager = SessionManager::new();
-        let named = manager.create(PathBuf::from("/tmp/a"));
+        let named = create(&manager);
         manager.set_title(&named, "Named session");
         let listed = manager.list();
         let titled = listed
@@ -252,19 +305,25 @@ mod tests {
     }
 
     #[test]
-    fn list_reports_cwd_for_every_session() {
+    fn list_reports_the_working_directory_for_every_session() {
         let manager = SessionManager::new();
-        let a = manager.create(PathBuf::from("/tmp/a"));
-        let b = manager.create(PathBuf::from("/tmp/b"));
+        let mut expected = [create(&manager), create(&manager)];
+        expected.sort_by_key(ToString::to_string);
+
         let mut listed = manager.list();
-        listed.sort_by_key(|x| x.session_id.to_string());
-        let mut expected = vec![a.to_string(), b.to_string()];
-        expected.sort();
+        listed.sort_by_key(|info| info.session_id.to_string());
+
         let ids: Vec<String> = listed
             .iter()
             .map(|info| info.session_id.to_string())
             .collect();
-        assert_eq!(ids, expected);
-        assert!(listed.iter().all(|info| !info.cwd.as_os_str().is_empty()));
+        assert_eq!(
+            ids,
+            expected.iter().map(ToString::to_string).collect::<Vec<_>>()
+        );
+        assert!(
+            listed.iter().all(|info| info.cwd.is_dir()),
+            "every listed session reports the directory it works in"
+        );
     }
 }

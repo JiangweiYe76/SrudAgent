@@ -123,9 +123,15 @@ fn done() -> Result<ModelEvent, ModelError> {
     Ok(ModelEvent::Done)
 }
 
+/// A session working in a placeholder directory. The turn loop never touches
+/// the filesystem, so this directory does not have to exist.
+fn session() -> Session {
+    Session::new("workspace")
+}
+
 #[tokio::test]
 async fn a_plain_exchange_records_history_and_emits_in_order() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
     let client = Scripted::new(vec![vec![text("Hel"), text("lo"), done()]]);
@@ -167,7 +173,7 @@ async fn a_plain_exchange_records_history_and_emits_in_order() {
 
 #[tokio::test]
 async fn a_tool_call_round_trips_and_drives_a_second_request() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, calls) = tool_registry();
     let client = Scripted::new(vec![
@@ -229,7 +235,7 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
 
 #[tokio::test]
 async fn exactly_one_terminator_is_emitted_when_the_model_fails() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
     let client = Scripted::new(vec![vec![Err(ModelError::Transport("boom".into()))]]);
@@ -255,7 +261,7 @@ async fn exactly_one_terminator_is_emitted_when_the_model_fails() {
 
 #[tokio::test]
 async fn a_model_that_never_signals_completion_is_an_error() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
     // The stream ends after a delta without a `Done`.
@@ -282,7 +288,7 @@ async fn a_model_that_never_signals_completion_is_an_error() {
 
 #[tokio::test]
 async fn an_unknown_tool_becomes_a_failed_outcome_not_a_crash() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
     let client = Scripted::new(vec![
@@ -320,7 +326,7 @@ async fn an_unknown_tool_becomes_a_failed_outcome_not_a_crash() {
 
 #[tokio::test]
 async fn a_second_concurrent_turn_is_refused() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
 
@@ -348,7 +354,7 @@ async fn a_second_concurrent_turn_is_refused() {
 
 #[tokio::test]
 async fn interrupting_before_the_first_step_stops_the_turn() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
 
@@ -385,7 +391,7 @@ async fn op_values_are_constructible() {
 
 #[tokio::test]
 async fn history_stays_consistent_when_several_tools_run_in_one_step() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, calls) = tool_registry();
     let client = Scripted::new(vec![

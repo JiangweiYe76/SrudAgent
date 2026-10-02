@@ -5,6 +5,7 @@
 //! loop is the only writer, so recorded history and model-visible context stay
 //! in agreement.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use tokio_util::sync::CancellationToken;
@@ -59,26 +60,29 @@ impl SessionState {
     }
 }
 
-/// A session: identity, state, and the control block for an in-flight turn.
+/// A session: identity, the directory it works in, state, and the control block
+/// for an in-flight turn.
 #[derive(Debug)]
 pub struct Session {
     id: SessionId,
+    cwd: PathBuf,
     state: Mutex<SessionState>,
     active_turn: Mutex<Option<ActiveTurn>>,
 }
 
 impl Session {
-    /// Creates a session with a fresh id.
+    /// Creates a session with a fresh id, working in `cwd`.
     #[must_use]
-    pub fn new() -> Self {
-        Self::with_id(SessionId::new())
+    pub fn new(cwd: impl Into<PathBuf>) -> Self {
+        Self::with_id(SessionId::new(), cwd)
     }
 
     /// Creates a session with a specific id, for loading an existing one.
     #[must_use]
-    pub fn with_id(id: SessionId) -> Self {
+    pub fn with_id(id: SessionId, cwd: impl Into<PathBuf>) -> Self {
         Self {
             id,
+            cwd: cwd.into(),
             state: Mutex::new(SessionState::new()),
             active_turn: Mutex::new(None),
         }
@@ -88,6 +92,15 @@ impl Session {
     #[must_use]
     pub fn id(&self) -> SessionId {
         self.id
+    }
+
+    /// Returns the directory this session works in.
+    ///
+    /// Relative paths in the model's requests resolve against it, and it is what
+    /// the model is told about where it is.
+    #[must_use]
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
     }
 
     /// Locks and returns the state.
@@ -144,12 +157,6 @@ impl Session {
     }
 }
 
-impl Default for Session {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Runtime control for the turn that is currently running.
 #[derive(Debug)]
 pub struct ActiveTurn {
@@ -187,16 +194,29 @@ impl Drop for ActiveTurnGuard<'_> {
 mod tests {
     use super::*;
 
+    /// A session working in an arbitrary directory; these tests are about the
+    /// turn slot, not about where the work happens.
+    fn session() -> Session {
+        Session::new(PathBuf::from("workspace"))
+    }
+
     #[test]
     fn session_starts_empty() {
-        let session = Session::new();
+        let session = session();
         assert!(session.state().is_empty());
         assert!(!session.is_busy());
     }
 
     #[test]
+    fn the_working_directory_is_readable() {
+        let cwd = std::env::temp_dir().join("srud-session-ws");
+        let session = Session::new(cwd.clone());
+        assert_eq!(session.cwd(), cwd.as_path());
+    }
+
+    #[test]
     fn only_one_turn_can_be_active() {
-        let session = Session::new();
+        let session = session();
         let first = session.begin_turn();
         assert!(first.is_some());
         assert!(session.is_busy());
@@ -213,7 +233,7 @@ mod tests {
 
     #[test]
     fn dropping_the_guard_always_releases_the_slot() {
-        let session = Session::new();
+        let session = session();
         {
             let _guard = session.begin_turn().expect("slot is free");
             assert!(session.is_busy());
@@ -223,7 +243,7 @@ mod tests {
 
     #[test]
     fn interrupt_signals_the_active_turn() {
-        let session = Session::new();
+        let session = session();
         assert!(!session.interrupt(), "no turn to interrupt");
 
         let guard = session.begin_turn().expect("slot is free");
@@ -236,7 +256,7 @@ mod tests {
 
     #[test]
     fn history_records_in_order() {
-        let session = Session::new();
+        let session = session();
         {
             let mut state = session.state();
             state.push(ResponseItem::user("one"));

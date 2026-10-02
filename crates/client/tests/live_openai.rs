@@ -188,7 +188,7 @@ fn clients() -> Option<(ResponsesClient, ChatClient)> {
 
 /// Runs one turn, optionally with the code tool registered.
 async fn run(client: &dyn ModelClient, text: &str, with_tool: bool) -> Outcome {
-    let session = Session::new();
+    let session = Session::new("workspace");
     let sink = Recorder::default();
     let mut tools = ToolRegistry::new();
     if with_tool {
