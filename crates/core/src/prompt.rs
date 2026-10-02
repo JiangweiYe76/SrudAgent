@@ -1,32 +1,105 @@
 //! Turning recorded history into a model request.
 //!
 //! Read-only: this inspects [`SessionState`] and produces a [`ModelRequest`].
+//!
+//! The system instruction is assembled from [`Section`] blocks rather than
+//! written as one string, so a block can be added, dropped, or reordered
+//! without touching the content of its neighbours.
 
 use crate::client::{ModelRequest, ModelRequestItem};
 use crate::session::SessionState;
 use crate::types::{ResponseItem, Role};
 
-/// The default system instruction.
-pub const DEFAULT_INSTRUCTIONS: &str = "You are SrudAgent, an AI Agent. \
-Work from the working directory you are pointed at. Prefer reading before \
-writing, keep changes focused, and explain what you did in plain language.";
+/// One titled block of the system instruction.
+///
+/// The heading belongs to the block, not to its body: [`Section::body`] holds
+/// content only and [`render_instructions`] writes the heading. A title is
+/// therefore spelled once, where the block is declared, and cannot drift out
+/// of sync with the text under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    /// The heading, rendered as a markdown level-one title.
+    pub title: &'static str,
+    /// The content under the heading.
+    pub body: String,
+}
+
+impl Section {
+    /// Declares a block: a heading and the content beneath it.
+    #[must_use]
+    pub fn new(title: &'static str, body: impl Into<String>) -> Self {
+        Self {
+            title,
+            body: body.into(),
+        }
+    }
+}
+
+/// The role block: who the model is.
+const ROLE_BODY: &str = "You are Srud, an AI Agent.";
+
+/// The working-style block: how the model is expected to go about the work.
+///
+/// A list, one rule per item, so no rule reads as a qualification of the one
+/// before it.
+const WORKING_STYLE_BODY: &str = "\
+- Look before acting: gather what you need first, and never change anything you have not checked.
+- Do only what the task asks; leave alone everything it does not need you to touch.
+- Do not guess: if a fact is not in front of you, go get it, or say you could not find it.
+- Answer in the language the user writes in.";
+
+/// The blocks the system instruction is built from when the caller supplies
+/// none of its own.
+///
+/// Returned owned so a caller can extend the list: blocks are ordered, and
+/// adding one means choosing where it goes, not just whether it is present.
+#[must_use]
+pub fn default_sections() -> Vec<Section> {
+    vec![
+        Section::new("Role", ROLE_BODY),
+        Section::new("Working style", WORKING_STYLE_BODY),
+    ]
+}
+
+/// Renders blocks into the system instruction.
+///
+/// Every block becomes `# {title}` followed by its content. A block with
+/// nothing to say is dropped whole, so a heading never stands on its own: a
+/// block whose text is derived at runtime can come back empty. Order is
+/// preserved because where two blocks disagree, the later one is the one the
+/// model is expected to follow.
+#[must_use]
+pub fn render_instructions(sections: &[Section]) -> String {
+    sections
+        .iter()
+        .filter(|section| !section.body.trim().is_empty())
+        .map(|section| format!("# {}\n\n{}", section.title, section.body.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
 
 /// Builds a model request from the current state.
 ///
 /// `tools` is passed in rather than read from the state because the tool set is
-/// configuration, not history.
+/// configuration, not history. `sections` is `None` to build from
+/// [`default_sections`]; a caller with blocks of its own passes the whole list,
+/// since the rendering depends on their order.
 #[must_use]
 pub fn build_prompt(
     state: &SessionState,
     tools: Vec<crate::tools::ToolDefinition>,
-    instructions: Option<&str>,
+    sections: Option<&[Section]>,
 ) -> ModelRequest {
     let items = state.history().iter().filter_map(to_request_item).collect();
+    let instructions = match sections {
+        Some(sections) => render_instructions(sections),
+        None => render_instructions(&default_sections()),
+    };
 
     ModelRequest {
         items,
         tools,
-        instructions: Some(instructions.unwrap_or(DEFAULT_INSTRUCTIONS).to_owned()),
+        instructions: Some(instructions),
     }
 }
 
@@ -131,17 +204,83 @@ mod tests {
     }
 
     #[test]
-    fn instructions_default_when_not_given() {
+    fn instructions_default_to_the_rendered_default_blocks() {
         let state = SessionState::new();
         let request = build_prompt(&state, Vec::new(), None);
-        assert_eq!(request.instructions.as_deref(), Some(DEFAULT_INSTRUCTIONS));
+        assert_eq!(
+            request.instructions.as_deref(),
+            Some(render_instructions(&default_sections()).as_str())
+        );
     }
 
     #[test]
-    fn instructions_can_be_overridden() {
+    fn caller_blocks_replace_the_defaults() {
         let state = SessionState::new();
-        let request = build_prompt(&state, Vec::new(), Some("be terse"));
-        assert_eq!(request.instructions.as_deref(), Some("be terse"));
+        let sections = vec![Section::new("Style", "be terse")];
+        let request = build_prompt(&state, Vec::new(), Some(&sections));
+        assert_eq!(
+            request.instructions.as_deref(),
+            Some("# Style\n\nbe terse"),
+            "a caller's blocks are rendered as given"
+        );
+    }
+
+    #[test]
+    fn a_block_is_rendered_as_a_heading_over_its_content() {
+        let rendered = render_instructions(&[Section::new("Role", "You are Srud.")]);
+        assert_eq!(rendered, "# Role\n\nYou are Srud.");
+    }
+
+    #[test]
+    fn blocks_keep_their_order_and_are_separated() {
+        let rendered =
+            render_instructions(&[Section::new("Role", "who"), Section::new("Style", "how")]);
+        assert_eq!(rendered, "# Role\n\nwho\n\n# Style\n\nhow");
+    }
+
+    #[test]
+    fn a_block_with_nothing_to_say_is_dropped_whole() {
+        let rendered = render_instructions(&[
+            Section::new("Role", "who"),
+            Section::new("Project", "   \n  "),
+        ]);
+        assert_eq!(
+            rendered, "# Role\n\nwho",
+            "an empty block must not leave its heading behind"
+        );
+    }
+
+    #[test]
+    fn leading_and_trailing_space_in_a_body_is_trimmed() {
+        let rendered = render_instructions(&[Section::new("Role", "\n  You are Srud. \n")]);
+        assert_eq!(rendered, "# Role\n\nYou are Srud.");
+    }
+
+    #[test]
+    fn the_default_blocks_are_role_then_working_style() {
+        let sections = default_sections();
+        let titles: Vec<_> = sections.iter().map(|section| section.title).collect();
+        assert_eq!(titles, vec!["Role", "Working style"]);
+        assert!(
+            sections[0].body.starts_with("You are Srud,"),
+            "the role block names the agent: {:?}",
+            sections[0].body
+        );
+        assert!(
+            !sections[0].body.contains("Look before acting"),
+            "how to work belongs to the working-style block, not the role one"
+        );
+    }
+
+    #[test]
+    fn the_working_style_block_is_a_list_of_rules() {
+        let body = &default_sections()[1].body;
+        let items: Vec<_> = body.lines().collect();
+        assert_eq!(items.len(), 4, "one rule per item: {body:?}");
+        assert!(
+            items.iter().all(|item| item.starts_with("- ")),
+            "every rule is a list item: {body:?}"
+        );
     }
 
     #[test]
