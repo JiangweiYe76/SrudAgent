@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use srud_client::openai::{ChatClient, ClientConfig, ResponsesClient};
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
-use srud_core::tools::{Tool, ToolError, ToolOutcome, ToolRegistry};
+use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use srud_core::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnInput};
 
 /// Records events so the test can assert on order.
@@ -36,7 +36,11 @@ impl Tool for Static {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({ "type": "object" })
     }
-    async fn call(&self, _arguments: serde_json::Value) -> Result<ToolOutcome, ToolError> {
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _arguments: serde_json::Value,
+    ) -> Result<ToolOutcome, ToolError> {
         Ok(ToolOutcome::success("file contents"))
     }
 }

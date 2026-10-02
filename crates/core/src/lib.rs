@@ -23,7 +23,9 @@ pub mod turn;
 pub mod types;
 
 pub use session::{ActiveTurnGuard, Session, SessionState};
-pub use tools::{DuplicateTool, Tool, ToolDefinition, ToolError, ToolOutcome, ToolRegistry};
+pub use tools::{
+    DuplicateTool, Tool, ToolContext, ToolDefinition, ToolError, ToolOutcome, ToolRegistry,
+};
 pub use turn::{run_turn, TurnError, TurnResult};
 pub use types::{
     Event, EventSink, Op, ResponseItem, Role, SessionId, TurnEndReason, TurnId, TurnInput,

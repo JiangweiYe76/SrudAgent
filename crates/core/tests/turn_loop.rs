@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use futures::stream;
 use srud_core::client::{ModelClient, ModelError, ModelEvent, ModelRequest, ModelStream};
 use srud_core::session::Session;
-use srud_core::tools::{Tool, ToolError, ToolOutcome, ToolRegistry};
+use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use srud_core::types::{Event, EventSink, Op, ResponseItem, Role, TurnEndReason, TurnInput};
 use tokio_util::sync::CancellationToken;
 
@@ -96,7 +96,11 @@ impl Tool for Recorder0 {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({ "type": "object" })
     }
-    async fn call(&self, _arguments: serde_json::Value) -> Result<ToolOutcome, ToolError> {
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _arguments: serde_json::Value,
+    ) -> Result<ToolOutcome, ToolError> {
         *self.calls.lock().expect("calls lock") += 1;
         Ok(ToolOutcome::success("recorded"))
     }
@@ -492,4 +496,55 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
             index += 1;
         }
     }
+}
+
+#[tokio::test]
+async fn a_read_call_reaches_the_sessions_working_directory() {
+    let dir = std::env::temp_dir().join("srud-turn-loop-read");
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    std::fs::write(dir.join("note.txt"), "hello from the workspace\n").expect("fixture file");
+
+    let session = Session::new(dir.as_path());
+    let sink = Recorder::default();
+    let mut tools = ToolRegistry::new();
+    tools
+        .register(Arc::new(srud_core::tools::read::ReadTool))
+        .expect("unique name");
+    let client = Scripted::new(vec![
+        vec![
+            Ok(ModelEvent::ToolCall {
+                call_id: "c1".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"note.txt"}"#.into(),
+            }),
+            done(),
+        ],
+        vec![text("read it"), done()],
+    ]);
+
+    srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "read note.txt".into(),
+        },
+        client.as_ref(),
+        &tools,
+        &sink,
+    )
+    .await
+    .expect("turn runs");
+
+    let output = session
+        .state()
+        .history()
+        .iter()
+        .find_map(|item| match item {
+            ResponseItem::FunctionCallOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .expect("the tool output was recorded");
+    assert!(
+        output.contains("hello from the workspace"),
+        "a relative path resolved against the session's working directory: {output}"
+    );
 }

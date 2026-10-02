@@ -10,7 +10,7 @@ use crate::client::{ModelClient, ModelEvent, ModelRequest};
 use crate::context;
 use crate::prompt;
 use crate::session::Session;
-use crate::tools::{ToolError, ToolOutcome, ToolRegistry};
+use crate::tools::{ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use crate::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnId, TurnInput};
 
 /// What a finished turn produced.
@@ -224,7 +224,10 @@ async fn run_tool_call(
         arguments: arguments.clone(),
     });
 
-    let outcome = match tools.dispatch(&call.name, arguments).await {
+    let ctx = ToolContext {
+        cwd: session.cwd().to_path_buf(),
+    };
+    let outcome = match tools.dispatch(&call.name, &ctx, arguments).await {
         Ok(outcome) => outcome,
         Err(ToolError::NotFound(name)) => ToolOutcome::failure(format!("unknown tool: {name}")),
         Err(err) => ToolOutcome::failure(err.to_string()),
