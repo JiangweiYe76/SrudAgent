@@ -2,6 +2,7 @@
 // streaming updates folded into turns/steps, and turn completion.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Session } from './types';
+import { displayTitle } from './sessionStore';
 
 const mocks = vi.hoisted(() => ({
   invoke: async (_cmd: string, _args?: Record<string, unknown>): Promise<unknown> => {
@@ -41,11 +42,12 @@ const reply = (id: number, result: unknown) => ({ jsonrpc: '2.0', id, result });
 
 // Boots a fresh store with a scripted backend: handshake succeeds, and the
 // first `session/prompt` resolves only when the returned deferred settles.
-async function boot() {
+async function boot(options: { failDelete?: boolean } = {}) {
   vi.resetModules();
   mocks.notifyCb = null;
   const prompt = deferred<{ stopReason: string }>();
   const calls: string[] = [];
+  let created = 0;
   mocks.invoke = async (cmd, args) => {
     if (cmd === 'default_cwd') return '/work';
     if (cmd === 'rpc_request') {
@@ -55,10 +57,17 @@ async function boot() {
         case 'initialize':
           return reply(payload.id, { protocolVersion: 1, agentCapabilities: {} });
         case 'session/new':
-          return reply(payload.id, { sessionId: 'S1' });
+          // Distinct ids so a test can tell a fallback session from the first.
+          created += 1;
+          return reply(payload.id, { sessionId: `S${created}` });
         case 'session/prompt':
           return prompt.promise.then((r) => reply(payload.id, r));
         case 'session/cancel':
+          return reply(payload.id, {});
+        case '_srud/unstable/session/set_title':
+          return reply(payload.id, { title: 'Renamed' });
+        case 'session/delete':
+          if (options.failDelete) throw new Error('delete refused');
           return reply(payload.id, {});
       }
     }
@@ -95,6 +104,97 @@ describe('sessionStore live path', () => {
     expect(s.sessions).toHaveLength(1);
     expect(active().id).toBe('S1');
     expect(active().turns).toEqual([]);
+  });
+
+  it('takes the title the agent announces, with or without an open turn', async () => {
+    const { active, fire } = await boot();
+    // A session starts unnamed, so the UI shows the placeholder.
+    expect(active().title).toBeNull();
+    expect(displayTitle(active())).toBe('New session');
+
+    // The agent names the session on the first prompt, before any turn output.
+    fire({
+      sessionUpdate: 'session_info_update',
+      title: 'Why is the timestamp wrong?',
+    });
+    expect(active().title).toBe('Why is the timestamp wrong?');
+
+    // A later rename applies the same way, including a clear.
+    fire({ sessionUpdate: 'session_info_update', title: 'Chosen by hand' });
+    expect(active().title).toBe('Chosen by hand');
+    fire({ sessionUpdate: 'session_info_update', title: null });
+    expect(active().title).toBeNull();
+    expect(displayTitle(active())).toBe('New session');
+  });
+
+  it('a title update with no turn open still applies', async () => {
+    const { active, fire } = await boot();
+    // Regression guard: an update that needs no turn must not be dropped just
+    // because the session has none.
+    expect(active().turns).toEqual([]);
+    fire({ sessionUpdate: 'session_info_update', title: 'Named before any turn' });
+    expect(active().title).toBe('Named before any turn');
+  });
+
+  it('renaming asks the agent and leaves the local title to its reply', async () => {
+    const { useSessionStore, active, fire, calls } = await boot();
+    fire({ sessionUpdate: 'session_info_update', title: 'Derived' });
+
+    useSessionStore.getState().renameSession('S1', '  Chosen by hand  ');
+    await vi.waitFor(() => {
+      expect(calls).toContain('_srud/unstable/session/set_title');
+    });
+    // The agent echoes the accepted title back; nothing is written locally.
+    expect(active().title).toBe('Derived');
+  });
+
+  it('deletes a session and falls back to another', async () => {
+    const { useSessionStore, calls } = await boot();
+    useSessionStore.getState().addSession();
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().sessions).toHaveLength(2);
+    });
+    const [newest, older] = useSessionStore.getState().sessions.map((s) => s.id);
+    expect(useSessionStore.getState().activeId).toBe(newest);
+
+    useSessionStore.getState().deleteSession(newest);
+    await vi.waitFor(() => {
+      expect(calls).toContain('session/delete');
+      expect(useSessionStore.getState().sessions).toHaveLength(1);
+    });
+    // Deleting the session on screen moves the view to what is left.
+    expect(useSessionStore.getState().sessions[0].id).toBe(older);
+    expect(useSessionStore.getState().activeId).toBe(older);
+  });
+
+  it('deleting the last session opens a fresh one', async () => {
+    const { useSessionStore, calls } = await boot();
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
+    const only = useSessionStore.getState().sessions[0].id;
+
+    useSessionStore.getState().deleteSession(only);
+    // Wait for the agent's reply before asserting on the list: it already holds
+    // one session beforehand, so a length check alone would pass immediately.
+    await vi.waitFor(() => {
+      expect(calls).toContain('session/delete');
+      expect(useSessionStore.getState().sessions[0].id).not.toBe(only);
+    });
+    // An empty sidebar would be a dead end, so a replacement is opened.
+    const replacement = useSessionStore.getState().sessions[0].id;
+    expect(replacement).not.toBe(only);
+    expect(useSessionStore.getState().activeId).toBe(replacement);
+    expect(calls).toContain('session/new');
+  });
+
+  it('keeps a session visible when the agent refuses the delete', async () => {
+    const { useSessionStore } = await boot({ failDelete: true });
+    useSessionStore.getState().deleteSession('S1');
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().initError).toContain('delete refused');
+    });
+    // The row is dropped only after the agent agrees, so a failed delete loses
+    // nothing.
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
   });
 
   it('streams agent text into the open turn and closes it on prompt completion', async () => {

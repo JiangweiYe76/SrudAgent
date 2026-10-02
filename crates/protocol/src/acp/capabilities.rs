@@ -23,7 +23,12 @@ use crate::acp::{
 /// The `_srud/unstable/session/*` extension method names. They are not
 /// advertised in `agentCapabilities._meta`; calls to them answer
 /// `METHOD_NOT_FOUND`.
-pub const SRUD_UNSTABLE_METHODS: &[&str] = &["sessionFork", "sessionSteer", "rolloutRead"];
+pub const SRUD_UNSTABLE_METHODS: &[&str] = &[
+    "sessionFork",
+    "sessionSteer",
+    "rolloutRead",
+    "sessionSetTitle",
+];
 
 /// SrudAgent's agent-side capabilities.
 #[must_use]
@@ -95,10 +100,11 @@ mod tests {
     }
 
     #[test]
-    fn unstable_method_names_cover_fork_steer_and_rollout() {
-        assert_eq!(SRUD_UNSTABLE_METHODS.len(), 3);
+    fn unstable_method_names_cover_fork_steer_rollout_and_set_title() {
+        assert_eq!(SRUD_UNSTABLE_METHODS.len(), 4);
         assert!(SRUD_UNSTABLE_METHODS.contains(&"sessionFork"));
         assert!(SRUD_UNSTABLE_METHODS.contains(&"sessionSteer"));
         assert!(SRUD_UNSTABLE_METHODS.contains(&"rolloutRead"));
+        assert!(SRUD_UNSTABLE_METHODS.contains(&"sessionSetTitle"));
     }
 }

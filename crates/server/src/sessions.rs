@@ -16,6 +16,23 @@ use srud_protocol::acp::{SessionId, SessionInfo};
 struct Tracked {
     session: Arc<Session>,
     cwd: PathBuf,
+    /// The agent's display title. `None` until the first prompt names the
+    /// session, or until a client renames it.
+    title: Option<String>,
+}
+
+/// Collapses a candidate title to a single line, or drops it when it holds no
+/// visible characters.
+///
+/// Titles are rendered in a single-line sidebar row, so embedded newlines and
+/// runs of whitespace would be truncated into something meaningless.
+fn normalise_title(title: &str) -> Option<String> {
+    let collapsed = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed)
+    }
 }
 
 /// A registry of live sessions, keyed by their wire id.
@@ -38,8 +55,62 @@ impl SessionManager {
         self.sessions
             .lock()
             .expect("session map lock poisoned")
-            .insert(id.to_string(), Tracked { session, cwd });
+            .insert(
+                id.to_string(),
+                Tracked {
+                    session,
+                    cwd,
+                    title: None,
+                },
+            );
         id
+    }
+
+    /// Sets a session's display title, returning whether the session existed.
+    ///
+    /// An empty or whitespace-only title clears it, returning the session to its
+    /// unnamed state.
+    pub fn set_title(&self, id: &SessionId, title: &str) -> bool {
+        let title = normalise_title(title);
+        let mut sessions = self.sessions.lock().expect("session map lock poisoned");
+        let Some(tracked) = sessions.get_mut(id.0.as_ref()) else {
+            return false;
+        };
+        tracked.title = title;
+        true
+    }
+
+    /// Names a session only while it is still unnamed, returning whether the
+    /// session now has the given title.
+    ///
+    /// Returns `false` if the session is unknown, already named, or the title
+    /// holds nothing visible. This is how the first prompt claims the title
+    /// without a later prompt overwriting a name the user has since chosen.
+    /// Deciding and writing under one lock keeps two concurrent prompts from
+    /// both believing they won.
+    pub fn name_if_unnamed(&self, id: &SessionId, title: &str) -> bool {
+        let Some(title) = normalise_title(title) else {
+            return false;
+        };
+        let mut sessions = self.sessions.lock().expect("session map lock poisoned");
+        let Some(tracked) = sessions.get_mut(id.0.as_ref()) else {
+            return false;
+        };
+        if tracked.title.is_some() {
+            return false;
+        }
+        tracked.title = Some(title);
+        true
+    }
+
+    /// Reads a session's display title, if it has one.
+    #[must_use]
+    pub fn title(&self, id: &SessionId) -> Option<String> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .and_then(|tracked| tracked.title.clone())
     }
 
     /// Looks up a session's runtime handle by wire id.
@@ -70,7 +141,7 @@ impl SessionManager {
             .iter()
             .map(|(id, tracked)| {
                 let mut info = SessionInfo::new(SessionId::new(id.clone()), tracked.cwd.clone());
-                info.title = None;
+                info.title = tracked.title.clone();
                 info.updated_at = None;
                 info
             })
@@ -118,6 +189,66 @@ mod tests {
         assert!(manager.remove(&id));
         assert!(!manager.remove(&id), "a second removal finds nothing");
         assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn a_new_session_has_no_title() {
+        let manager = SessionManager::new();
+        let id = manager.create(PathBuf::from("/tmp/a"));
+        assert_eq!(manager.title(&id), None);
+        assert!(manager.list()[0].title.is_none());
+    }
+
+    #[test]
+    fn name_if_unnamed_only_the_first_caller_wins() {
+        let manager = SessionManager::new();
+        let id = manager.create(PathBuf::from("/tmp/a"));
+        assert!(manager.name_if_unnamed(&id, "first message"));
+        // A later prompt must not clobber the name the session already has.
+        assert!(!manager.name_if_unnamed(&id, "second message"));
+        assert_eq!(manager.title(&id).as_deref(), Some("first message"));
+    }
+
+    #[test]
+    fn set_title_overwrites_and_reports_unknown_ids() {
+        let manager = SessionManager::new();
+        let id = manager.create(PathBuf::from("/tmp/a"));
+        assert!(manager.name_if_unnamed(&id, "derived"));
+        assert!(manager.set_title(&id, "chosen by the user"));
+        assert_eq!(manager.title(&id).as_deref(), Some("chosen by the user"));
+        assert!(!manager.set_title(&SessionId::new("nope"), "x"));
+    }
+
+    #[test]
+    fn a_blank_title_clears_the_name() {
+        let manager = SessionManager::new();
+        let id = manager.create(PathBuf::from("/tmp/a"));
+        manager.name_if_unnamed(&id, "named");
+        assert!(manager.set_title(&id, "   \n  "));
+        assert_eq!(manager.title(&id), None);
+        // Cleared means unnamed, so the next prompt may name it again.
+        assert!(manager.name_if_unnamed(&id, "named again"));
+    }
+
+    #[test]
+    fn titles_collapse_to_a_single_line() {
+        let manager = SessionManager::new();
+        let id = manager.create(PathBuf::from("/tmp/a"));
+        manager.set_title(&id, "  fix   the\n\n  timestamp  ");
+        assert_eq!(manager.title(&id).as_deref(), Some("fix the timestamp"));
+    }
+
+    #[test]
+    fn list_reports_the_title() {
+        let manager = SessionManager::new();
+        let named = manager.create(PathBuf::from("/tmp/a"));
+        manager.set_title(&named, "Named session");
+        let listed = manager.list();
+        let titled = listed
+            .iter()
+            .find(|info| info.session_id == named)
+            .expect("the named session is listed");
+        assert_eq!(titled.title.as_deref(), Some("Named session"));
     }
 
     #[test]

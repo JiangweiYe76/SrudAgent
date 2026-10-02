@@ -94,5 +94,10 @@ pub use acp_schema::v1::{
 // Extensibility primitives: `_meta` and arbitrary extension messages.
 pub use acp_schema::v1::{ExtNotification, ExtRequest, ExtResponse, Meta};
 
+// `MaybeUndefined` distinguishes "field absent" from "field explicitly null",
+// which `SessionInfoUpdate` needs in order to clear a title without erasing the
+// other fields of a partial update.
+pub use acp_schema::MaybeUndefined;
+
 // JSON-RPC error object and codes.
 pub use acp_schema::v1::{Error as AcpError, ErrorCode};
