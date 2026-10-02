@@ -135,30 +135,21 @@ async fn rpc_request(
 }
 
 /// The working directory new sessions are created with: the directory the
-/// app was launched from, falling back to the home directory.
+/// app was launched from, falling back to the user's home directory.
 #[tauri::command]
 fn default_cwd() -> String {
     std::env::current_dir()
-        .or_else(|_| home_dir())
+        .ok()
+        .or_else(config::user_home)
         .map(|path| path.display().to_string())
-        .unwrap_or_else(|_| ".".to_owned())
-}
-
-/// The user's home directory.
-///
-/// The variable is named differently per platform: `HOME` on Unix,
-/// `USERPROFILE` on Windows.
-fn home_dir() -> Result<PathBuf, std::env::VarError> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
+        .unwrap_or_else(|| ".".to_owned())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     load_env_file();
-    // Reported, not fatal: nothing reads the directory yet, so a home that
-    // cannot be written to is worth saying out loud and no more.
+    // Reported, not fatal: the app still runs without it, and the first session
+    // that needs a workspace will say so itself.
     if let Err(error) = config::ensure() {
         eprintln!("{error}");
     }
@@ -237,7 +228,16 @@ mod tests {
     }
 
     /// Opens a session on a configured agent, returning its id.
+    ///
+    /// The agent settles the session's workspace from the configuration
+    /// directory, so `SRUD_HOME` is pointed at a directory of this binary's own:
+    /// a test must not write into the developer's home.
     async fn open_session(agent: &Agent) -> String {
+        static CONFIG_HOME: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        CONFIG_HOME.get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("srud-desktop-{}", std::process::id()));
+            std::env::set_var(config::HOME_VAR, path);
+        });
         agent
             .handle(req(
                 "initialize",

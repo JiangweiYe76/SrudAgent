@@ -165,11 +165,11 @@ impl Agent {
     }
 
     fn handle_new_session(&self, params: Value) -> Result<NewSessionResponse, AcpError> {
-        // Parsed for validation only: the session's working directory is the
-        // workspace this agent creates for it, not the directory the client
-        // happens to have open.
         let _request: NewSessionRequest = parse_params(params)?;
-        let session_id = self.sessions.create().map_err(|err| {
+        // The client names no workspace yet, so every session gets one of its
+        // own. `SessionManager::create` takes the client's directory when one
+        // arrives.
+        let session_id = self.sessions.create(None).map_err(|err| {
             AcpError::new(
                 INTERNAL_ERROR,
                 format!("could not create the session workspace: {err}"),
@@ -501,6 +501,15 @@ mod tests {
     }
 
     async fn new_session(agent: &Agent) -> SessionId {
+        // The workspace is settled from the configuration directory, which is
+        // read from the environment. Holding the environment and pointing it at
+        // a directory of this test's own keeps the session off the developer's
+        // home and off whatever another test left behind.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-agent"),
+        );
         let reply = agent
             .handle(request(
                 SESSION_NEW,

@@ -1,8 +1,9 @@
 //! The configuration directory.
 //!
-//! One directory holds everything the agent reads from the machine it runs on.
-//! `SRUD_HOME` names it outright; otherwise it is `.srudagent` inside the user's
-//! home. It is created at startup and is empty until something is put in it.
+//! One directory holds everything the agent reads from and writes to on the
+//! machine it runs on. `SRUD_HOME` names it outright; otherwise it is
+//! `.srudagent` inside the user's home. It is created at startup, and holds a
+//! `workspaces/` directory of one workspace per session.
 
 use std::path::PathBuf;
 
@@ -44,18 +45,20 @@ pub enum ConfigError {
 /// same as omitting it.
 #[must_use]
 pub fn home() -> Option<PathBuf> {
-    env_path(HOME_VAR).or_else(|| {
-        env_path(UNIX_HOME_VAR)
-            .or_else(|| env_path(WINDOWS_HOME_VAR))
-            .map(|user_home| user_home.join(DIR_NAME))
-    })
+    env_path(HOME_VAR).or_else(|| user_home().map(|user_home| user_home.join(DIR_NAME)))
+}
+
+/// The user's home directory, whichever variable names it on this platform.
+#[must_use]
+pub fn user_home() -> Option<PathBuf> {
+    env_path(UNIX_HOME_VAR).or_else(|| env_path(WINDOWS_HOME_VAR))
 }
 
 /// The configuration directory, created if it is not there yet.
 ///
-/// Creating it here rather than on first write keeps the "no settings" case and
-/// the "settings exist" case on the same footing: the directory is always there,
-/// so whatever writes into it does not have to create its own parent.
+/// Creating it here rather than on first write means a directory that cannot be
+/// written to is reported at startup, instead of surfacing later as whatever
+/// write happened to fail.
 ///
 /// # Errors
 ///
@@ -81,61 +84,39 @@ fn env_path(name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use std::env;
+
+    use crate::test_env::{self, Guard};
 
     use super::*;
 
-    /// The variables are process-global, so these tests take a lock to keep
-    /// from stepping on each other.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Keeps each temporary directory to itself.
-    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+    /// The variables that decide where the configuration directory lives.
+    const NAMES: &[&str] = &[HOME_VAR, UNIX_HOME_VAR, WINDOWS_HOME_VAR];
 
     /// Puts the environment into a known state and returns a directory standing
     /// in for the user's home, so the default location is the one under test.
-    fn with_user_home() -> (PathBuf, EnvGuard) {
-        let guard = EnvGuard::take();
-        std::env::remove_var(HOME_VAR);
-        let unique = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
-        let user_home =
-            std::env::temp_dir().join(format!("srud-config-{}-{unique}", std::process::id()));
-        std::fs::create_dir_all(&user_home).expect("a temporary directory");
-        std::env::set_var(UNIX_HOME_VAR, &user_home);
+    fn with_user_home() -> (PathBuf, Guard) {
+        let guard = Guard::take(NAMES);
+        env::remove_var(HOME_VAR);
+        let user_home = test_env::unique_dir("srud-config");
+        env::set_var(UNIX_HOME_VAR, &user_home);
         (user_home, guard)
     }
 
-    /// Restores the environment variables these tests touch.
-    struct EnvGuard {
-        saved: Vec<(&'static str, Option<String>)>,
-    }
-
-    impl EnvGuard {
-        fn take() -> Self {
-            let names = [HOME_VAR, UNIX_HOME_VAR, WINDOWS_HOME_VAR];
-            let saved = names
-                .iter()
-                .map(|name| (*name, std::env::var(name).ok()))
-                .collect();
-            Self { saved }
+    #[test]
+    fn a_blank_user_home_counts_as_no_user_home() {
+        let _env = Guard::take(NAMES);
+        for name in NAMES {
+            env::remove_var(name);
         }
-    }
+        env::set_var(UNIX_HOME_VAR, "  ");
 
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (name, value) in self.saved.drain(..) {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
+        assert_eq!(user_home(), None, "an empty line is not a path");
+        assert_eq!(home(), None);
     }
 
     #[test]
     fn without_the_override_the_directory_is_under_the_user_home() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let (user_home, _env) = with_user_home();
 
         assert_eq!(home(), Some(user_home.join(DIR_NAME)));
@@ -143,11 +124,10 @@ mod tests {
 
     #[test]
     fn the_override_variable_names_the_directory_directly() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        let _env = EnvGuard::take();
-        let explicit = std::env::temp_dir().join("srud-config-explicit");
-        std::env::set_var(HOME_VAR, &explicit);
-        std::env::set_var(UNIX_HOME_VAR, "/home/someone");
+        let _env = Guard::take(NAMES);
+        let explicit = env::temp_dir().join("srud-config-explicit");
+        env::set_var(HOME_VAR, &explicit);
+        env::set_var(UNIX_HOME_VAR, "/home/someone");
 
         assert_eq!(
             home(),
@@ -158,10 +138,9 @@ mod tests {
 
     #[test]
     fn a_blank_override_is_no_override() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        let _env = EnvGuard::take();
-        std::env::set_var(HOME_VAR, "   ");
-        std::env::set_var(UNIX_HOME_VAR, "/home/someone");
+        let _env = Guard::take(NAMES);
+        env::set_var(HOME_VAR, "   ");
+        env::set_var(UNIX_HOME_VAR, "/home/someone");
 
         assert_eq!(
             home(),
@@ -172,7 +151,6 @@ mod tests {
 
     #[test]
     fn the_directory_is_created_when_it_is_missing() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let (user_home, _env) = with_user_home();
 
         let path = ensure().expect("the directory can be created");
@@ -183,7 +161,6 @@ mod tests {
 
     #[test]
     fn creating_it_twice_leaves_the_same_directory() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let (_user_home, _env) = with_user_home();
         // A marker stands in for whatever the directory holds once it is used.
         std::fs::write(ensure().expect("created").join("marker"), "kept").expect("marker");
@@ -199,16 +176,9 @@ mod tests {
 
     #[test]
     fn the_override_is_created_even_where_nothing_exists_yet() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        let _env = EnvGuard::take();
-        let unique = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
-        let nested = std::env::temp_dir()
-            .join(format!(
-                "srud-config-nested-{}-{unique}",
-                std::process::id()
-            ))
-            .join("deeper");
-        std::env::set_var(HOME_VAR, &nested);
+        let _env = Guard::take(NAMES);
+        let nested = test_env::unique_dir("srud-config-nested").join("deeper");
+        env::set_var(HOME_VAR, &nested);
 
         let path = ensure().expect("the whole path is created");
 
@@ -218,11 +188,10 @@ mod tests {
 
     #[test]
     fn no_home_directory_at_all_is_reported() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        let _env = EnvGuard::take();
-        std::env::remove_var(HOME_VAR);
-        std::env::remove_var(UNIX_HOME_VAR);
-        std::env::remove_var(WINDOWS_HOME_VAR);
+        let _env = Guard::take(NAMES);
+        for name in NAMES {
+            env::remove_var(name);
+        }
 
         assert_eq!(home(), None);
         assert!(matches!(ensure(), Err(ConfigError::NoHome)));
