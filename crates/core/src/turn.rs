@@ -7,9 +7,10 @@
 use futures::StreamExt;
 
 use crate::client::{ModelClient, ModelEvent, ModelRequest};
+use crate::context;
 use crate::prompt;
 use crate::session::Session;
-use crate::tools::{ToolError, ToolOutcome, ToolRegistry};
+use crate::tools::{ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use crate::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnId, TurnInput};
 
 /// What a finished turn produced.
@@ -44,7 +45,12 @@ pub async fn run_turn(
 
     sink.emit(Event::TurnStarted { turn_id });
 
-    // The user's input is recorded first so every later request carries it.
+    // Where and when this turn runs is recorded ahead of the user's own words,
+    // so the model reads its context before the request it has to answer. No
+    // event is emitted for it: it is context, not something the user said.
+    session.state().push(context::item(session.cwd()));
+
+    // The user's input is recorded next so every later request carries it.
     let user_item = prompt::user_item(&input.text);
     session.state().push(user_item.clone());
     sink.emit(Event::UserMessage {
@@ -218,7 +224,10 @@ async fn run_tool_call(
         arguments: arguments.clone(),
     });
 
-    let outcome = match tools.dispatch(&call.name, arguments).await {
+    let ctx = ToolContext {
+        cwd: session.cwd().to_path_buf(),
+    };
+    let outcome = match tools.dispatch(&call.name, &ctx, arguments).await {
         Ok(outcome) => outcome,
         Err(ToolError::NotFound(name)) => ToolOutcome::failure(format!("unknown tool: {name}")),
         Err(err) => ToolOutcome::failure(err.to_string()),

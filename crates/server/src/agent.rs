@@ -42,7 +42,8 @@ use srud_protocol::acp::{
     CLIENT_METHOD_NAMES,
 };
 use srud_protocol::error::{
-    INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_BUSY, SESSION_NOT_FOUND,
+    INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_BUSY,
+    SESSION_NOT_FOUND,
 };
 use srud_protocol::srud::methods::{SetSessionTitleRequest, SetSessionTitleResponse};
 use srud_protocol::srud::turn_end::TurnEndWire;
@@ -164,8 +165,16 @@ impl Agent {
     }
 
     fn handle_new_session(&self, params: Value) -> Result<NewSessionResponse, AcpError> {
-        let request: NewSessionRequest = parse_params(params)?;
-        let session_id = self.sessions.create(request.cwd);
+        // Parsed for validation only: the session's working directory is the
+        // workspace this agent creates for it, not the directory the client
+        // happens to have open.
+        let _request: NewSessionRequest = parse_params(params)?;
+        let session_id = self.sessions.create().map_err(|err| {
+            AcpError::new(
+                INTERNAL_ERROR,
+                format!("could not create the session workspace: {err}"),
+            )
+        })?;
         Ok(NewSessionResponse::new(session_id))
     }
 
@@ -362,7 +371,6 @@ mod tests {
     };
     use srud_protocol::acp::TextContent;
     use srud_protocol::acp::AGENT_METHOD_NAMES;
-    use srud_protocol::error::INTERNAL_ERROR;
     use srud_protocol::transport::tauri::RpcRequest;
     use tokio_util::sync::CancellationToken;
 
@@ -569,7 +577,19 @@ mod tests {
         assert!(!id.0.is_empty());
         let listed = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
         assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
-        assert_eq!(listed["sessions"][0]["cwd"], json!("/tmp/srud-test"));
+        // The session works in the workspace created for it, named by its id —
+        // not in the directory the client sent.
+        let cwd = listed["sessions"][0]["cwd"]
+            .as_str()
+            .expect("the session reports a working directory");
+        assert!(
+            cwd.ends_with(id.0.as_ref()),
+            "the workspace is named by the session id: {cwd}"
+        );
+        assert!(
+            std::path::Path::new(cwd).is_dir(),
+            "the workspace exists: {cwd}"
+        );
     }
 
     #[tokio::test]

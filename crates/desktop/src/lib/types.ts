@@ -32,6 +32,10 @@ export interface Turn {
 
 export interface Session {
   id: string;
+  // The backend session id, once the draft has been materialized by the first
+  // message. Null until then: clicks alone create no backend session and no
+  // workspace directory.
+  backendId: string | null;
   // The agent's title, from the first message or a user rename. Absent until
   // the agent announces one.
   title: string | null;

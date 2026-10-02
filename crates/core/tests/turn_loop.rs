@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use futures::stream;
 use srud_core::client::{ModelClient, ModelError, ModelEvent, ModelRequest, ModelStream};
 use srud_core::session::Session;
-use srud_core::tools::{Tool, ToolError, ToolOutcome, ToolRegistry};
+use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use srud_core::types::{Event, EventSink, Op, ResponseItem, Role, TurnEndReason, TurnInput};
 use tokio_util::sync::CancellationToken;
 
@@ -96,7 +96,11 @@ impl Tool for Recorder0 {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({ "type": "object" })
     }
-    async fn call(&self, _arguments: serde_json::Value) -> Result<ToolOutcome, ToolError> {
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _arguments: serde_json::Value,
+    ) -> Result<ToolOutcome, ToolError> {
         *self.calls.lock().expect("calls lock") += 1;
         Ok(ToolOutcome::success("recorded"))
     }
@@ -123,9 +127,15 @@ fn done() -> Result<ModelEvent, ModelError> {
     Ok(ModelEvent::Done)
 }
 
+/// A session working in a placeholder directory. The turn loop never touches
+/// the filesystem, so this directory does not have to exist.
+fn session() -> Session {
+    Session::new("workspace")
+}
+
 #[tokio::test]
 async fn a_plain_exchange_records_history_and_emits_in_order() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
     let client = Scripted::new(vec![vec![text("Hel"), text("lo"), done()]]);
@@ -154,20 +164,71 @@ async fn a_plain_exchange_records_history_and_emits_in_order() {
 
     let state = session.state();
     let history = state.history();
-    assert_eq!(history.len(), 2, "user input plus one assistant message");
+    assert_eq!(
+        history.len(),
+        3,
+        "env-context, then user input, then one assistant message"
+    );
+    assert!(srud_core::context::is_item(&history[0]));
     assert!(matches!(
-        &history[0],
+        &history[1],
         ResponseItem::Message { role: Role::User, content } if content == "hi"
     ));
     assert!(matches!(
-        &history[1],
+        &history[2],
         ResponseItem::Message { role: Role::Assistant, content } if content == "Hello"
     ));
 }
 
 #[tokio::test]
+async fn env_context_leads_the_turn_without_being_announced() {
+    let session = session();
+    let sink = Recorder::default();
+    let (tools, _calls) = tool_registry();
+    let client = Scripted::new(vec![vec![done()]]);
+
+    srud_core::run_turn(
+        &session,
+        TurnInput { text: "hi".into() },
+        client.as_ref(),
+        &tools,
+        &sink,
+    )
+    .await
+    .expect("turn runs");
+
+    // The model reads where and when the turn runs before it reads the request.
+    let requests = client.requests();
+    let Some(srud_core::client::ModelRequestItem::Message { role, content }) =
+        requests[0].items.first()
+    else {
+        panic!("the first request item is a message");
+    };
+    assert_eq!(*role, Role::User);
+    assert!(
+        content.starts_with(srud_core::context::OPEN_TAG)
+            && content.ends_with(srud_core::context::CLOSE_TAG),
+        "the block is the first thing the model reads: {content}"
+    );
+    assert!(
+        content.contains("<cwd>workspace</cwd>"),
+        "the block names the working directory: {content}"
+    );
+    assert!(
+        content.contains("<date>"),
+        "the block carries the local date and time: {content}"
+    );
+
+    // It is context, not something the user said, so nothing announces it.
+    assert_eq!(
+        sink.kinds(),
+        vec!["TurnStarted", "UserMessage", "TurnComplete"]
+    );
+}
+
+#[tokio::test]
 async fn a_tool_call_round_trips_and_drives_a_second_request() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, calls) = tool_registry();
     let client = Scripted::new(vec![
@@ -207,7 +268,8 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
         ]
     );
 
-    // The second request must carry the tool call and its output, in order.
+    // The second request must carry the env-context block, the user's input,
+    // and then the tool call and its output, in order.
     let requests = client.requests();
     assert_eq!(requests.len(), 2);
     let second = &requests[1];
@@ -224,12 +286,12 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
             srud_core::client::ModelRequestItem::FunctionCallOutput { .. } => "output",
         })
         .collect();
-    assert_eq!(kinds, vec!["user", "call", "output"]);
+    assert_eq!(kinds, vec!["user", "user", "call", "output"]);
 }
 
 #[tokio::test]
 async fn exactly_one_terminator_is_emitted_when_the_model_fails() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
     let client = Scripted::new(vec![vec![Err(ModelError::Transport("boom".into()))]]);
@@ -255,7 +317,7 @@ async fn exactly_one_terminator_is_emitted_when_the_model_fails() {
 
 #[tokio::test]
 async fn a_model_that_never_signals_completion_is_an_error() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
     // The stream ends after a delta without a `Done`.
@@ -282,7 +344,7 @@ async fn a_model_that_never_signals_completion_is_an_error() {
 
 #[tokio::test]
 async fn an_unknown_tool_becomes_a_failed_outcome_not_a_crash() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
     let client = Scripted::new(vec![
@@ -320,7 +382,7 @@ async fn an_unknown_tool_becomes_a_failed_outcome_not_a_crash() {
 
 #[tokio::test]
 async fn a_second_concurrent_turn_is_refused() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
 
@@ -348,7 +410,7 @@ async fn a_second_concurrent_turn_is_refused() {
 
 #[tokio::test]
 async fn interrupting_before_the_first_step_stops_the_turn() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
 
@@ -385,7 +447,7 @@ async fn op_values_are_constructible() {
 
 #[tokio::test]
 async fn history_stays_consistent_when_several_tools_run_in_one_step() {
-    let session = Session::new();
+    let session = session();
     let sink = Recorder::default();
     let (tools, calls) = tool_registry();
     let client = Scripted::new(vec![
@@ -434,4 +496,55 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
             index += 1;
         }
     }
+}
+
+#[tokio::test]
+async fn a_read_call_reaches_the_sessions_working_directory() {
+    let dir = std::env::temp_dir().join("srud-turn-loop-read");
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    std::fs::write(dir.join("note.txt"), "hello from the workspace\n").expect("fixture file");
+
+    let session = Session::new(dir.as_path());
+    let sink = Recorder::default();
+    let mut tools = ToolRegistry::new();
+    tools
+        .register(Arc::new(srud_core::tools::read::ReadTool))
+        .expect("unique name");
+    let client = Scripted::new(vec![
+        vec![
+            Ok(ModelEvent::ToolCall {
+                call_id: "c1".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"note.txt"}"#.into(),
+            }),
+            done(),
+        ],
+        vec![text("read it"), done()],
+    ]);
+
+    srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "read note.txt".into(),
+        },
+        client.as_ref(),
+        &tools,
+        &sink,
+    )
+    .await
+    .expect("turn runs");
+
+    let output = session
+        .state()
+        .history()
+        .iter()
+        .find_map(|item| match item {
+            ResponseItem::FunctionCallOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .expect("the tool output was recorded");
+    assert!(
+        output.contains("hello from the workspace"),
+        "a relative path resolved against the session's working directory: {output}"
+    );
 }

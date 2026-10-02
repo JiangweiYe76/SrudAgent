@@ -1,14 +1,25 @@
 //! Tool definitions and dispatch.
 //!
-//! A tool is a pure function of its arguments: it does not hold a session and
-//! cannot append to history. A tool that ran and failed returns
-//! [`ToolOutcome::failure`]; an `Err` means the runtime itself could not
-//! proceed.
+//! A tool is a pure function of its arguments and the context it is handed: it
+//! does not hold a session and cannot append to history. A tool that ran and
+//! failed returns [`ToolOutcome::failure`]; an `Err` means the runtime itself
+//! could not proceed.
+
+pub mod read;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+
+/// What a tool needs to know about the run it is part of.
+#[derive(Debug, Clone)]
+pub struct ToolContext {
+    /// The session's working directory. A tool that takes a relative path
+    /// resolves it against this.
+    pub cwd: PathBuf,
+}
 
 /// What a tool produced.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +84,11 @@ pub trait Tool: Send + Sync {
     /// Runs the tool.
     ///
     /// Returns [`ToolOutcome::failure`] for expected failures.
-    async fn call(&self, arguments: serde_json::Value) -> Result<ToolOutcome, ToolError>;
+    async fn call(
+        &self,
+        ctx: &ToolContext,
+        arguments: serde_json::Value,
+    ) -> Result<ToolOutcome, ToolError>;
 }
 
 /// A description of a tool, used when building a model request.
@@ -189,13 +204,14 @@ impl ToolRegistry {
     pub async fn dispatch(
         &self,
         name: &str,
+        ctx: &ToolContext,
         arguments: serde_json::Value,
     ) -> Result<ToolOutcome, ToolError> {
         let tool = self
             .tools
             .get(name)
             .ok_or_else(|| ToolError::NotFound(name.to_owned()))?;
-        tool.call(arguments).await
+        tool.call(ctx, arguments).await
     }
 }
 
@@ -220,7 +236,11 @@ mod tests {
                 "required": ["text"],
             })
         }
-        async fn call(&self, arguments: serde_json::Value) -> Result<ToolOutcome, ToolError> {
+        async fn call(
+            &self,
+            _ctx: &ToolContext,
+            arguments: serde_json::Value,
+        ) -> Result<ToolOutcome, ToolError> {
             match arguments.get("text").and_then(|v| v.as_str()) {
                 Some(text) => Ok(ToolOutcome::success(text)),
                 None => Err(ToolError::InvalidArguments {
@@ -228,6 +248,13 @@ mod tests {
                     message: "missing `text`".into(),
                 }),
             }
+        }
+    }
+
+    /// The context these tests hand to tools; none of them look at it.
+    fn ctx() -> ToolContext {
+        ToolContext {
+            cwd: PathBuf::from("workspace"),
         }
     }
 
@@ -241,7 +268,7 @@ mod tests {
     async fn dispatches_to_a_registered_tool() {
         let registry = registry();
         let outcome = registry
-            .dispatch("echo", serde_json::json!({ "text": "hi" }))
+            .dispatch("echo", &ctx(), serde_json::json!({ "text": "hi" }))
             .await
             .expect("registered");
         assert_eq!(outcome.output, "hi");
@@ -252,7 +279,7 @@ mod tests {
     async fn unknown_tool_is_a_runtime_error() {
         let registry = registry();
         let err = registry
-            .dispatch("nope", serde_json::json!({}))
+            .dispatch("nope", &ctx(), serde_json::json!({}))
             .await
             .expect_err("unregistered");
         assert!(matches!(err, ToolError::NotFound(name) if name == "nope"));
@@ -262,7 +289,7 @@ mod tests {
     async fn bad_arguments_surface_from_the_tool() {
         let registry = registry();
         let err = registry
-            .dispatch("echo", serde_json::json!({}))
+            .dispatch("echo", &ctx(), serde_json::json!({}))
             .await
             .expect_err("missing text");
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
@@ -289,7 +316,11 @@ mod tests {
             fn parameters(&self) -> serde_json::Value {
                 serde_json::json!({ "type": "object" })
             }
-            async fn call(&self, _a: serde_json::Value) -> Result<ToolOutcome, ToolError> {
+            async fn call(
+                &self,
+                _ctx: &ToolContext,
+                _arguments: serde_json::Value,
+            ) -> Result<ToolOutcome, ToolError> {
                 Ok(ToolOutcome::success(""))
             }
         }

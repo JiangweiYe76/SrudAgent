@@ -14,7 +14,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use srud_client::openai::ChatClient;
 use srud_core::client::ModelClient;
-use srud_core::tools::ToolRegistry;
+use srud_core::tools::{read::ReadTool, ToolRegistry};
 use srud_protocol::acp::{AcpError, JsonRpcMessage, Notification, Response, SessionNotification};
 use srud_protocol::error::INTERNAL_ERROR;
 use srud_protocol::transport::tauri::{NotifyBody, RpcNotify, RpcRequest, RPC_NOTIFY_EVENT};
@@ -63,7 +63,11 @@ fn load_env_file() {
 fn build_agent() -> Option<Arc<Agent>> {
     let model = ChatClient::from_env().ok()?;
     let model: Arc<dyn ModelClient> = Arc::new(model);
-    Some(Arc::new(Agent::new(model, Arc::new(ToolRegistry::new()))))
+    let mut tools = ToolRegistry::new();
+    tools
+        .register(Arc::new(ReadTool))
+        .expect("the registry is fresh");
+    Some(Arc::new(Agent::new(model, Arc::new(tools))))
 }
 
 /// Builds the `rpc_notify` payload for one agent notification.

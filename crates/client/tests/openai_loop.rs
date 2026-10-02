@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use srud_client::openai::{ChatClient, ClientConfig, ResponsesClient};
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
-use srud_core::tools::{Tool, ToolError, ToolOutcome, ToolRegistry};
+use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use srud_core::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnInput};
 
 /// Records events so the test can assert on order.
@@ -36,7 +36,11 @@ impl Tool for Static {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({ "type": "object" })
     }
-    async fn call(&self, _arguments: serde_json::Value) -> Result<ToolOutcome, ToolError> {
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _arguments: serde_json::Value,
+    ) -> Result<ToolOutcome, ToolError> {
         Ok(ToolOutcome::success("file contents"))
     }
 }
@@ -49,7 +53,7 @@ fn unreachable() -> ClientConfig {
 /// Runs a turn against a client that cannot connect, asserting the loop reports
 /// the failure instead of panicking.
 async fn assert_fails_cleanly(client: &dyn ModelClient) {
-    let session = Session::new();
+    let session = Session::new("workspace");
     let sink = Recorder::default();
     let mut tools = ToolRegistry::new();
     assert!(tools.register(Arc::new(Static)).is_ok());
@@ -75,10 +79,12 @@ async fn assert_fails_cleanly(client: &dyn ModelClient) {
         .count();
     assert_eq!(terminators, 1, "exactly one terminator");
 
-    // The user's input is still recorded before the failure.
+    // The env-context block leads, then the user's input; both are recorded
+    // before the failure.
     let state = session.state();
+    assert!(srud_core::context::is_item(&state.history()[0]));
     assert!(matches!(
-        &state.history()[0],
+        &state.history()[1],
         ResponseItem::Message { role: Role::User, content } if content == "read the file"
     ));
 }
