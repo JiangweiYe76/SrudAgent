@@ -48,15 +48,25 @@ function MetaRow({ text, ts, className = '' }: { text: string; ts: number; class
   );
 }
 
-// The model's reasoning, folded into a block above the answer it produced.
-// It follows the run: expanded while the turn streams, folded once it ends.
-function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
-  const [open, setOpen] = useState(live);
-  useEffect(() => {
-    setOpen(live);
-  }, [live]);
+// The delay goes inline because the `animate-thinking-dot` utility sets the
+// `animation` shorthand, which resets it.
+function ThinkingDots() {
+  return (
+    <span className="flex shrink-0 items-center gap-[3px]" aria-hidden="true">
+      {['0ms', '150ms', '300ms'].map((delay) => (
+        <span
+          key={delay}
+          className="h-1 w-1 animate-thinking-dot rounded-full bg-accent opacity-[0.45]"
+          style={{ animationDelay: delay }}
+        />
+      ))}
+    </span>
+  );
+}
 
-  const preview = thought.split('\n').find((line) => line.trim() !== '') ?? '';
+// The model's reasoning, folded into a block above the answer it produced.
+function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
+  const [open, setOpen] = useState(false);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -64,10 +74,8 @@ function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
         <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
           <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="shrink-0 text-muted-foreground">{t('thought.title')}</span>
-          <span className="min-w-0 flex-1 truncate text-muted-foreground [[data-state=open]_&]:hidden">
-            {preview}
-          </span>
-          <span className="flex-1 [[data-state=closed]_&]:hidden" />
+          <span className="flex-1" />
+          {live && <ThinkingDots />}
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
         </CollapsibleTrigger>
         <CollapsibleContent>
