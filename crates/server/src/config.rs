@@ -43,15 +43,25 @@ pub enum ConfigError {
 /// `SRUD_HOME` wins; otherwise `.srudagent` under the user's home directory. A
 /// blank variable counts as unset, so an empty line in a dotenv file behaves the
 /// same as omitting it.
+///
+/// A `SRUD_HOME` that is not an absolute path counts as unset too. Everything
+/// under this directory — a session's workspace above all — is created and later
+/// removed by path, and a relative path names a different place depending on
+/// where the agent happened to be started. Pointing it at `.` would quietly put
+/// a `workspaces/` directory inside whatever directory that turned out to be,
+/// which is as likely to be someone's project as anything else.
 #[must_use]
 pub fn home() -> Option<PathBuf> {
-    env_path(HOME_VAR).or_else(|| user_home().map(|user_home| user_home.join(DIR_NAME)))
+    absolute_path(HOME_VAR).or_else(|| user_home().map(|user_home| user_home.join(DIR_NAME)))
 }
 
 /// The user's home directory, whichever variable names it on this platform.
+///
+/// A value that is not an absolute path counts as unset, for the same reason
+/// [`home`] gives.
 #[must_use]
 pub fn user_home() -> Option<PathBuf> {
-    env_path(UNIX_HOME_VAR).or_else(|| env_path(WINDOWS_HOME_VAR))
+    absolute_path(UNIX_HOME_VAR).or_else(|| absolute_path(WINDOWS_HOME_VAR))
 }
 
 /// The configuration directory, created if it is not there yet.
@@ -82,6 +92,15 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Reads a variable as a path, treating blank and relative as unset.
+///
+/// A relative path is worse than no setting at all: it resolves against
+/// whichever directory the process was started in, so the same variable names a
+/// different directory on two runs.
+fn absolute_path(name: &str) -> Option<PathBuf> {
+    env_path(name).filter(|path| path.is_absolute())
+}
+
 #[cfg(test)]
 mod tests {
     use std::env;
@@ -101,6 +120,46 @@ mod tests {
         let user_home = test_env::unique_dir("srud-config");
         env::set_var(UNIX_HOME_VAR, &user_home);
         (user_home, guard)
+    }
+
+    #[test]
+    fn a_relative_override_is_no_override() {
+        let (user_home, _env) = with_user_home();
+        env::set_var(HOME_VAR, ".");
+
+        assert_eq!(
+            home(),
+            Some(user_home.join(DIR_NAME)),
+            "a relative path would put the directory wherever the agent was started"
+        );
+    }
+
+    #[test]
+    fn a_relative_override_leaves_the_directory_under_the_user_home() {
+        let (user_home, _env) = with_user_home();
+        env::set_var(HOME_VAR, "./somewhere");
+
+        let path = ensure().expect("the directory can be created");
+
+        assert!(
+            path.starts_with(&user_home),
+            "{} is under {}, not under wherever the agent was started",
+            path.display(),
+            user_home.display()
+        );
+        assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn a_relative_user_home_counts_as_no_user_home() {
+        let _env = Guard::take(NAMES);
+        for name in NAMES {
+            env::remove_var(name);
+        }
+        env::set_var(UNIX_HOME_VAR, "relative/home");
+
+        assert_eq!(user_home(), None);
+        assert_eq!(home(), None);
     }
 
     #[test]
