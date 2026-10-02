@@ -160,15 +160,66 @@ async fn a_plain_exchange_records_history_and_emits_in_order() {
 
     let state = session.state();
     let history = state.history();
-    assert_eq!(history.len(), 2, "user input plus one assistant message");
+    assert_eq!(
+        history.len(),
+        3,
+        "env-context, then user input, then one assistant message"
+    );
+    assert!(srud_core::context::is_item(&history[0]));
     assert!(matches!(
-        &history[0],
+        &history[1],
         ResponseItem::Message { role: Role::User, content } if content == "hi"
     ));
     assert!(matches!(
-        &history[1],
+        &history[2],
         ResponseItem::Message { role: Role::Assistant, content } if content == "Hello"
     ));
+}
+
+#[tokio::test]
+async fn env_context_leads_the_turn_without_being_announced() {
+    let session = session();
+    let sink = Recorder::default();
+    let (tools, _calls) = tool_registry();
+    let client = Scripted::new(vec![vec![done()]]);
+
+    srud_core::run_turn(
+        &session,
+        TurnInput { text: "hi".into() },
+        client.as_ref(),
+        &tools,
+        &sink,
+    )
+    .await
+    .expect("turn runs");
+
+    // The model reads where and when the turn runs before it reads the request.
+    let requests = client.requests();
+    let Some(srud_core::client::ModelRequestItem::Message { role, content }) =
+        requests[0].items.first()
+    else {
+        panic!("the first request item is a message");
+    };
+    assert_eq!(*role, Role::User);
+    assert!(
+        content.starts_with(srud_core::context::OPEN_TAG)
+            && content.ends_with(srud_core::context::CLOSE_TAG),
+        "the block is the first thing the model reads: {content}"
+    );
+    assert!(
+        content.contains("<cwd>workspace</cwd>"),
+        "the block names the working directory: {content}"
+    );
+    assert!(
+        content.contains("<date>"),
+        "the block carries the local date and time: {content}"
+    );
+
+    // It is context, not something the user said, so nothing announces it.
+    assert_eq!(
+        sink.kinds(),
+        vec!["TurnStarted", "UserMessage", "TurnComplete"]
+    );
 }
 
 #[tokio::test]
@@ -213,7 +264,8 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
         ]
     );
 
-    // The second request must carry the tool call and its output, in order.
+    // The second request must carry the env-context block, the user's input,
+    // and then the tool call and its output, in order.
     let requests = client.requests();
     assert_eq!(requests.len(), 2);
     let second = &requests[1];
@@ -230,7 +282,7 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
             srud_core::client::ModelRequestItem::FunctionCallOutput { .. } => "output",
         })
         .collect();
-    assert_eq!(kinds, vec!["user", "call", "output"]);
+    assert_eq!(kinds, vec!["user", "user", "call", "output"]);
 }
 
 #[tokio::test]

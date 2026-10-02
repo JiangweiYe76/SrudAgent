@@ -75,10 +75,12 @@ async fn assert_fails_cleanly(client: &dyn ModelClient) {
         .count();
     assert_eq!(terminators, 1, "exactly one terminator");
 
-    // The user's input is still recorded before the failure.
+    // The env-context block leads, then the user's input; both are recorded
+    // before the failure.
     let state = session.state();
+    assert!(srud_core::context::is_item(&state.history()[0]));
     assert!(matches!(
-        &state.history()[0],
+        &state.history()[1],
         ResponseItem::Message { role: Role::User, content } if content == "read the file"
     ));
 }
