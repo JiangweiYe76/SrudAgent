@@ -346,4 +346,11 @@ it('leaves inline code as a single element', () => {
     expect(html).not.toContain('opacity-0');
     expect(html).toContain('Copy code');
   });
+
+  it('renders math rather than leaving the delimiters visible', () => {
+    const html = render('inline $E = mc^2$ done');
+
+    expect(html).toContain('katex');
+    expect(html).not.toContain('$E');
+  });
 });

@@ -1,12 +1,15 @@
 import { type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import { common } from 'lowlight';
 import rehypeCodeLines, { textOf, type HastNode } from '@/lib/rehypeCodeLines';
 import { t } from '@/lib/i18n';
 import { CodeBlockBar } from '@/components/CodeBlockBar';
 import { cn } from '@/lib/utils';
+import 'katex/dist/katex.min.css';
 
 /**
  * The language a fence declared, read back off its `language-*` class.
@@ -85,7 +88,7 @@ export function Markdown({ children, className }: { children: string; className?
   return (
     <div className={cn('message-markdown', className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
         // Order matters: highlighting rewrites tokens into spans, so the lines
         // have to be split afterwards or a break inside a multi-line string
         // would drag half a token onto the next line.
@@ -93,6 +96,7 @@ export function Markdown({ children, className }: { children: string; className?
         // `detect` stays off: guessing a language from the code's contents
         // mislabels prose and costs time on every re-render.
         rehypePlugins={[
+          rehypeKatex,
           [rehypeHighlight, { detect: false, languages: { ...common } }],
           [rehypeCodeLines, {}],
         ]}

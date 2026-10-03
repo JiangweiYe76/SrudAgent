@@ -310,6 +310,17 @@
       background: color-mix(in oklab, var(--bg-elevated) 50%, transparent);
     }
 
+    /* KaTeX renders at its own scale; without this it outgrows the 14px body
+       text it is set inside. */
+    .katex {
+      font-size: 1.05em;
+    }
+    .katex-display {
+      margin: 0.6em 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+
     a {
       color: var(--accent);
       text-decoration: underline;
