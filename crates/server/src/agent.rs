@@ -11,6 +11,8 @@
 //! |-------------------|------------------------------------------------------|
 //! | `initialize`      | version + capability negotiation (must come first)   |
 //! | `session/new`     | register an in-memory session                        |
+//! | `session/load`    | rebuild a session from its log and replay it         |
+//! | `session/resume`  | rebuild a session from its log, without replaying    |
 //! | `session/prompt`  | run one turn; the reply is the turn's end            |
 //! | `session/cancel`  | interrupt the active turn                            |
 //! | `session/list`    | snapshot live sessions                               |
@@ -18,9 +20,9 @@
 //! | `session/delete`  | deregister                                           |
 //! | `_srud/unstable/session/set_title` | rename a session               |
 //!
-//! Everything else — `session/load`, `session/resume`, config/mode setters,
-//! `authenticate`, and the remaining `_srud/unstable/*` extensions — answers
-//! `METHOD_NOT_FOUND`, matching what the advertised capabilities promise.
+//! Everything else — config/mode setters, `authenticate`, and the remaining
+//! `_srud/unstable/*` extensions — answers `METHOD_NOT_FOUND`, matching what the
+//! advertised capabilities promise.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,16 +32,17 @@ use srud_core::client::ModelClient;
 use srud_core::session::Session;
 use srud_core::tools::ToolRegistry;
 use srud_protocol::acp::methods::{
-    INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_NEW,
-    SESSION_PROMPT, SRUD_SESSION_SET_TITLE,
+    INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_LOAD,
+    SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SRUD_SESSION_SET_TITLE,
 };
 use srud_protocol::acp::{
     AcpError, CancelNotification, CloseSessionRequest, CloseSessionResponse, ContentBlock,
     DeleteSessionRequest, DeleteSessionResponse, Implementation, InitializeRequest,
-    InitializeResponse, JsonRpcMessage, ListSessionsResponse, MaybeUndefined, NewSessionRequest,
-    NewSessionResponse, Notification, PromptRequest, PromptResponse, ProtocolVersion, Request,
-    RequestId, Response, SessionId, SessionInfoUpdate, SessionNotification, SessionUpdate,
-    CLIENT_METHOD_NAMES,
+    InitializeResponse, JsonRpcMessage, ListSessionsResponse, LoadSessionRequest,
+    LoadSessionResponse, MaybeUndefined, NewSessionRequest, NewSessionResponse, Notification,
+    PromptRequest, PromptResponse, ProtocolVersion, Request, RequestId, Response,
+    ResumeSessionRequest, ResumeSessionResponse, SessionId, SessionInfoUpdate, SessionNotification,
+    SessionUpdate, CLIENT_METHOD_NAMES,
 };
 use srud_protocol::error::{
     INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_BUSY,
@@ -48,9 +51,9 @@ use srud_protocol::error::{
 use srud_protocol::srud::methods::{SetSessionTitleRequest, SetSessionTitleResponse};
 use srud_protocol::srud::turn_end::TurnEndWire;
 
-use crate::convert::{prompt_outcome, prompt_text};
+use crate::convert::{prompt_outcome, prompt_text, replay_notification};
 use crate::events::EventHub;
-use crate::sessions::SessionManager;
+use crate::sessions::{RestoreError, SessionManager};
 
 /// The JSON-RPC reply to one `rpc_request` envelope.
 pub type RpcReply = JsonRpcMessage<Response<Value>>;
@@ -119,19 +122,23 @@ impl Agent {
 
         let outcome = match method {
             INITIALIZE => self.handle_initialize(params).map(serialize),
-            SESSION_NEW => self.handle_new_session(params).map(serialize),
+            SESSION_NEW => self.handle_new_session(params).await.map(serialize),
+            SESSION_LOAD => self.handle_load(params).await.map(serialize),
+            SESSION_RESUME => self.handle_resume(params).await.map(serialize),
             SESSION_PROMPT => self.handle_prompt(params).await.map(serialize),
             SESSION_CANCEL => self
                 .handle_cancel(params)
                 .map(|()| Value::Object(Default::default())),
-            SESSION_LIST => self.handle_list().map(serialize),
+            SESSION_LIST => self.handle_list().await.map(serialize),
             SESSION_CLOSE => self
                 .handle_close(params)
+                .await
                 .map(|()| serialize(CloseSessionResponse::new())),
             SESSION_DELETE => self
                 .handle_delete(params)
+                .await
                 .map(|()| serialize(DeleteSessionResponse::new())),
-            SRUD_SESSION_SET_TITLE => self.handle_set_title(params).map(serialize),
+            SRUD_SESSION_SET_TITLE => self.handle_set_title(params).await.map(serialize),
             // Known-but-unimplemented methods get the same treatment as
             // unknown ones: the capabilities never advertised them.
             _ => Err(AcpError::new(
@@ -164,22 +171,35 @@ impl Agent {
             .auth_methods(vec![]))
     }
 
-    fn handle_new_session(&self, params: Value) -> Result<NewSessionResponse, AcpError> {
+    async fn handle_new_session(&self, params: Value) -> Result<NewSessionResponse, AcpError> {
         let request: NewSessionRequest = parse_params(params)?;
-        let session_id = self.sessions.create(Some(request.cwd)).map_err(|err| {
-            AcpError::new(
-                INTERNAL_ERROR,
-                format!("could not create the session workspace: {err}"),
-            )
-        })?;
+        let session_id = self
+            .sessions
+            .create(Some(request.cwd))
+            .await
+            .map_err(|err| {
+                AcpError::new(
+                    INTERNAL_ERROR,
+                    format!("could not create the session workspace: {err}"),
+                )
+            })?;
         Ok(NewSessionResponse::new(session_id))
     }
 
     async fn handle_prompt(&self, params: Value) -> Result<PromptResponse, AcpError> {
         let request: PromptRequest = parse_params(params)?;
-        let session = self.require_session(&request.session_id)?;
+
+        // The session and its log together, so a turn cannot be recorded against
+        // another session's log. One lookup rather than two: the pair is
+        // registered together and is never separated.
+        let (session, log) = self
+            .sessions
+            .with_log(&request.session_id)
+            .ok_or_else(|| session_not_found(&request.session_id))?;
+
         let text = prompt_with_validation(&request.prompt)?;
-        self.name_from_first_prompt(&request.session_id, &text);
+        self.name_from_first_prompt(&request.session_id, &text)
+            .await;
 
         let sink = self.hub.sink_for(session.id());
         let result = srud_core::turn::run_turn(
@@ -187,10 +207,21 @@ impl Agent {
             srud_core::types::TurnInput { text },
             self.model.as_ref(),
             self.tools.as_ref(),
+            log.as_ref(),
             &sink,
         )
         .await
-        .map_err(|_| AcpError::new(SESSION_BUSY, "session already has an active turn"))?;
+        .map_err(|err| match err {
+            srud_core::TurnError::Busy => {
+                AcpError::new(SESSION_BUSY, "session already has an active turn")
+            }
+            // Distinct from `Busy`: nothing ran, and the session is still usable —
+            // the log is what refused. Saying "busy" would tell the client to wait
+            // for something that will never start.
+            srud_core::TurnError::Unrecordable(err) => {
+                AcpError::new(INTERNAL_ERROR, format!("cannot record this turn: {err}"))
+            }
+        })?;
 
         let wire: TurnEndWire = prompt_outcome(result.reason)?;
         let response = PromptResponse::new(wire.stop_reason);
@@ -209,24 +240,74 @@ impl Agent {
         Ok(())
     }
 
-    fn handle_list(&self) -> Result<ListSessionsResponse, AcpError> {
-        Ok(ListSessionsResponse::new(self.sessions.list()))
+    async fn handle_list(&self) -> Result<ListSessionsResponse, AcpError> {
+        Ok(ListSessionsResponse::new(self.sessions.list().await))
     }
 
-    fn handle_close(&self, params: Value) -> Result<(), AcpError> {
+    async fn handle_close(&self, params: Value) -> Result<(), AcpError> {
         let request: CloseSessionRequest = parse_params(params)?;
         let session = self.require_session(&request.session_id)?;
         session.interrupt();
-        self.sessions.remove(&request.session_id);
+        // Closing leaves the log where it is: the session is over, not deleted, and
+        // is what the next `session/list` reports so a client can load it again.
+        self.sessions.forget(&request.session_id);
         Ok(())
     }
 
-    fn handle_delete(&self, params: Value) -> Result<(), AcpError> {
+    async fn handle_delete(&self, params: Value) -> Result<(), AcpError> {
         let request: DeleteSessionRequest = parse_params(params)?;
-        if !self.sessions.remove(&request.session_id) {
+        if !self.sessions.remove(&request.session_id).await {
             return Err(session_not_found(&request.session_id));
         }
         Ok(())
+    }
+
+    async fn handle_resume(&self, params: Value) -> Result<ResumeSessionResponse, AcpError> {
+        let request: ResumeSessionRequest = parse_params(params)?;
+        let loaded = self.restore(&request.session_id, &request.cwd).await?;
+        // No replay: a client asking to resume is saying it already has the
+        // conversation.
+        self.broadcast_title(&request.session_id, loaded.title.clone());
+        Ok(ResumeSessionResponse::new())
+    }
+
+    async fn handle_load(&self, params: Value) -> Result<LoadSessionResponse, AcpError> {
+        let request: LoadSessionRequest = parse_params(params)?;
+        let loaded = self.restore(&request.session_id, &request.cwd).await?;
+
+        // Replayed before the response, because ACP requires the client to have
+        // the whole conversation by the time `session/load` resolves. Anything
+        // sent after would arrive as a change to a session the client already
+        // believes it has.
+        let reasons: std::collections::HashMap<_, _> = loaded.turn_ends.iter().cloned().collect();
+        let mut replay = loaded.conversation.iter().peekable();
+        while let Some(event) = replay.next() {
+            // A turn is over once the next record belongs to another one, so its
+            // reason goes on the last update of it — which is the only place a
+            // replayed turn can be closed from.
+            let last_of_its_turn = replay
+                .peek()
+                .is_none_or(|next| next.turn_id() != event.turn_id());
+            let turn_end = if last_of_its_turn {
+                event.turn_id().and_then(|turn| reasons.get(&turn).copied())
+            } else {
+                None
+            };
+            if let Some(notification) = replay_notification(&request.session_id, event, turn_end) {
+                self.hub.send(notification);
+            }
+        }
+        self.broadcast_title(&request.session_id, loaded.title.clone());
+        Ok(LoadSessionResponse::new())
+    }
+
+    /// Brings a session back, or says why it could not be.
+    async fn restore(
+        &self,
+        id: &SessionId,
+        cwd: &std::path::Path,
+    ) -> Result<srud_core::session_store::Loaded, AcpError> {
+        self.sessions.restore(id, cwd).await.map_err(restore_failed)
     }
 
     /// Names an unnamed session after the message that opened it.
@@ -235,17 +316,34 @@ impl Agent {
     /// must not overwrite it, and a rename the user has already made wins. When
     /// this call is the one that named the session, it broadcasts the title so
     /// every attached client renders it without asking.
-    fn name_from_first_prompt(&self, session_id: &SessionId, text: &str) {
+    ///
+    /// A title that cannot be recorded is not announced, but does not fail the
+    /// prompt: the name is cosmetic, and the turn it opened still has to run. The
+    /// failure is dropped, which is the one place that is the right answer — a
+    /// disk that refused the title will refuse the turn's own records a moment
+    /// later and report it there.
+    async fn name_from_first_prompt(&self, session_id: &SessionId, text: &str) {
         let title = title_from_prompt(text);
-        if self.sessions.name_if_unnamed(session_id, &title) {
+        if let Ok(true) = self.sessions.name_if_unnamed(session_id, &title).await {
             self.broadcast_title(session_id, Some(title));
         }
     }
 
-    fn handle_set_title(&self, params: Value) -> Result<SetSessionTitleResponse, AcpError> {
+    async fn handle_set_title(&self, params: Value) -> Result<SetSessionTitleResponse, AcpError> {
         let request: SetSessionTitleRequest = parse_params(params)?;
-        if !self.sessions.set_title(&request.session_id, &request.title) {
-            return Err(session_not_found(&request.session_id));
+        match self
+            .sessions
+            .set_title(&request.session_id, &request.title)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return Err(session_not_found(&request.session_id)),
+            Err(err) => {
+                return Err(AcpError::new(
+                    INTERNAL_ERROR,
+                    format!("cannot record the title: {err}"),
+                ));
+            }
         }
         // Echo the effective title rather than the request's, so a blank title
         // is reported as the clear it was.
@@ -305,6 +403,19 @@ fn session_not_found(id: &SessionId) -> AcpError {
         SESSION_NOT_FOUND,
         format!("no session with id `{}`", id.0.as_ref()),
     )
+}
+
+/// What a client is told when a session could not be brought back.
+fn restore_failed(err: RestoreError) -> AcpError {
+    match &err {
+        RestoreError::NotFound(id) => session_not_found(id),
+        // The caller named a different directory, which ACP requires to match:
+        // that is a bad request, not a server fault.
+        RestoreError::Cwd { .. } => AcpError::new(INVALID_PARAMS, err.to_string()),
+        RestoreError::Config(_) | RestoreError::Load(_) | RestoreError::Repair(_) => {
+            AcpError::new(INTERNAL_ERROR, format!("cannot load the session: {err}"))
+        }
+    }
 }
 
 /// Deserialises method params, reporting invalid payloads as
@@ -374,8 +485,6 @@ mod tests {
     /// The method names that answer `METHOD_NOT_FOUND`, so tests can assert
     /// the coverage boundary.
     const UNIMPLEMENTED_METHODS: &[&str] = &[
-        AGENT_METHOD_NAMES.session_load,
-        AGENT_METHOD_NAMES.session_resume,
         AGENT_METHOD_NAMES.session_set_mode,
         AGENT_METHOD_NAMES.session_set_config_option,
         AGENT_METHOD_NAMES.authenticate,
@@ -507,19 +616,78 @@ mod tests {
             crate::config::HOME_VAR,
             crate::test_env::unique_dir("srud-agent"),
         );
+        new_session_in(agent, "").await
+    }
+
+    /// Creates a session working in `cwd`, or with a workspace of its own when
+    /// `cwd` is empty.
+    ///
+    /// Without the environment setup `new_session` does, for a test that has to
+    /// keep one configuration directory alive across two agents.
+    async fn new_session_in(agent: &Agent, cwd: &str) -> SessionId {
         let reply = agent
             .handle(request(
                 SESSION_NEW,
                 // No working directory named, so the session gets a workspace of
                 // its own. Spelled out rather than left to a path that may or may
                 // not exist on the machine running the test.
-                json!({ "cwd": "", "mcpServers": [] }),
+                json!({ "cwd": cwd, "mcpServers": [] }),
             ))
             .await;
         let Response::Result { result, .. } = reply.into_inner() else {
             panic!("session/new should succeed");
         };
         SessionId::new(result["sessionId"].as_str().unwrap().to_string())
+    }
+
+    /// Every `session/update` sent for a session, as `(kind, text)`.
+    ///
+    /// `session_info_update` is left out: it carries the title rather than the
+    /// conversation, and it travels on the same channel.
+    fn conversation(
+        rx: &mut tokio::sync::broadcast::Receiver<Notification<SessionNotification>>,
+    ) -> Vec<(String, String)> {
+        let mut updates = Vec::new();
+        while let Ok(notification) = rx.try_recv() {
+            let value = serde_json::to_value(&notification).unwrap();
+            let update = &value["params"]["update"];
+            let Some(kind) = update["sessionUpdate"].as_str() else {
+                continue;
+            };
+            if kind == "session_info_update" {
+                continue;
+            }
+            updates.push((
+                kind.to_string(),
+                update["content"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            ));
+        }
+        updates
+    }
+
+    /// Every `session/update` sent for a session, as `(turn id, turn end)`.
+    ///
+    /// The title update is left out, as in [`conversation`]: it belongs to the
+    /// session rather than to a turn.
+    fn replayed_turns(
+        rx: &mut tokio::sync::broadcast::Receiver<Notification<SessionNotification>>,
+    ) -> Vec<(String, Option<String>)> {
+        let mut seen = Vec::new();
+        while let Ok(notification) = rx.try_recv() {
+            let value = serde_json::to_value(&notification).unwrap();
+            if value["params"]["update"]["sessionUpdate"] == json!("session_info_update") {
+                continue;
+            }
+            let srud = &value["params"]["_meta"]["srud"];
+            seen.push((
+                srud["turnId"].as_str().unwrap_or_default().to_string(),
+                srud["turnEndReason"].as_str().map(str::to_string),
+            ));
+        }
+        seen
     }
 
     fn result_of(reply: RpcReply) -> Value {
@@ -559,9 +727,339 @@ mod tests {
                 .await,
         );
         assert_eq!(result["protocolVersion"], json!(1));
-        assert_eq!(result["agentCapabilities"]["loadSession"], json!(false));
+        assert_eq!(result["agentCapabilities"]["loadSession"], json!(true));
         assert!(result["agentCapabilities"]["sessionCapabilities"]["list"].is_object());
+        assert!(result["agentCapabilities"]["sessionCapabilities"]["resume"].is_object());
         assert!(result.get("authMethods").is_some());
+    }
+
+    /// A session and the directory it works in, on a configuration directory of
+    /// this test's own.
+    ///
+    /// Returned together because a load has to name the directory ACP will check
+    /// against, and the caller has to keep the guard alive for it to be found.
+    async fn session_with_a_home(agent: &Agent) -> (SessionId, String) {
+        let cwd = std::env::temp_dir().join(format!("srud-load-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&cwd).expect("a directory to work in");
+        let cwd = cwd.to_string_lossy().into_owned();
+        let id = new_session_in(agent, &cwd).await;
+        (id, cwd)
+    }
+
+    #[tokio::test]
+    async fn a_session_loads_back_from_its_log() {
+        // The point of the log: an agent that restarted has nothing in memory and
+        // everything on disk.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load"),
+        );
+
+        let first = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "hi there".into(),
+        }]));
+        initialize(&first).await;
+        let (session_id, cwd) = session_with_a_home(&first).await;
+        prompt_titles(&first, &session_id, "hello").await;
+
+        // A second agent, as after a restart.
+        let second = agent(scripted(vec![]));
+        initialize(&second).await;
+        let mut rx = second.subscribe();
+        result_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        assert_eq!(
+            conversation(&mut rx),
+            vec![
+                ("user_message_chunk".to_string(), "hello".to_string()),
+                ("agent_message_chunk".to_string(), "hi there".to_string()),
+            ],
+            "the conversation is replayed in order"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_loaded_session_continues_where_it_left_off() {
+        // Loading is not just replay: the agent has to have the history too, or
+        // the next prompt answers as though the session were new.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load-continue"),
+        );
+
+        let first = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "first answer".into(),
+        }]));
+        initialize(&first).await;
+        let (session_id, cwd) = session_with_a_home(&first).await;
+        prompt_titles(&first, &session_id, "first question").await;
+
+        let second = agent(scripted(vec![]));
+        initialize(&second).await;
+        result_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        let session = second
+            .sessions
+            .get(&session_id)
+            .expect("the session is live");
+        assert_eq!(
+            session.state().history(),
+            &[
+                // The env-context block the first turn recorded: it is part of
+                // what the model saw, so it comes back with it.
+                srud_core::context::item(std::path::Path::new(&cwd)),
+                srud_core::types::ResponseItem::user("first question"),
+                srud_core::types::ResponseItem::assistant("first answer"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn resuming_does_not_replay_the_conversation() {
+        // What a client asks for by resuming: it already has the transcript.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-resume"),
+        );
+
+        let first = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "hi there".into(),
+        }]));
+        initialize(&first).await;
+        let (session_id, cwd) = session_with_a_home(&first).await;
+        prompt_titles(&first, &session_id, "hello").await;
+
+        let second = agent(scripted(vec![]));
+        initialize(&second).await;
+        let mut rx = second.subscribe();
+        result_of(
+            second
+                .handle(request(
+                    SESSION_RESUME,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        assert!(conversation(&mut rx).is_empty(), "nothing is replayed");
+        assert!(second.sessions.get(&session_id).is_some(), "and it is live");
+    }
+
+    #[tokio::test]
+    async fn a_live_session_loads_for_another_client() {
+        // One client has the session open and another asks for it: the
+        // conversation comes off the log, and nothing is invented for a session
+        // that never stopped.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load-live"),
+        );
+
+        let agent = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "hi there".into(),
+        }]));
+        initialize(&agent).await;
+        let (session_id, cwd) = session_with_a_home(&agent).await;
+        prompt_titles(&agent, &session_id, "hello").await;
+
+        let mut rx = agent.subscribe();
+        result_of(
+            agent
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        assert_eq!(
+            conversation(&mut rx),
+            vec![
+                ("user_message_chunk".to_string(), "hello".to_string()),
+                ("agent_message_chunk".to_string(), "hi there".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn loading_a_session_that_never_existed_is_not_found() {
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load-missing"),
+        );
+
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": "00000000-0000-4000-8000-000000000000",
+                        "cwd": std::env::temp_dir().to_string_lossy(),
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        assert_eq!(i32::from(error.code), SESSION_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn loading_in_another_directory_is_refused() {
+        // ACP requires the caller's cwd to match the session's, and it has to:
+        // the history was produced somewhere.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load-cwd-mismatch"),
+        );
+
+        let first = agent(scripted(vec![]));
+        initialize(&first).await;
+        let (session_id, _cwd) = session_with_a_home(&first).await;
+
+        let second = agent(scripted(vec![]));
+        initialize(&second).await;
+        let error = error_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": std::env::temp_dir().to_string_lossy(),
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn loading_without_naming_a_directory_is_allowed() {
+        // A client that named no directory is not disagreeing with the recorded
+        // one, so it is not refused here: the app has no directory picker and says
+        // so on load the same way it does when it creates a session. Refusing would
+        // leave every session from a previous run unloadable, which after a restart
+        // is all of them.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load-cwd-absent"),
+        );
+
+        let first = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "hi there".into(),
+        }]));
+        initialize(&first).await;
+        let (session_id, _cwd) = session_with_a_home(&first).await;
+        prompt_titles(&first, &session_id, "hello").await;
+
+        let second = agent(scripted(vec![]));
+        initialize(&second).await;
+        let mut rx = second.subscribe();
+        result_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": "",
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        assert_eq!(
+            conversation(&mut rx).len(),
+            2,
+            "the conversation comes back, not an empty session"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replayed_turn_says_how_it_ended() {
+        // A client being shown a session has no `session/prompt` response to close
+        // its turns with, so each reason rides on the last update of its turn.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load-turn-ends"),
+        );
+
+        let first = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "answer".into(),
+        }]));
+        initialize(&first).await;
+        let (session_id, cwd) = session_with_a_home(&first).await;
+        prompt_titles(&first, &session_id, "hello").await;
+        prompt_titles(&first, &session_id, "again").await;
+
+        let second = agent(scripted(vec![]));
+        initialize(&second).await;
+        let mut rx = second.subscribe();
+        result_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        let updates = replayed_turns(&mut rx);
+        assert_eq!(updates.len(), 4, "{updates:?}");
+        assert_ne!(updates[2].0, updates[0].0, "each turn is its own");
+        for turn in [&updates[0..2], &updates[2..4]] {
+            assert_eq!(
+                turn[0].1, None,
+                "only the last update of a turn closes it: {turn:?}"
+            );
+            assert_eq!(turn[1].1, Some("completed".to_string()), "{turn:?}");
+        }
     }
 
     #[tokio::test]
@@ -585,10 +1083,24 @@ mod tests {
         let id = new_session(&agent).await;
         assert!(!id.0.is_empty());
         let listed = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
-        assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+        // Counted rather than asserted as the only one: the configuration
+        // directory comes from a process-wide environment variable that tests
+        // beside this one also set, so the listing may be reading their home.
+        assert!(
+            listed["sessions"]
+                .as_array()
+                .is_some_and(|all| !all.is_empty()),
+            "the session it just made is listed"
+        );
         // The session works in the workspace created for it, named by its id —
         // not in the directory the client sent.
-        let cwd = listed["sessions"][0]["cwd"]
+        let mine = listed["sessions"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .find(|info| info["sessionId"] == json!(id.0.as_ref()))
+            .expect("the session it just made is listed");
+        let cwd = mine["cwd"]
             .as_str()
             .expect("the session reports a working directory");
         assert!(

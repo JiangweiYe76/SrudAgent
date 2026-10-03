@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex};
 use srud_client::openai::{ChatClient, ClientConfig, ResponsesClient};
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
+use srud_core::session_log::Volatile;
 use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use srud_core::types::{Event, EventSink, ResponseItem, TurnEndReason, TurnInput};
 
@@ -98,7 +99,7 @@ impl Outcome {
         self.events
             .iter()
             .filter_map(|event| match event {
-                Event::AgentMessageDelta { delta } => Some(delta.as_str()),
+                Event::AgentMessageDelta { delta, .. } => Some(delta.as_str()),
                 _ => None,
             })
             .collect()
@@ -109,7 +110,7 @@ impl Outcome {
         self.events
             .iter()
             .filter_map(|event| match event {
-                Event::AgentThoughtDelta { delta } => Some(delta.as_str()),
+                Event::AgentThoughtDelta { delta, .. } => Some(delta.as_str()),
                 _ => None,
             })
             .collect()
@@ -199,11 +200,17 @@ async fn run(client: &dyn ModelClient, text: &str, with_tool: bool) -> Outcome {
         assert!(tools.register(Arc::new(SecretCode)).is_ok());
     }
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     let result = srud_core::run_turn(
         &session,
         TurnInput { text: text.into() },
         client,
         &tools,
+        &log,
         &sink,
     )
     .await

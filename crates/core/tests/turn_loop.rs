@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use futures::stream;
 use srud_core::client::{ModelClient, ModelError, ModelEvent, ModelRequest, ModelStream};
 use srud_core::session::Session;
+use srud_core::session_log::Volatile;
 use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use srud_core::types::{Event, EventSink, Op, ResponseItem, Role, TurnEndReason, TurnInput};
 use tokio_util::sync::CancellationToken;
@@ -140,11 +141,17 @@ async fn a_plain_exchange_records_history_and_emits_in_order() {
     let (tools, _calls) = tool_registry();
     let client = Scripted::new(vec![vec![text("Hel"), text("lo"), done()]]);
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     let result = srud_core::run_turn(
         &session,
         TurnInput { text: "hi".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -187,11 +194,17 @@ async fn env_context_leads_the_turn_without_being_announced() {
     let (tools, _calls) = tool_registry();
     let client = Scripted::new(vec![vec![done()]]);
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     srud_core::run_turn(
         &session,
         TurnInput { text: "hi".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -243,11 +256,17 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
         vec![text("all done"), done()],
     ]);
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     let result = srud_core::run_turn(
         &session,
         TurnInput { text: "go".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -296,11 +315,17 @@ async fn exactly_one_terminator_is_emitted_when_the_model_fails() {
     let (tools, _calls) = tool_registry();
     let client = Scripted::new(vec![vec![Err(ModelError::Transport("boom".into()))]]);
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     let result = srud_core::run_turn(
         &session,
         TurnInput { text: "hi".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -323,11 +348,17 @@ async fn a_model_that_never_signals_completion_is_an_error() {
     // The stream ends after a delta without a `Done`.
     let client = Scripted::new(vec![vec![text("partial")]]);
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     let result = srud_core::run_turn(
         &session,
         TurnInput { text: "hi".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -359,11 +390,17 @@ async fn an_unknown_tool_becomes_a_failed_outcome_not_a_crash() {
         vec![text("recovered"), done()],
     ]);
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     let result = srud_core::run_turn(
         &session,
         TurnInput { text: "go".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -424,11 +461,17 @@ async fn rejected_arguments_reach_the_model_as_a_marked_failure() {
         vec![text("adjusted"), done()],
     ]);
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     srud_core::run_turn(
         &session,
         TurnInput { text: "go".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -465,11 +508,17 @@ async fn a_second_concurrent_turn_is_refused() {
     assert!(guard.is_some());
 
     let client = Scripted::new(vec![vec![done()]]);
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     let err = srud_core::run_turn(
         &session,
         TurnInput { text: "hi".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -495,11 +544,17 @@ async fn interrupting_before_the_first_step_stops_the_turn() {
     drop(guard);
 
     let client = Scripted::new(vec![vec![done()]]);
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     let result = srud_core::run_turn(
         &session,
         TurnInput { text: "hi".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -541,11 +596,17 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
         vec![text("done"), done()],
     ]);
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     srud_core::run_turn(
         &session,
         TurnInput { text: "go".into() },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await
@@ -596,6 +657,11 @@ async fn a_read_call_reaches_the_sessions_working_directory() {
         vec![text("read it"), done()],
     ]);
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     srud_core::run_turn(
         &session,
         TurnInput {
@@ -603,6 +669,7 @@ async fn a_read_call_reaches_the_sessions_working_directory() {
         },
         client.as_ref(),
         &tools,
+        &log,
         &sink,
     )
     .await

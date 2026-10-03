@@ -121,12 +121,16 @@ fn to_request_item(item: &ResponseItem) -> Option<ModelRequestItem> {
             name: name.clone(),
             arguments: arguments.clone(),
         }),
-        ResponseItem::FunctionCallOutput { call_id, output } => {
-            Some(ModelRequestItem::FunctionCallOutput {
-                call_id: call_id.clone(),
-                output: output.clone(),
-            })
-        }
+        ResponseItem::FunctionCallOutput {
+            call_id,
+            output,
+            // Dropped at the boundary: the provider's shape has nowhere for it,
+            // and the model reads the failure from the text.
+            ..
+        } => Some(ModelRequestItem::FunctionCallOutput {
+            call_id: call_id.clone(),
+            output: output.clone(),
+        }),
         ResponseItem::Reasoning { .. } => None,
     }
 }
@@ -165,6 +169,7 @@ mod tests {
         state.push(ResponseItem::FunctionCallOutput {
             call_id: "c1".into(),
             output: "hi".into(),
+            is_error: false,
         });
 
         let request = build_prompt(&state, Vec::new(), None);

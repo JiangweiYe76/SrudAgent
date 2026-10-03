@@ -11,6 +11,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+# Session logs are laid out by date, so the path a log is written to depends on
+# when the session was created.
+chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "time"] }

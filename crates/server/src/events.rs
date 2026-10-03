@@ -135,7 +135,10 @@ mod tests {
         let mut rx = hub.subscribe();
         let sink = hub.sink_for(CoreSessionId::new());
 
-        sink.emit(Event::AgentMessageDelta { delta: "hi".into() });
+        sink.emit(Event::AgentMessageDelta {
+            message_id: None,
+            delta: "hi".into(),
+        });
         assert!(
             rx.try_recv().is_err(),
             "events before TurnStarted are not attributable"
@@ -143,7 +146,10 @@ mod tests {
 
         let turn_id = TurnId::new();
         sink.emit(Event::TurnStarted { turn_id });
-        sink.emit(Event::AgentMessageDelta { delta: "hi".into() });
+        sink.emit(Event::AgentMessageDelta {
+            message_id: None,
+            delta: "hi".into(),
+        });
         sink.emit(Event::TurnComplete {
             turn_id,
             reason: TurnEndReason::Completed,
@@ -165,7 +171,10 @@ mod tests {
 
         let turn_id = TurnId::new();
         sink.emit(Event::TurnStarted { turn_id });
-        sink.emit(Event::AgentMessageDelta { delta: "x".into() });
+        sink.emit(Event::AgentMessageDelta {
+            message_id: None,
+            delta: "x".into(),
+        });
 
         let received = rx.try_recv().expect("one notification");
         let value = serde_json::to_value(&received).unwrap();
@@ -203,6 +212,9 @@ mod tests {
         sink.emit(Event::TurnStarted {
             turn_id: TurnId::new(),
         });
-        sink.emit(Event::AgentMessageDelta { delta: "x".into() });
+        sink.emit(Event::AgentMessageDelta {
+            message_id: None,
+            delta: "x".into(),
+        });
     }
 }

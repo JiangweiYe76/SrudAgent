@@ -1,8 +1,12 @@
-// Tests the store's live path against a mocked Tauri IPC: lazy backend
-// creation, streaming updates folded into turns/steps, and turn completion.
+// @vitest-environment jsdom
+
+// Tests the store against a mocked Tauri IPC: the live path (lazy backend
+// creation, streaming updates folded into turns/steps, turn completion) and the
+// reopen path (a remembered session's log replayed back into turns).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Session } from './types';
 import { displayTitle } from './sessionStore';
+import { SESSION_NOT_FOUND } from './acp';
 
 const mocks = vi.hoisted(() => ({
   invoke: async (_cmd: string, _args?: Record<string, unknown>): Promise<unknown> => {
@@ -42,11 +46,19 @@ const reply = (id: number, result: unknown) => ({ jsonrpc: '2.0', id, result });
 
 // Boots a fresh store with a scripted backend: handshake succeeds, `session/new`
 // hands out S1, S2, ... and `session/prompt` resolves only when the returned
-// deferred settles.
-async function boot(options: { failDelete?: boolean } = {}) {
+// deferred settles. `session/load` likewise stays open until its deferred
+// settles, because the log it hands over arrives before it does.
+async function boot(
+  options: {
+    failDelete?: boolean;
+    loadFails?: { code: number; message: string };
+    listed?: Array<Record<string, unknown>>;
+  } = {},
+) {
   vi.resetModules();
   mocks.notifyCb = null;
   const prompt = deferred<{ stopReason: string }>();
+  const load = deferred<null>();
   const calls: string[] = [];
   const requested: Array<{ method: string; params: unknown }> = [];
   let created = 0;
@@ -65,6 +77,17 @@ async function boot(options: { failDelete?: boolean } = {}) {
           return reply(payload.id, { sessionId: `S${created}` });
         case 'session/prompt':
           return prompt.promise.then((r) => reply(payload.id, r));
+        case 'session/list':
+          return reply(payload.id, { sessions: options.listed ?? [] });
+        case 'session/load':
+          if (options.loadFails) {
+            // Built from the module instance the store itself sees: a class
+            // imported before the reset is a different object, and the store
+            // tells refusals apart by its own `instanceof`.
+            const { RpcFailure } = await import('./acp');
+            throw new RpcFailure(options.loadFails.code, options.loadFails.message);
+          }
+          return load.promise.then(() => reply(payload.id, {}));
         case 'session/cancel':
           return reply(payload.id, {});
         case '_srud/unstable/session/set_title':
@@ -79,7 +102,9 @@ async function boot(options: { failDelete?: boolean } = {}) {
   const { useSessionStore } = await import('./sessionStore');
   await useSessionStore.getState().init();
 
-  const fire = (update: Record<string, unknown>) => {
+  // `meta` is the `_meta.srud` the agent hangs on an update: the turn it belongs
+  // to, and how that turn ended.
+  const fire = (update: Record<string, unknown>, srud?: Record<string, unknown>) => {
     const backendId = useSessionStore.getState().sessions.find(
       (x) => x.id === useSessionStore.getState().activeId,
     )?.backendId;
@@ -87,7 +112,11 @@ async function boot(options: { failDelete?: boolean } = {}) {
       payload: {
         jsonrpc: '2.0',
         method: 'session/update',
-        params: { sessionId: backendId ?? 'S-unknown', update },
+        params: {
+          sessionId: backendId ?? 'S-unknown',
+          update,
+          ...(srud ? { _meta: { srud } } : {}),
+        },
       },
     });
   };
@@ -100,7 +129,7 @@ async function boot(options: { failDelete?: boolean } = {}) {
       expect(active().backendId).not.toBeNull();
     });
   };
-  return { useSessionStore, prompt, fire, active, calls, requested, waitForBackend };
+  return { useSessionStore, prompt, load, fire, active, calls, requested, waitForBackend };
 }
 
 beforeEach(() => {
@@ -450,5 +479,240 @@ describe('sessionStore live path', () => {
     await useSessionStore.getState().init();
     expect(useSessionStore.getState().sessions).toEqual([]);
     expect(useSessionStore.getState().initError).toContain('not configured');
+  });
+
+  it('takes the turn id the agent names, so a turn is found by its updates', async () => {
+    const { useSessionStore, active, fire, prompt, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    fire({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'A' } }, { turnId: 'T1' });
+    expect(active().turns[0].backendTurnId).toBe('T1');
+
+    // A later turn's updates name a different turn, so they open their own rather
+    // than continuing the one that is already on screen.
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+    useSessionStore.getState().sendTurn('again');
+    fire({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'B' } }, { turnId: 'T2' });
+    expect(active().turns).toHaveLength(2);
+    expect(active().turns[1].backendTurnId).toBe('T2');
+    expect(active().turns[1].steps[0].assistantText).toBe('B');
+  });
+
+  it('does not let the echoed user message overwrite what was sent', async () => {
+    const { useSessionStore, active, fire, prompt, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('the original words');
+    await waitForBackend();
+
+    fire(
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'the original words' } },
+      { turnId: 'T1' },
+    );
+    expect(active().turns[0].userInput).toBe('the original words');
+    // The user's own message is not something the agent did, so it is not a step.
+    expect(active().turns[0].steps).toEqual([]);
+
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+  });
+
+  it('closes a turn on the update that says how it ended', async () => {
+    const { useSessionStore, active, fire, prompt, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('go');
+    await waitForBackend();
+
+    fire({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'A' } }, { turnId: 'T1' });
+    fire(
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '!' } },
+      { turnId: 'T1', turnEndReason: 'interrupted' },
+    );
+    expect(active().turns[0].endReason).toBe('interrupted');
+    expect(active().turns[0].steps[0].assistantText).toBe('A!');
+    expect(active().turns[0].endedAt).toBeDefined();
+
+    prompt.resolve({ stopReason: 'cancelled' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('interrupted');
+    });
+  });
+});
+
+
+// The listing path: the agent is asked what sessions exist, and one is loaded
+// when it is picked. A session outlives the run that made it, so this is where
+// the ones from earlier runs come from.
+describe('sessionStore listing path', () => {
+  // What `session/list` answers with: one session from an earlier run, still on
+  // disk, last active two hours ago.
+  const LISTED = {
+    sessionId: 'S-previous',
+    cwd: '/work/previous',
+    title: 'Why the build fails',
+    updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+  };
+
+  it('asks the agent what sessions exist and shows them', async () => {
+    const { useSessionStore, calls, active } = await boot({ listed: [LISTED] });
+
+    expect(calls).toContain('session/list');
+    const sessions = useSessionStore.getState().sessions;
+    // The draft leads, so a new conversation is where typing starts.
+    expect(sessions).toHaveLength(2);
+    expect(active().backendId).toBeNull();
+    const stored = sessions.find((s) => s.backendId === 'S-previous');
+    expect(stored?.title).toBe('Why the build fails');
+    expect(stored?.cwd).toBe('/work/previous');
+    // Its conversation has not been asked for yet.
+    expect(stored?.loaded).toBe(false);
+    expect(stored?.turns).toEqual([]);
+  });
+
+  it('opens with a draft alone when the agent has no sessions', async () => {
+    const { useSessionStore, calls } = await boot();
+
+    expect(calls).toContain('session/list');
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
+    expect(useSessionStore.getState().sessions[0].backendId).toBeNull();
+  });
+
+  it('loads the conversation when a listed session is picked', async () => {
+    const { useSessionStore, calls, requested, fire, active, load } = await boot({
+      listed: [LISTED],
+    });
+    const listed = useSessionStore
+      .getState()
+      .sessions.find((s) => s.backendId === 'S-previous');
+    expect(useSessionStore.getState().activeId).not.toBe(listed?.id);
+
+    useSessionStore.getState().select(listed!.id);
+
+    expect(useSessionStore.getState().activeId).toBe(listed!.id);
+    // The directory it works in is named back, which is how the agent is told
+    // which session's directory to confirm.
+    await vi.waitFor(() => {
+      expect(calls).toContain('session/load');
+    });
+    const req = requested.find((r) => r.method === 'session/load');
+    expect(req?.params).toEqual({
+      sessionId: 'S-previous',
+      cwd: '/work/previous',
+      mcpServers: [],
+    });
+
+    fire(
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'the question' } },
+      { turnId: 'T1' },
+    );
+    fire(
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'the answer' } },
+      { turnId: 'T1', turnEndReason: 'completed' },
+    );
+    load.resolve(null);
+    await vi.waitFor(() => {
+      expect(active().turns).toHaveLength(1);
+    });
+    expect(active().turns[0].userInput).toBe('the question');
+    expect(active().turns[0].endReason).toBe('completed');
+    expect(
+      useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous')?.loaded,
+    ).toBe(true);
+  });
+
+  it('does not load the same conversation twice', async () => {
+    // Loading again would replay it on top of itself, so every turn in it would
+    // appear twice.
+    const { useSessionStore, calls, fire, active, load } = await boot({ listed: [LISTED] });
+    const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
+    useSessionStore.getState().select(listed!.id);
+    fire(
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'once' } },
+      { turnId: 'T1', turnEndReason: 'completed' },
+    );
+    load.resolve(null);
+    await vi.waitFor(() => {
+      expect(active().turns).toHaveLength(1);
+    });
+
+    const loads = calls.filter((m) => m === 'session/load').length;
+    useSessionStore.getState().select(useSessionStore.getState().sessions[0].id);
+    useSessionStore.getState().select(listed!.id);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(calls.filter((m) => m === 'session/load')).toHaveLength(loads);
+    expect(active().turns).toHaveLength(1);
+  });
+
+  it('refuses a prompt while a listed conversation is still arriving', async () => {
+    const { useSessionStore, calls, active } = await boot({ listed: [LISTED] });
+    const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
+    useSessionStore.getState().select(listed!.id);
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().reopening).toBe(true);
+    });
+
+    useSessionStore.getState().sendTurn('too early');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).not.toContain('session/prompt');
+    expect(active().turns).toEqual([]);
+  });
+
+  it('drops a session the agent will not name rather than showing it empty', async () => {
+    // It was listed a moment ago and now cannot be loaded, so something removed
+    // it. An empty conversation would be a lie about what the agent has.
+    const { useSessionStore, active } = await boot({
+      listed: [LISTED],
+      loadFails: { code: SESSION_NOT_FOUND, message: 'no such session' },
+    });
+    const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
+    useSessionStore.getState().select(listed!.id);
+
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().sessions).toHaveLength(1);
+    });
+    expect(useSessionStore.getState().initError).toBeNull();
+    // Deleting the one on screen opens a replacement, so the sidebar is never a
+    // dead end.
+    expect(active().backendId).toBeNull();
+  });
+
+  it('keeps a listed session and says so when loading it fails', async () => {
+    // Unlike one that is gone, this is a fault: the conversation is still there
+    // and a later attempt may well get it.
+    const { useSessionStore } = await boot({
+      listed: [LISTED],
+      loadFails: { code: -32603, message: 'cannot load the session' },
+    });
+    const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
+    useSessionStore.getState().select(listed!.id);
+
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().initError).toContain('cannot load the session');
+    });
+    expect(
+      useSessionStore.getState().sessions.some((s) => s.backendId === 'S-previous'),
+    ).toBe(true);
+    expect(useSessionStore.getState().reopening).toBe(false);
+  });
+
+  it('deletes a listed session without opening it first', async () => {
+    const { useSessionStore, calls, requested } = await boot({ listed: [LISTED] });
+    const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
+    expect(calls).not.toContain('session/load');
+
+    useSessionStore.getState().deleteSession(listed!.id);
+
+    await vi.waitFor(() => {
+      expect(calls).toContain('session/delete');
+    });
+    const req = requested.find((r) => r.method === 'session/delete');
+    expect((req?.params as { sessionId?: string })?.sessionId).toBe('S-previous');
+    expect(
+      useSessionStore.getState().sessions.some((s) => s.backendId === 'S-previous'),
+    ).toBe(false);
   });
 });

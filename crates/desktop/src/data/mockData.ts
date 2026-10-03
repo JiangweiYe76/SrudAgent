@@ -14,6 +14,8 @@ export const seedSessions: Session[] = [
   {
     id: 's1',
     backendId: 's1',
+    cwd: '/work',
+    loaded: true,
     title: 'Multi-agent topology discussion',
     createdAt: now - 30 * MIN,
     updatedAt: Date.now() - 1000 * 60 * 5,
@@ -87,6 +89,8 @@ export const seedSessions: Session[] = [
   {
     id: 's2',
     backendId: 's2',
+    cwd: '/work',
+    loaded: true,
     title: 'Rust workspace layout',
     createdAt: now - 5 * 60 * MIN,
     updatedAt: Date.now() - 1000 * 60 * 60 * 3,
@@ -137,6 +141,8 @@ export const seedSessions: Session[] = [
   {
     id: 's3',
     backendId: 's3',
+    cwd: '/work',
+    loaded: true,
     title: 'Context & memory scheme',
     createdAt: now - 27 * 60 * MIN,
     updatedAt: Date.now() - 1000 * 60 * 60 * 26,
@@ -188,6 +194,8 @@ export const seedSessions: Session[] = [
   {
     id: 's4',
     backendId: 's4',
+    cwd: '/work',
+    loaded: true,
     title: 'Implement session/resume rollout replay',
     createdAt: now - 90 * MIN,
     updatedAt: now - 2 * MIN,

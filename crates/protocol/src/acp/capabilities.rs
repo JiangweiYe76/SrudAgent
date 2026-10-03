@@ -9,15 +9,17 @@
 //!   reverse-calling the editor.
 //! - Prompt input is **text only**: `image`, `audio`, and `embeddedContext`
 //!   are off because the runtime's turn input is a plain string.
-//! - Session lifecycle is **in-memory only**: `close` and `list` are on;
-//!   `loadSession` and `resume` are off because there is no rollout store.
+//! - Session lifecycle: `close` and `list` are on, and so are `loadSession`
+//!   and `resume`, now that a session's log can rebuild it. `loadSession`
+//!   replays the conversation; `resume` restores it without replaying.
 //! - The `_srud/unstable/*` extensions are **not advertised**: the runtime
-//!   does not implement fork, steer, or rollout reads.
+//!   does not implement fork, steer, or log reads.
 
 use crate::acp::{
     AgentCapabilities, BooleanConfigOptionCapabilities, ClientCapabilities,
     ClientSessionCapabilities, FileSystemCapabilities, McpCapabilities, PromptCapabilities,
     SessionCapabilities, SessionCloseCapabilities, SessionListCapabilities,
+    SessionResumeCapabilities,
 };
 
 /// The `_srud/unstable/session/*` extension method names. They are not
@@ -34,7 +36,7 @@ pub const SRUD_UNSTABLE_METHODS: &[&str] = &[
 #[must_use]
 pub fn agent_capabilities() -> AgentCapabilities {
     AgentCapabilities::new()
-        .load_session(false)
+        .load_session(true)
         .prompt_capabilities(
             PromptCapabilities::new()
                 .image(false)
@@ -45,7 +47,8 @@ pub fn agent_capabilities() -> AgentCapabilities {
         .session_capabilities(
             SessionCapabilities::new()
                 .list(SessionListCapabilities::new())
-                .close(SessionCloseCapabilities::new()),
+                .close(SessionCloseCapabilities::new())
+                .resume(SessionResumeCapabilities::new()),
         )
 }
 
@@ -76,13 +79,13 @@ mod tests {
     #[test]
     fn agent_capabilities_match_the_contract() {
         let value = serde_json::to_value(agent_capabilities()).unwrap();
-        assert_eq!(value["loadSession"], json!(false));
+        assert_eq!(value["loadSession"], json!(true));
         assert_eq!(value["promptCapabilities"]["image"], json!(false));
         assert_eq!(value["promptCapabilities"]["audio"], json!(false));
         assert_eq!(value["promptCapabilities"]["embeddedContext"], json!(false));
         assert!(value["sessionCapabilities"]["list"].is_object());
         assert!(value["sessionCapabilities"]["close"].is_object());
-        assert!(value["sessionCapabilities"].get("resume").is_none());
+        assert!(value["sessionCapabilities"]["resume"].is_object());
         assert!(value["sessionCapabilities"]
             .get("additionalDirectories")
             .is_none());

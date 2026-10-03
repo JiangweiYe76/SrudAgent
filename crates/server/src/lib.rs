@@ -12,7 +12,8 @@
 //!
 //! Behavioural boundaries:
 //!
-//! - In-memory sessions only — no rollout store, so `session/load`,
+//! - The session registry is in memory, so a restart empties it. What a turn
+//!   wrote to the session's log survives, but nothing reads it back: `session/load`,
 //!   `session/resume`, and the `_srud/unstable/*` extensions answer
 //!   `METHOD_NOT_FOUND` and are not advertised in the capabilities.
 //! - No approval flow — `session/request_permission` is not implemented; a tool
