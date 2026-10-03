@@ -4,7 +4,7 @@
 // arriving. That gap renders nothing at all, so it is the easiest state in the app
 // to break without noticing: delete the indicator and the only symptom is a
 // reader who cannot tell whether the app heard them.
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { MessageList } from './MessageList';
@@ -12,6 +12,39 @@ import type { Step, Turn } from '@/lib/types';
 
 let container: HTMLDivElement;
 let root: Root;
+
+// jsdom implements no ResizeObserver and no layout, so both are stood in for. The
+// observer here keeps its callbacks so a test can fire one by hand, which is the
+// only way to exercise the follow-on-late-growth path deterministically.
+let resizeCallbacks: (() => void)[] = [];
+
+/** The turns the list was last asked to render, so a test can re-render them. */
+let lastTurns: Turn[] = [];
+
+class ManualResizeObserver {
+  private readonly callback: () => void;
+
+  constructor(callback: () => void) {
+    this.callback = callback;
+    resizeCallbacks.push(callback);
+  }
+
+  observe(): void {}
+  unobserve(): void {}
+
+  disconnect(): void {
+    // Dropping the callback is what stops a stale observer from following the list
+    // after the component is gone.
+    resizeCallbacks = resizeCallbacks.filter((cb) => cb !== this.callback);
+  }
+}
+
+/** Notifies the list that the content it is watching has changed size. */
+function fireResize(): void {
+  act(() => {
+    for (const callback of [...resizeCallbacks]) callback();
+  });
+}
 
 /** A step carrying nothing, which an empty chunk can produce. */
 function emptyStep(id: string): Step {
@@ -29,6 +62,7 @@ function turn(partial: Partial<Turn> & { id: string }): Turn {
 
 /** Renders one turn and returns its container. */
 function render(turns: Turn[]): HTMLElement {
+  lastTurns = turns;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -36,6 +70,71 @@ function render(turns: Turn[]): HTMLElement {
     root.render(<MessageList turns={turns} />);
   });
   return container;
+}
+
+/**
+ * Gives the scroll container a pretend geometry.
+ *
+ * jsdom reports every element as 0x0 with no scrollable content, so `scrollTop` is
+ * always 0 and assigning it is a no-op that proves nothing. Laying the numbers out
+ * by hand is what lets the follow behaviour be asserted at all.
+ */
+function setGeometry(
+  list: HTMLElement,
+  { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number },
+): void {
+  // The current position carries across, because growing the content does not move
+  // the scroll offset in a real browser either. Resetting it here would silently
+  // undo the scroll a test had just performed.
+  let scrollTop = list.scrollTop;
+  Object.defineProperties(list, {
+    scrollHeight: { value: scrollHeight, configurable: true },
+    clientHeight: { value: clientHeight, configurable: true },
+    // Browsers clamp `scrollTop` to the scrollable range; jsdom does not. Without
+    // the clamp, assigning the bottom would leave `scrollTop` past the end and every
+    // distance calculation would come out negative.
+    scrollTop: {
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = Math.max(0, Math.min(value, scrollHeight - clientHeight));
+      },
+      configurable: true,
+    },
+  });
+}
+
+/** The list's scrolled distance from the bottom, as the list itself computes it. */
+function distanceFromBottom(list: HTMLElement): number {
+  return list.scrollHeight - list.scrollTop - list.clientHeight;
+}
+
+/** The scrollable element the list renders. */
+function list(): HTMLElement {
+  return container.querySelector<HTMLElement>('.overflow-y-auto')!;
+}
+
+/**
+ * Re-renders to trigger the follow that a new token would cause.
+ *
+ * The geometry is faked after the list has mounted, so the follow on mount already
+ * ran against jsdom's zeroes. Rendering again is what lets the list respond to the
+ * numbers the test has just put in place.
+ */
+function follow(): void {
+  // A fresh array, because the follow keys off the identity of `turns` — the store
+  // hands out a new one per token, and re-rendering with the same reference would
+  // not count as a new token.
+  act(() => {
+    root.render(<MessageList turns={[...lastTurns]} />);
+  });
+}
+
+/** Scrolls the list the way a reader dragging the scrollbar would. */
+function scrollTo(list: HTMLElement, scrollTop: number): void {
+  act(() => {
+    list.scrollTop = scrollTop;
+    list.dispatchEvent(new Event('scroll'));
+  });
 }
 
 /** The three-dot mark, which is the only thing meant to signal a wait. */
@@ -49,11 +148,176 @@ beforeAll(() => {
   // calls it to follow a growing transcript; that is real browser behaviour, and
   // stubbing it here is cheaper than pretending this suite tests scrolling.
   Element.prototype.scrollIntoView = () => {};
+  globalThis.ResizeObserver = ManualResizeObserver as unknown as typeof ResizeObserver;
+});
+
+beforeEach(() => {
+  resizeCallbacks = [];
 });
 
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
+});
+
+describe('following the bottom while streaming', () => {
+  it('lands on the bottom as tokens arrive, without animating', () => {
+    // The old code used `scrollIntoView({ behavior: 'smooth' })` on every token.
+    // Re-targeting a smooth scroll that often means it never completes: measured in
+    // a real browser over a 60-chunk stream, it ended 1320px — the whole height of
+    // the content — short of the bottom, having moved nowhere at all.
+    render([turn({ id: 't1', steps: [{ id: 's1', assistantText: 'first', toolCalls: [] }] })]);
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+
+    act(() => {
+      root.render(
+        <MessageList
+          turns={[
+            turn({
+              id: 't1',
+              steps: [{ id: 's1', assistantText: 'first and more and more', toolCalls: [] }],
+            }),
+          ]}
+        />,
+      );
+    });
+
+    // Exactly at the bottom: no animation in flight, nothing left to catch up to.
+    expect(distanceFromBottom(el)).toBe(0);
+    expect(el.scrollTop).toBe(1600);
+  });
+
+  it('never leaves the reader above the bottom while they are following', () => {
+    render([turn({ id: 't1' })]);
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+
+    // Each token grows the transcript; the follow must keep up on every one.
+    for (let i = 0; i < 20; i++) {
+      setGeometry(el, { scrollHeight: 2000 + i * 30, clientHeight: 400 });
+      act(() => {
+        root.render(
+          <MessageList
+            turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'x'.repeat(i), toolCalls: [] }] })]}
+          />,
+        );
+      });
+      expect(distanceFromBottom(el)).toBe(0);
+    }
+  });
+
+  it('follows content that grows after its tokens, such as a diagram', () => {
+    // A mermaid diagram renders asynchronously and makes the transcript taller long
+    // after the fence that introduced it. Following only on new tokens would leave
+    // the reader short of the bottom with nothing to trigger a correction.
+    render([turn({ id: 't1', steps: [{ id: 's1', assistantText: '```mermaid', toolCalls: [] }] })]);
+    const el = list();
+    setGeometry(el, { scrollHeight: 1000, clientHeight: 400 });
+    act(() => {
+      root.render(
+        <MessageList turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'done', toolCalls: [] }] })]} />,
+      );
+    });
+
+    // The diagram lands and the content is 600px taller.
+    setGeometry(el, { scrollHeight: 1600, clientHeight: 400 });
+    fireResize();
+
+    expect(distanceFromBottom(el)).toBe(0);
+  });
+
+  it('leaves a reader alone once they scroll up to re-read', () => {
+    // Dragging them back to the bottom on every token would make a long answer
+    // unreadable while it was still arriving.
+    render([turn({ id: 't1' })]);
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+    follow();
+    expect(distanceFromBottom(el)).toBe(0);
+
+    scrollTo(el, 200);
+
+    setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
+    act(() => {
+      root.render(
+        <MessageList turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }] })]} />,
+      );
+    });
+
+    expect(el.scrollTop).toBe(200);
+  });
+
+  it('does not drag a scrolled-up reader back when a diagram lands either', () => {
+    render([turn({ id: 't1' })]);
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+    scrollTo(el, 100);
+
+    setGeometry(el, { scrollHeight: 2600, clientHeight: 400 });
+    fireResize();
+
+    expect(el.scrollTop).toBe(100);
+  });
+
+  it('resumes following once the reader scrolls back down', () => {
+    render([turn({ id: 't1' })]);
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+    scrollTo(el, 0);
+    expect(el.scrollTop).toBe(0);
+
+    // Back to the bottom, within the slop that counts as following.
+    scrollTo(el, 1570);
+
+    setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
+    act(() => {
+      root.render(
+        <MessageList turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }] })]} />,
+      );
+    });
+
+    expect(distanceFromBottom(el)).toBe(0);
+  });
+
+  it('follows a new turn even after the reader scrolled back', () => {
+    render([turn({ id: 't1' })]);
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+    scrollTo(el, 0);
+
+    act(() => {
+      root.render(
+        <MessageList
+          turns={[
+            turn({ id: 't1', endReason: 'completed', endedAt: 1 }),
+            turn({ id: 't2' }),
+          ]}
+        />,
+      );
+    });
+
+    // Somebody who just sent a message wants to watch the answer arrive.
+    expect(distanceFromBottom(el)).toBe(0);
+  });
+
+  it('treats a near-enough position as still following', () => {
+    // A handful of pixels short of the bottom is not a reader who has scrolled away,
+    // and snapping them to the bottom over that gap would be its own small jump.
+    render([turn({ id: 't1' })]);
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+    scrollTo(el, 1600 - 8);
+
+    setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
+    act(() => {
+      root.render(
+        <MessageList turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'm', toolCalls: [] }] })]} />,
+      );
+    });
+
+    expect(distanceFromBottom(el)).toBe(0);
+  });
 });
 
 describe('waiting for the first token', () => {
