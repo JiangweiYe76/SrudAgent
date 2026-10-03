@@ -126,6 +126,7 @@ impl<'a> Journal<'a> {
                 // from its request's would land as a separate call.
                 call_id: call_id.clone(),
                 output: outcome.output.clone(),
+                is_error: outcome.is_error,
             },
             Some(Event::ToolCallEnd {
                 call_id,

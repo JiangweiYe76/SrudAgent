@@ -185,7 +185,16 @@ pub enum ResponseItem {
         arguments: String,
     },
     /// The result of a tool call, fed back to the model.
-    FunctionCallOutput { call_id: String, output: String },
+    ///
+    /// `is_error` is recorded but not sent: the model reads the failure from the
+    /// text itself (see [`crate::tools::FAILURE_MARKER`]), while a client
+    /// replaying the log needs to tell a call that failed from one that ran.
+    FunctionCallOutput {
+        call_id: String,
+        output: String,
+        /// Whether the tool ran and failed.
+        is_error: bool,
+    },
     /// Model reasoning, when the provider returns it separately.
     Reasoning { content: String },
 }
@@ -238,6 +247,7 @@ mod tests {
             ResponseItem::FunctionCallOutput {
                 call_id: "call_1".into(),
                 output: "contents".into(),
+                is_error: false,
             },
             ResponseItem::Reasoning {
                 content: "thinking".into(),

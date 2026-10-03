@@ -24,6 +24,9 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Datelike;
 use srud_core::session::Session;
+use srud_core::session_event::SessionEvent;
+use srud_core::session_log::{RecordError, SessionLog};
+use srud_core::session_store::SessionLogWriter;
 use srud_protocol::acp::{SessionId, SessionInfo};
 
 use crate::config;
@@ -167,6 +170,13 @@ async fn open_log(
 #[derive(Default)]
 pub struct SessionManager {
     sessions: Mutex<HashMap<String, Tracked>>,
+    /// Serialises title changes.
+    ///
+    /// Async, and taken for the whole change, because deciding the title and
+    /// recording it straddle an await: the sessions map is behind a std lock, and
+    /// holding one across the write is not `Send`. Without this, two changes could
+    /// record in one order and apply in another.
+    titles: tokio::sync::Mutex<()>,
 }
 
 impl SessionManager {
@@ -268,14 +278,27 @@ impl SessionManager {
     ///
     /// An empty or whitespace-only title clears it, returning the session to its
     /// unnamed state.
-    pub fn set_title(&self, id: &SessionId, title: &str) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// If the title could not be recorded. The change is not applied in that case:
+    /// a title a reader cannot find later is one the session does not have.
+    pub async fn set_title(&self, id: &SessionId, title: &str) -> Result<bool, RecordError> {
+        let _changing = self.titles.lock().await;
         let title = normalise_title(title);
+        let Some(log) = self.log_of(id) else {
+            return Ok(false);
+        };
+        SessionLog::record(log.as_ref(), &SessionEvent::title(title.clone())).await?;
+
         let mut sessions = self.sessions.lock().expect("session map lock poisoned");
         let Some(tracked) = sessions.get_mut(id.0.as_ref()) else {
-            return false;
+            // Gone between the record and here, so nothing was renamed. The title
+            // record is already in a log that is going with it.
+            return Ok(false);
         };
         tracked.title = title;
-        true
+        Ok(true)
     }
 
     /// Names a session only while it is still unnamed, returning whether the
@@ -284,21 +307,41 @@ impl SessionManager {
     /// Returns `false` if the session is unknown, already named, or the title
     /// holds nothing visible. This is how the first prompt claims the title
     /// without a later prompt overwriting a name the user has since chosen.
-    /// Deciding and writing under one lock keeps two concurrent prompts from
-    /// both believing they won.
-    pub fn name_if_unnamed(&self, id: &SessionId, title: &str) -> bool {
+    ///
+    /// Reading the current title and writing the record are one step under the
+    /// titles lock, so two prompts cannot both believe they won.
+    ///
+    /// # Errors
+    ///
+    /// As [`SessionManager::set_title`].
+    pub async fn name_if_unnamed(&self, id: &SessionId, title: &str) -> Result<bool, RecordError> {
+        let _changing = self.titles.lock().await;
         let Some(title) = normalise_title(title) else {
-            return false;
+            return Ok(false);
         };
+        let Some(log) = self.log_of(id) else {
+            return Ok(false);
+        };
+        if self.title(id).is_some() {
+            return Ok(false);
+        }
+        SessionLog::record(log.as_ref(), &SessionEvent::title(Some(title.clone()))).await?;
+
         let mut sessions = self.sessions.lock().expect("session map lock poisoned");
         let Some(tracked) = sessions.get_mut(id.0.as_ref()) else {
-            return false;
+            return Ok(false);
         };
-        if tracked.title.is_some() {
-            return false;
-        }
         tracked.title = Some(title);
-        true
+        Ok(true)
+    }
+
+    /// The log a session writes to, if the session exists.
+    fn log_of(&self, id: &SessionId) -> Option<Arc<SessionLogWriter>> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .map(|tracked| Arc::clone(&tracked.log))
     }
 
     /// Reads a session's display title, if it has one.
@@ -402,6 +445,85 @@ mod tests {
             .create(None)
             .await
             .expect("the workspace is creatable")
+    }
+
+    /// The path of a session's log, found by the id in its filename.
+    ///
+    /// Searched rather than recomputed: the name carries the moment the session
+    /// was created, which only the write path knows.
+    fn session_log_path(id: &SessionId) -> PathBuf {
+        let home = env::var(HOME_VAR).expect("the test home");
+        let mut dirs = vec![PathBuf::from(home).join(SESSIONS_DIR)];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .ends_with(&format!("-{id}.jsonl"))
+                {
+                    return path;
+                }
+            }
+        }
+        panic!("no log for session {id}");
+    }
+
+    /// The title records a session's log holds, oldest first.
+    async fn recorded_titles(id: &SessionId) -> Vec<Option<String>> {
+        let path = session_log_path(id);
+        srud_core::session_store::read(&path)
+            .await
+            .expect("a log to read")
+            .entries
+            .into_iter()
+            .filter_map(|entry| match entry.event {
+                SessionEvent::Title { title } => Some(title),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn every_title_change_reaches_the_log() {
+        // The title is not derivable — a model wrote it, or a client chose it — so
+        // a session that cannot find it in its log comes back unnamed. Clearing
+        // has to be recorded too, or the cleared name comes back.
+        let (manager, _env) = manager();
+        let id = create(&manager).await;
+
+        manager.name_if_unnamed(&id, "derived").await.unwrap();
+        manager.set_title(&id, "chosen by the user").await.unwrap();
+        manager.set_title(&id, "   ").await.unwrap();
+
+        assert_eq!(
+            recorded_titles(&id).await,
+            vec![
+                Some("derived".to_string()),
+                Some("chosen by the user".to_string()),
+                // `None` is a cleared title, written rather than omitted.
+                None,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_prompt_does_not_record_the_name_it_lost() {
+        // Latest-wins, so an extra record would be the title a reader took even
+        // though the session never adopted it.
+        let (manager, _env) = manager();
+        let id = create(&manager).await;
+
+        manager.name_if_unnamed(&id, "first").await.unwrap();
+        assert!(!manager.name_if_unnamed(&id, "second").await.unwrap());
+
+        assert_eq!(recorded_titles(&id).await, vec![Some("first".to_string())]);
     }
 
     #[tokio::test]
@@ -577,9 +699,12 @@ mod tests {
     async fn name_if_unnamed_only_the_first_caller_wins() {
         let (manager, _env) = manager();
         let id = create(&manager).await;
-        assert!(manager.name_if_unnamed(&id, "first message"));
+        assert!(manager.name_if_unnamed(&id, "first message").await.unwrap());
         // A later prompt must not clobber the name the session already has.
-        assert!(!manager.name_if_unnamed(&id, "second message"));
+        assert!(!manager
+            .name_if_unnamed(&id, "second message")
+            .await
+            .unwrap());
         assert_eq!(manager.title(&id).as_deref(), Some("first message"));
     }
 
@@ -587,28 +712,34 @@ mod tests {
     async fn set_title_overwrites_and_reports_unknown_ids() {
         let (manager, _env) = manager();
         let id = create(&manager).await;
-        assert!(manager.name_if_unnamed(&id, "derived"));
-        assert!(manager.set_title(&id, "chosen by the user"));
+        assert!(manager.name_if_unnamed(&id, "derived").await.unwrap());
+        assert!(manager.set_title(&id, "chosen by the user").await.unwrap());
         assert_eq!(manager.title(&id).as_deref(), Some("chosen by the user"));
-        assert!(!manager.set_title(&SessionId::new("nope"), "x"));
+        assert!(!manager
+            .set_title(&SessionId::new("nope"), "x")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
     async fn a_blank_title_clears_the_name() {
         let (manager, _env) = manager();
         let id = create(&manager).await;
-        manager.name_if_unnamed(&id, "named");
-        assert!(manager.set_title(&id, "   \n  "));
+        manager.name_if_unnamed(&id, "named").await.unwrap();
+        assert!(manager.set_title(&id, "   \n  ").await.unwrap());
         assert_eq!(manager.title(&id), None);
         // Cleared means unnamed, so the next prompt may name it again.
-        assert!(manager.name_if_unnamed(&id, "named again"));
+        assert!(manager.name_if_unnamed(&id, "named again").await.unwrap());
     }
 
     #[tokio::test]
     async fn titles_collapse_to_a_single_line() {
         let (manager, _env) = manager();
         let id = create(&manager).await;
-        manager.set_title(&id, "  fix   the\n\n  timestamp  ");
+        manager
+            .set_title(&id, "  fix   the\n\n  timestamp  ")
+            .await
+            .unwrap();
         assert_eq!(manager.title(&id).as_deref(), Some("fix the timestamp"));
     }
 
@@ -616,7 +747,7 @@ mod tests {
     async fn list_reports_the_title() {
         let (manager, _env) = manager();
         let named = create(&manager).await;
-        manager.set_title(&named, "Named session");
+        manager.set_title(&named, "Named session").await.unwrap();
         let listed = manager.list();
         let titled = listed
             .iter()

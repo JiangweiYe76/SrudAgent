@@ -131,7 +131,7 @@ impl Agent {
             SESSION_DELETE => self
                 .handle_delete(params)
                 .map(|()| serialize(DeleteSessionResponse::new())),
-            SRUD_SESSION_SET_TITLE => self.handle_set_title(params).map(serialize),
+            SRUD_SESSION_SET_TITLE => self.handle_set_title(params).await.map(serialize),
             // Known-but-unimplemented methods get the same treatment as
             // unknown ones: the capabilities never advertised them.
             _ => Err(AcpError::new(
@@ -191,7 +191,8 @@ impl Agent {
             .ok_or_else(|| session_not_found(&request.session_id))?;
 
         let text = prompt_with_validation(&request.prompt)?;
-        self.name_from_first_prompt(&request.session_id, &text);
+        self.name_from_first_prompt(&request.session_id, &text)
+            .await;
 
         let sink = self.hub.sink_for(session.id());
         let result = srud_core::turn::run_turn(
@@ -258,17 +259,34 @@ impl Agent {
     /// must not overwrite it, and a rename the user has already made wins. When
     /// this call is the one that named the session, it broadcasts the title so
     /// every attached client renders it without asking.
-    fn name_from_first_prompt(&self, session_id: &SessionId, text: &str) {
+    ///
+    /// A title that cannot be recorded is not announced, but does not fail the
+    /// prompt: the name is cosmetic, and the turn it opened still has to run. The
+    /// failure is dropped, which is the one place that is the right answer — a
+    /// disk that refused the title will refuse the turn's own records a moment
+    /// later and report it there.
+    async fn name_from_first_prompt(&self, session_id: &SessionId, text: &str) {
         let title = title_from_prompt(text);
-        if self.sessions.name_if_unnamed(session_id, &title) {
+        if let Ok(true) = self.sessions.name_if_unnamed(session_id, &title).await {
             self.broadcast_title(session_id, Some(title));
         }
     }
 
-    fn handle_set_title(&self, params: Value) -> Result<SetSessionTitleResponse, AcpError> {
+    async fn handle_set_title(&self, params: Value) -> Result<SetSessionTitleResponse, AcpError> {
         let request: SetSessionTitleRequest = parse_params(params)?;
-        if !self.sessions.set_title(&request.session_id, &request.title) {
-            return Err(session_not_found(&request.session_id));
+        match self
+            .sessions
+            .set_title(&request.session_id, &request.title)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return Err(session_not_found(&request.session_id)),
+            Err(err) => {
+                return Err(AcpError::new(
+                    INTERNAL_ERROR,
+                    format!("cannot record the title: {err}"),
+                ));
+            }
         }
         // Echo the effective title rather than the request's, so a blank title
         // is reported as the clear it was.

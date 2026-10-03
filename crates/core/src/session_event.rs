@@ -22,6 +22,7 @@
 //! ```text
 //! {"time":"2026-10-03T21:28:14.123Z","event":{"type":"session","session_id":"…","cwd":"…","version":1}}
 //! {"time":"…","event":{"type":"system","content":"# Role\n\n…"}}
+//! {"time":"…","event":{"type":"title","title":"Fix the timestamp"}}
 //! {"time":"…","event":{"type":"turn_started","turn_id":"…"}}
 //! {"time":"…","event":{"type":"item","turn_id":"…","message_id":"…","item":{…}}}
 //! {"time":"…","event":{"type":"turn_ended","turn_id":"…","reason":"interrupted"}}
@@ -40,7 +41,8 @@
 //! reader wanting to tell context from conversation has to look at the content.
 //!
 //! The system instruction is also not an `Item`, and is recorded once as
-//! [`SessionEvent::System`] above the turns instead.
+//! [`SessionEvent::System`] above the turns instead. The title is likewise its
+//! own record, since it changes after the session is written.
 
 use std::path::PathBuf;
 
@@ -116,6 +118,20 @@ pub enum SessionEvent {
     System {
         /// The rendered instruction, as sent.
         content: String,
+    },
+
+    /// The session's display title, as last set.
+    ///
+    /// Written whenever the title changes — the first prompt naming the session,
+    /// or a client renaming it — and a reader takes the last one. `None` is a
+    /// title cleared, which is not the same as no title record at all.
+    ///
+    /// Its own record rather than a field on [`Session`](Self::Session): a title
+    /// changes after the session exists, and an append-only log cannot go back and
+    /// edit the first line.
+    Title {
+        /// The title, or `None` when it was cleared.
+        title: Option<String>,
     },
 
     /// A turn began. Has no wire counterpart.
@@ -213,6 +229,12 @@ impl SessionEvent {
         }
     }
 
+    /// Builds a title change. `None` records a cleared title.
+    #[must_use]
+    pub fn title(title: Option<String>) -> Self {
+        Self::Title { title }
+    }
+
     /// Builds a history-entry record.
     #[must_use]
     pub fn item(turn_id: TurnId, message_id: Option<MessageId>, item: ResponseItem) -> Self {
@@ -225,12 +247,12 @@ impl SessionEvent {
 
     /// The turn this record belongs to, if it belongs to one.
     ///
-    /// The session's own record and the system instruction do not: both are
-    /// written before any turn runs.
+    /// The session's own record, the system instruction and the title do not: all
+    /// three are written at session scope, outside any turn.
     #[must_use]
     pub fn turn_id(&self) -> Option<TurnId> {
         match self {
-            Self::Session { .. } | Self::System { .. } => None,
+            Self::Session { .. } | Self::System { .. } | Self::Title { .. } => None,
             Self::TurnStarted { turn_id }
             | Self::Item { turn_id, .. }
             | Self::TurnEnded { turn_id, .. } => Some(*turn_id),
@@ -297,6 +319,7 @@ mod tests {
         let entries = vec![
             SessionEvent::session(SessionId::new(), PathBuf::from("/w")),
             SessionEvent::system("# Role\n\nYou are Srud."),
+            SessionEvent::title(Some("Fix the timestamp".into())),
             SessionEvent::TurnStarted { turn_id },
             SessionEvent::item(
                 turn_id,
@@ -336,6 +359,11 @@ mod tests {
                 SessionEvent::system("# Role\n\nYou are Srud."),
                 "system",
                 vec!["content"],
+            ),
+            (
+                SessionEvent::title(Some("Fix the timestamp".into())),
+                "title",
+                vec!["title"],
             ),
             (
                 SessionEvent::TurnStarted { turn_id },
@@ -387,11 +415,18 @@ mod tests {
     }
 
     #[test]
-    fn a_record_with_no_turn_is_only_the_session_record() {
+    fn a_record_at_session_scope_belongs_to_no_turn() {
         // The reader reconstructs a session by walking records in order, so it
-        // has to be able to tell which records open a turn.
-        let opening = SessionEvent::session(SessionId::new(), PathBuf::from("/w"));
-        assert_eq!(opening.turn_id(), None);
+        // has to be able to tell which records open a turn. These are written at
+        // session scope and must not be attributed to one.
+        for outside in [
+            SessionEvent::session(SessionId::new(), PathBuf::from("/w")),
+            SessionEvent::system("# Role"),
+            SessionEvent::title(Some("A title".into())),
+            SessionEvent::title(None),
+        ] {
+            assert_eq!(outside.turn_id(), None, "{outside:?}");
+        }
 
         let turn_id = TurnId::new();
         assert_eq!(
@@ -406,6 +441,19 @@ mod tests {
             .turn_id(),
             Some(turn_id)
         );
+    }
+
+    #[test]
+    fn a_cleared_title_is_written_rather_than_omitted() {
+        // `null` is the statement "this session has no title". Omitting the field
+        // would read as "this record says nothing about the title", which under
+        // latest-wins would leave the previous one standing.
+        let value = serde_json::to_value(SessionEvent::title(None)).unwrap();
+
+        assert_eq!(value["type"], "title");
+        assert!(value["title"].is_null(), "{value}");
+        let back: SessionEvent = serde_json::from_value(value).unwrap();
+        assert_eq!(back, SessionEvent::title(None));
     }
 
     #[test]

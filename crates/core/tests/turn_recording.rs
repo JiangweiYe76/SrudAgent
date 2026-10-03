@@ -131,6 +131,7 @@ fn describe(entry: &SessionEvent) -> String {
     match entry {
         SessionEvent::Session { .. } => "session".into(),
         SessionEvent::System { .. } => "system".into(),
+        SessionEvent::Title { .. } => "title".into(),
         SessionEvent::TurnStarted { .. } => "turn_started".into(),
         SessionEvent::TurnEnded { .. } => "turn_ended".into(),
         SessionEvent::Item { item, .. } => match item {
@@ -251,6 +252,29 @@ fn tools() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(Echo)).expect("a fresh registry");
     registry
+}
+
+/// A tool that always fails, so a turn records a failed result.
+struct Refusing;
+
+#[async_trait]
+impl Tool for Refusing {
+    fn name(&self) -> &str {
+        "refuse"
+    }
+    fn description(&self) -> &str {
+        "Always fails."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object" })
+    }
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _arguments: serde_json::Value,
+    ) -> Result<ToolOutcome, srud_core::tools::ToolError> {
+        Ok(ToolOutcome::failure("it did not work"))
+    }
 }
 
 /// A session working in a directory that does not exist, which the loop never
@@ -841,4 +865,53 @@ async fn the_instruction_recorded_is_the_one_the_request_carries() {
         Some(recorded.as_str()),
         "the log and the request must not diverge"
     );
+}
+
+#[tokio::test]
+async fn a_failed_tool_is_recorded_as_failed() {
+    // The flag is what tells a client replaying the log that a call failed. The
+    // text carries a marker too, but that is what the model reads, not a fact a
+    // reader can rely on — a tool could legitimately print it.
+    let log = Volatile::new();
+    let timeline = Timeline::default();
+    let session = session();
+    let client = Scripted::new(vec![
+        vec![
+            ModelEvent::ToolCall {
+                call_id: "c1".into(),
+                name: "refuse".into(),
+                arguments: "{}".into(),
+            },
+            ModelEvent::Done,
+        ],
+        vec![ModelEvent::Done],
+    ]);
+    let mut tools = ToolRegistry::new();
+    tools
+        .register(Arc::new(Refusing))
+        .expect("a fresh registry");
+
+    run_turn(
+        &session,
+        TurnInput { text: "go".into() },
+        &client,
+        &tools,
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+
+    let recorded = events(&log)
+        .into_iter()
+        .find_map(|event| match event {
+            SessionEvent::Item {
+                item: ResponseItem::FunctionCallOutput { is_error, .. },
+                ..
+            } => Some(is_error),
+            _ => None,
+        })
+        .expect("a tool result was recorded");
+
+    assert!(recorded, "the failure is recorded, not left to the text");
 }
