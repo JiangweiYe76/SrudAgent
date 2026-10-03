@@ -354,3 +354,30 @@ it('leaves inline code as a single element', () => {
     expect(html).not.toContain('$E');
   });
 });
+
+describe('links', () => {
+  // A click the webview acts on navigates the webview, which replaces the whole app
+  // with whatever page the model linked. That is the bug these guard against.
+  it('opens a web link through the browser instead of navigating', () => {
+    const html = render('see [the docs](https://example.com/docs)');
+
+    // The href is the parsed form, which is what the allowlist approved.
+    expect(html).toContain('href="https://example.com/docs"');
+    // Without this the webview follows the link itself.
+    expect(html).not.toContain('target="_blank"');
+  });
+
+  it('leaves a non-web scheme inert rather than opening it', () => {
+    const html = render('[click](javascript:alert(1))');
+
+    // No href at all, so nothing can revive it by another route such as a middle
+    // click or "open in new tab".
+    expect(html).not.toContain('javascript:');
+  });
+
+  it('drops the href on a file link', () => {
+    const html = render('[config](/etc/passwd)');
+
+    expect(html).not.toContain('/etc/passwd');
+  });
+});

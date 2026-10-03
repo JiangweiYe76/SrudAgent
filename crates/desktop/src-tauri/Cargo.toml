@@ -20,6 +20,7 @@ srud-client = { workspace = true }
 srud-protocol = { workspace = true }
 srud-server = { workspace = true }
 dotenvy = { workspace = true }
+tauri-plugin-opener = "2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "time"] }
