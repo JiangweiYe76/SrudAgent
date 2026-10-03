@@ -107,24 +107,86 @@ function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
   );
 }
 
-export function MessageList({ turns }: MessageListProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+// How near the bottom still counts as following. A reader a few pixels short of
+// the end has not scrolled away, and must not be treated as if they had.
+const STICK_SLOP = 32;
 
+export function MessageList({ turns }: MessageListProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const followingRef = useRef(true);
+
+  // Whether the reader is at the bottom, tracked from their scrolling rather than
+  // from the content growing. Somebody reading back through a long answer would
+  // otherwise be dragged to the bottom by every token that arrived.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const list = listRef.current;
+    if (!list) return;
+
+    const onScroll = () => {
+      const distance = list.scrollHeight - list.scrollTop - list.clientHeight;
+      followingRef.current = distance <= STICK_SLOP;
+    };
+    list.addEventListener('scroll', onScroll, { passive: true });
+    return () => list.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // A new turn means the reader just sent something and wants to watch it arrive,
+  // so following resumes even if they had scrolled back to read something.
+  const turnCount = turns.length;
+  const seenTurns = useRef(turnCount);
+  useEffect(() => {
+    if (turnCount > seenTurns.current) followingRef.current = true;
+    seenTurns.current = turnCount;
+  }, [turnCount]);
+
+  // Follow the bottom, but only while following.
+  //
+  // `scrollTop` is assigned rather than reached with `scrollIntoView({ behavior:
+  // 'smooth' })`, for two measured reasons. Smooth was re-targeted on every token
+  // and never completed, leaving the view stalled short of the bottom it was meant
+  // to be following — in a 60-chunk stream it moved nowhere at all. And
+  // `scrollIntoView` scrolls every scrollable ancestor, not only this list. Setting
+  // `scrollTop` lands on the new bottom in one step, which is what content growing
+  // every few tens of milliseconds needs: there is nothing to animate towards.
+  useEffect(() => {
+    const list = listRef.current;
+    if (list && followingRef.current) list.scrollTop = list.scrollHeight;
   }, [turns]);
+
+  // Content that grows *after* the tokens that introduced it: a mermaid diagram
+  // and a formula both render asynchronously and make the transcript taller once
+  // they land. Following on `turns` alone would leave the reader short of the
+  // bottom until they scrolled.
+  useEffect(() => {
+    const list = listRef.current;
+    const content = contentRef.current;
+    if (!list || !content) return;
+
+    const follow = () => {
+      if (followingRef.current) list.scrollTop = list.scrollHeight;
+    };
+    follow();
+
+    const observer = new ResizeObserver(follow);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
 
   if (turns.length === 0) {
     return (
-      <div className="flex flex-1 flex-col overflow-y-auto">
+      <div ref={listRef} className="flex flex-1 flex-col overflow-y-auto">
         <div className="m-auto text-sm text-muted-foreground">{t('empty.startChat')}</div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-1 flex-col overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-[900px] flex-col gap-4 p-[20px_32px_140px]">
+    <div ref={listRef} className="flex flex-1 flex-col overflow-y-auto">
+      <div
+        ref={contentRef}
+        className="mx-auto flex w-full max-w-[900px] flex-col gap-4 p-[20px_32px_140px]"
+      >
         {turns.map((turn) => {
           const lastText = turn.steps[turn.steps.length - 1]?.assistantText ?? '';
           return (
@@ -202,7 +264,6 @@ export function MessageList({ turns }: MessageListProps) {
             </div>
           );
         })}
-        <div ref={bottomRef} />
       </div>
     </div>
   );
