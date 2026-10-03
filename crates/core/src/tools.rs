@@ -67,6 +67,29 @@ impl ToolOutcome {
     }
 }
 
+/// How a failed tool is marked in the text the model reads.
+///
+/// The provider carries tool output as a string, so `is_error` reaches the
+/// desktop UI but not the model: the text is the only place a failure can be
+/// recognised. A prefix is what lets a model tell a refusal from a result whose
+/// `exit_code` is 1, instead of inferring it from the prose.
+pub const FAILURE_MARKER: &str = "[tool error]";
+
+/// Builds the text a failed tool hands back.
+///
+/// Every failure goes through here, so a model meets the same marker whatever
+/// failed. `hint` is what the caller can add that the error alone cannot say —
+/// which argument was wrong, or what to try instead.
+#[must_use]
+pub fn failure_text(message: impl AsRef<str>, hint: Option<&str>) -> String {
+    let mut text = format!("{FAILURE_MARKER} {}", message.as_ref());
+    if let Some(hint) = hint {
+        text.push_str("\n\n");
+        text.push_str(hint);
+    }
+    text
+}
+
 /// A tool the model can call.
 ///
 /// Implementations must be `Send + Sync` because the registry is shared across
@@ -80,7 +103,26 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
 
     /// JSON Schema for the arguments object.
+    ///
+    /// Sent to the model, and nothing reads it back: no part of the runtime
+    /// checks arguments against this schema. A constraint written here is a
+    /// request to the model, not a rule, so a tool that cannot run an argument it
+    /// declared has to say so in [`Tool::validate`].
     fn parameters(&self) -> serde_json::Value;
+
+    /// Checks the arguments before the tool runs.
+    ///
+    /// Separate from [`Tool::call`] so a refusal costs no side effect: whatever
+    /// runs first has already spent a round trip by the time it notices. The
+    /// default accepts everything, which is right for a tool whose only
+    /// constraints are its argument types — those the deserialization in `call`
+    /// already enforces.
+    ///
+    /// Every problem with the arguments is reported at once, naming each by its
+    /// path, so the model can fix them in one call rather than one per turn.
+    fn validate(&self, _arguments: &serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Runs the tool.
     ///
@@ -200,8 +242,9 @@ impl ToolRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`ToolError::NotFound`] if the name is unknown. A tool that ran
-    /// and failed returns `Ok(`[`ToolOutcome::failure`]`)`.
+    /// Returns [`ToolError::NotFound`] if the name is unknown, and
+    /// [`ToolError::InvalidArguments`] if the tool refuses its arguments.
+    /// A tool that ran and failed returns `Ok(`[`ToolOutcome::failure`]`)`.
     pub async fn dispatch(
         &self,
         name: &str,
@@ -212,6 +255,12 @@ impl ToolRegistry {
             .tools
             .get(name)
             .ok_or_else(|| ToolError::NotFound(name.to_owned()))?;
+        if let Err(problems) = tool.validate(&arguments) {
+            return Err(ToolError::InvalidArguments {
+                name: name.to_owned(),
+                message: problems,
+            });
+        }
         tool.call(ctx, arguments).await
     }
 }

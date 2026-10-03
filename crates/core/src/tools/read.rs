@@ -6,7 +6,7 @@ use serde::Deserialize;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use super::{Tool, ToolContext, ToolError, ToolOutcome};
+use super::{failure_text, Tool, ToolContext, ToolError, ToolOutcome};
 
 /// The name the model calls.
 const NAME: &str = "read";
@@ -72,6 +72,24 @@ impl Tool for ReadTool {
         })
     }
 
+    fn validate(&self, arguments: &serde_json::Value) -> Result<(), String> {
+        // The schema asks the model for `minimum: 1`, and reading `minimum` back
+        // out of it is the alternative to saying the same thing here. A tool whose
+        // schema is the only place a rule appears cannot enforce it.
+        let mut problems = Vec::new();
+        if arguments.get("offset").and_then(serde_json::Value::as_u64) == Some(0) {
+            problems.push("/offset: must be a 1-indexed line number, so 0 is not one");
+        }
+        if arguments.get("limit").and_then(serde_json::Value::as_u64) == Some(0) {
+            problems.push("/limit: must be a positive line count, so 0 reads nothing");
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems.join("; "))
+        }
+    }
+
     async fn call(
         &self,
         ctx: &ToolContext,
@@ -80,50 +98,57 @@ impl Tool for ReadTool {
         let args: Args =
             serde_json::from_value(arguments).map_err(|err| invalid_arguments(err.to_string()))?;
         let offset = args.offset.unwrap_or(1);
-        if offset == 0 {
-            return Err(invalid_arguments("offset must be a 1-indexed line number"));
-        }
-        if args.limit == Some(0) {
-            return Err(invalid_arguments("limit must be a positive line count"));
-        }
 
         let path = resolve(ctx, &args.path);
         let shown = path.display();
 
         match tokio::fs::metadata(&path).await {
             Ok(metadata) if !metadata.is_file() => {
-                return Ok(ToolOutcome::failure(format!("{shown} is not a file")));
+                let message = format!("{shown} is not a file.");
+                let hint = if metadata.is_dir() {
+                    "It is a directory. List it, or name a file inside it."
+                } else {
+                    "It exists but is not a regular file."
+                };
+                return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
             }
             Ok(_) => {}
-            Err(err) => {
-                return Ok(ToolOutcome::failure(format!("cannot open {shown}: {err}")));
-            }
+            Err(err) => return Ok(ToolOutcome::failure(open_failure(&path, &err))),
         }
 
         let file = match File::open(&path).await {
             Ok(file) => file,
-            Err(err) => return Ok(ToolOutcome::failure(format!("cannot open {shown}: {err}"))),
+            Err(err) => return Ok(ToolOutcome::failure(open_failure(&path, &err))),
         };
 
         let window = match read_window(file, offset, args.limit).await {
             Ok(window) => window,
             Err(ScanError::NoSuchLine(line)) => {
-                return Ok(ToolOutcome::failure(format!("{shown} has no line {line}")));
+                let message = format!("{shown} has no line {line}.");
+                let hint = if offset == 1 {
+                    "The file is shorter than the offset asked for."
+                } else {
+                    "Reading from the start will show how long the file is."
+                };
+                return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
             }
             Err(ScanError::LineTooLong(line)) => {
-                return Ok(ToolOutcome::failure(format!(
-                    "line {line} of {shown} is longer than the {MAX_BYTES}-byte read budget, \
-                     so it cannot come back whole"
-                )));
+                let message = format!(
+                    "Line {line} of {shown} is longer than the {MAX_BYTES}-byte read budget, so \
+                     it cannot come back whole."
+                );
+                let hint = "A line is returned whole or not at all, and half of one could not be \
+                            continued from. Nothing else in this file is affected: ask for a \
+                            range that ends before it.";
+                return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
             }
             Err(ScanError::NotUtf8(line)) => {
-                return Ok(ToolOutcome::failure(format!(
-                    "{shown} is not UTF-8 text (line {line})"
-                )));
+                let message = format!("{shown} is not UTF-8 text (line {line}).");
+                let hint = "The bytes are not decodable, so there is no way to return this line. \
+                            The file may be binary.";
+                return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
             }
-            Err(ScanError::Io(err)) => {
-                return Ok(ToolOutcome::failure(format!("cannot read {shown}: {err}")));
-            }
+            Err(ScanError::Io(err)) => return Ok(ToolOutcome::failure(open_failure(&path, &err))),
         };
 
         let reply = serde_json::json!({
@@ -258,6 +283,28 @@ async fn skim_to(reader: &mut BufReader<File>, offset: usize) -> Result<(), Scan
         reader.consume(take);
     }
     Ok(())
+}
+
+/// Why a path could not be opened, phrased for someone who has to decide what to
+/// try next.
+///
+/// A bare `No such file or directory (os error 2)` leaves open whether the path
+/// was wrong or the file was never there, and those call for different next
+/// steps: correct the path, or go and create the file.
+fn open_failure(path: &Path, err: &std::io::Error) -> String {
+    let shown = path.display();
+    let message = format!("Cannot read {shown}: {err}");
+    let hint = match err.kind() {
+        std::io::ErrorKind::NotFound => {
+            "Nothing is at that path. If the name was given relative, it is resolved against \
+             the working directory, so a bare file name has to exist there; otherwise it has \
+             to be an absolute path."
+        }
+        std::io::ErrorKind::PermissionDenied => "The path exists but this process may not read it.",
+        std::io::ErrorKind::IsADirectory => "It is a directory. List it, or name a file inside it.",
+        _ => "The path could not be opened, and the reason above is the only detail available.",
+    };
+    failure_text(message, Some(hint))
 }
 
 /// Resolves the requested path: an absolute one is taken as given, a relative
@@ -467,28 +514,92 @@ mod tests {
 
     #[tokio::test]
     async fn a_zero_offset_is_a_bad_argument() {
+        // Through the registry, because that is where `validate` runs: calling the
+        // tool directly is the path that skips it.
         let dir = scratch("zero-offset");
-        let err = ReadTool
-            .call(
+        let err = registry()
+            .dispatch(
+                "read",
                 &ctx(&dir),
                 serde_json::json!({ "path": "note.txt", "offset": 0 }),
             )
             .await
             .expect_err("lines are 1-indexed");
-        assert!(matches!(err, ToolError::InvalidArguments { .. }));
+        match err {
+            ToolError::InvalidArguments { message, .. } => assert!(
+                message.contains("/offset"),
+                "the refusal names the argument: {message}"
+            ),
+            other => panic!("expected invalid arguments, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn a_zero_limit_is_a_bad_argument() {
         let dir = scratch("zero-limit");
-        let err = ReadTool
-            .call(
+        let err = registry()
+            .dispatch(
+                "read",
                 &ctx(&dir),
                 serde_json::json!({ "path": "note.txt", "limit": 0 }),
             )
             .await
             .expect_err("a limit of zero reads nothing");
-        assert!(matches!(err, ToolError::InvalidArguments { .. }));
+        match err {
+            ToolError::InvalidArguments { message, .. } => assert!(
+                message.contains("/limit"),
+                "the refusal names the argument: {message}"
+            ),
+            other => panic!("expected invalid arguments, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_wrong_argument_is_reported_at_once() {
+        // One call fixes both, so the model does not spend a turn per mistake.
+        let dir = scratch("both-wrong");
+        let err = registry()
+            .dispatch(
+                "read",
+                &ctx(&dir),
+                serde_json::json!({ "path": "note.txt", "offset": 0, "limit": 0 }),
+            )
+            .await
+            .expect_err("both are wrong");
+        let ToolError::InvalidArguments { message, .. } = err else {
+            panic!("expected invalid arguments");
+        };
+
+        assert!(message.contains("/offset"), "names the first: {message}");
+        assert!(message.contains("/limit"), "names the second: {message}");
+    }
+
+    #[tokio::test]
+    async fn arguments_the_schema_already_forbids_need_no_rule_here() {
+        // A wrong type and an unknown field are refused by deserialization, so
+        // `validate` has nothing to add for either.
+        let dir = scratch("type-and-unknown");
+        for arguments in [
+            serde_json::json!({ "path": 7 }),
+            serde_json::json!({ "path": "note.txt", "encoding": "utf-8" }),
+        ] {
+            let err = registry()
+                .dispatch("read", &ctx(&dir), arguments.clone())
+                .await
+                .expect_err("refused");
+            assert!(
+                matches!(err, ToolError::InvalidArguments { .. }),
+                "{arguments} was not refused"
+            );
+        }
+    }
+
+    fn registry() -> super::super::ToolRegistry {
+        let mut registry = super::super::ToolRegistry::new();
+        registry
+            .register(std::sync::Arc::new(ReadTool))
+            .expect("fresh registry");
+        registry
     }
 
     #[tokio::test]
@@ -582,8 +693,15 @@ mod tests {
 
         assert!(outcome.is_error);
         assert!(
-            outcome.output.contains("line 1") && outcome.output.contains("longer than"),
+            outcome.output.contains("Line 1") && outcome.output.contains("longer than"),
             "the failure says the line itself is the problem: {}",
+            outcome.output
+        );
+        assert!(
+            outcome
+                .output
+                .contains("Nothing else in this file is affected"),
+            "the failure says what still works: {}",
             outcome.output
         );
     }
