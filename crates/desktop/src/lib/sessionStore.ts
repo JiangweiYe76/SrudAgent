@@ -103,6 +103,13 @@ function applyUpdate(session: Session, params: Json): Session | null {
       const tc = step.toolCalls.find((c) => c.id === callId);
       if (tc) {
         tc.result = resultOf(update);
+        // The backend states whether the tool failed rather than leaving it to be
+        // read off the text, which the UI needs before it can render anything.
+        const raw = update.rawOutput as Json | undefined;
+        tc.isError =
+          raw !== null && typeof raw === 'object' && 'is_error' in raw
+            ? Boolean((raw as Json).is_error)
+            : undefined;
         found = true;
         break;
       }

@@ -26,6 +26,7 @@ const en = {
   'toolCall.noResult': '(no result)',
   'toolCall.input': 'Input',
   'toolCall.output': 'Output',
+  'toolCall.unexpectedText': 'not JSON',
 
   'thought.title': 'Thinking',
 

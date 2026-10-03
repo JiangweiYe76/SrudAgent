@@ -250,6 +250,7 @@ export function MessageList({ turns }: MessageListProps) {
                             label={t('toolCall.output')}
                             value={tc.result ?? ''}
                             fallback={t('toolCall.noResult')}
+                            isError={tc.isError}
                           />
                         </CollapsibleContent>
                       </div>
