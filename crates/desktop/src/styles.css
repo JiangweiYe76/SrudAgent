@@ -288,6 +288,94 @@
       user-select: none;
     }
 
+    /* A mermaid diagram. The block's own border, radius, tint and margin come
+       from `.code-block`, so the two read as the same kind of thing and the bar
+       above them is shared rather than a near-copy. */
+    .mermaid-diagram {
+      overflow: auto;
+    }
+    .mermaid-diagram > svg {
+      display: block;
+      margin: 0 auto;
+      /* Centring a diagram wider than the block would push its left edge out of
+         view, so an oversized one keeps its left edge and scrolls instead. */
+      max-width: 100%;
+      height: auto;
+    }
+    .mermaid-pending {
+      font-size: 12.5px;
+      color: var(--text-dim);
+    }
+    /* The placeholder for a diagram that is still arriving. Centred and given
+       roughly the height a diagram takes, so the page does not lurch when the
+       real one lands. */
+    .mermaid-generating {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      min-height: 150px;
+      padding: 20px;
+    }
+    .mermaid-skeleton {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+    }
+    /* Three bars of differing widths, so the placeholder reads as a small
+       diagram taking shape rather than as a progress bar. */
+    .mermaid-skeleton-bar {
+      height: 7px;
+      border-radius: 4px;
+      /* Mixed toward the block's own background rather than toward transparent:
+         a transparent mix lands near 20% alpha, which the pulse then halves
+         again, and the bars all but disappear. */
+      background: color-mix(in oklab, var(--text-dim) 22%, var(--bg-elevated));
+      animation: mermaid-shimmer 1.5s ease-in-out infinite;
+    }
+    .mermaid-skeleton-bar:nth-child(1) {
+      width: 96px;
+    }
+    .mermaid-skeleton-bar:nth-child(2) {
+      width: 64px;
+      animation-delay: 0.18s;
+    }
+    .mermaid-skeleton-bar:nth-child(3) {
+      width: 80px;
+      animation-delay: 0.36s;
+    }
+    @keyframes mermaid-shimmer {
+      0%,
+      100% {
+        opacity: 0.5;
+      }
+      50% {
+        opacity: 1;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .mermaid-skeleton-bar {
+        animation: none;
+        opacity: 0.8;
+      }
+    }
+    /* Only shown when the chart failed to draw, above the source it fell back
+       to. The rule between the two comes from here rather than from the source,
+       which would otherwise draw a second line under the title bar. */
+    .mermaid-error {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12.5px;
+      color: var(--danger);
+      word-break: break-word;
+    }
+    /* The code view carries no rules of its own: it sits inside `.code-block`, so
+       the shared `pre` and `code` styling already gives it the same colours, the
+       same gutter and the same line numbers as any other fence. */
+
+    /* A wide table scrolls inside its own box rather than widening the message
        column and pushing the rest of the answer off screen. */
     .table-scroll {
       margin: 0.6em 0;

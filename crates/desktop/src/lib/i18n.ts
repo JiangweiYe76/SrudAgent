@@ -36,6 +36,12 @@ const en = {
   'code.copied': 'Copied',
   'code.plainText': 'text',
 
+  'mermaid.rendering': 'Rendering diagram…',
+  'mermaid.generating': 'Generating diagram…',
+  'mermaid.failed': 'Could not render this diagram.',
+  'mermaid.showCode': 'Show code',
+  'mermaid.showDiagram': 'Show diagram',
+
   'common.close': 'Close',
   'common.cancel': 'Cancel',
 

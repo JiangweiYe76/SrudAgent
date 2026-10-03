@@ -5,8 +5,10 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import { common } from 'lowlight';
+import mermaidLang from '@/lib/highlight/mermaid';
 import rehypeCodeLines, { textOf, type HastNode } from '@/lib/rehypeCodeLines';
 import { t } from '@/lib/i18n';
+import { Mermaid } from '@/components/Mermaid';
 import { CodeBlockBar } from '@/components/CodeBlockBar';
 import { cn } from '@/lib/utils';
 import 'katex/dist/katex.min.css';
@@ -41,13 +43,23 @@ function CodeBlock({
   node,
   children,
   className,
+  streaming,
 }: {
   node?: HastNode;
   children?: ReactNode;
   className?: string;
+  streaming?: boolean;
 }) {
   const language = languageOf(node);
   const source = node ? textOf(node) : '';
+
+  // A mermaid fence is a diagram, not code. Rendering it as a code block would
+  // be the safe default but a useless one: the reader wanted a picture. The
+  // children go along so its code view is highlighted and numbered like any
+  // other fence, rather than the plain string the renderer needs.
+  if (language === 'mermaid') {
+    return <Mermaid chart={source} code={children} streaming={streaming} className={className} />;
+  }
 
   return (
     <div className={cn('code-block', className)}>
@@ -79,12 +91,25 @@ const components: Components = {
 /**
  * Renders a message's markdown.
  *
+ * `streaming` says the text is still arriving. It matters because CommonMark
+ * treats a fence left open at the end of the input as a finished block, so a
+ * half-written diagram is handed over as if it were complete — see `Mermaid`,
+ * which is the only thing that has to act on this.
+ *
  * Raw HTML is deliberately not enabled: assistant text is model output, and
  * `rehype-raw` would turn it into live DOM. Syntax highlighting is
  * `rehype-highlight` rather than Shiki because it runs synchronously — a
  * half-streamed fence would flash unstyled while an async highlighter resolves.
  */
-export function Markdown({ children, className }: { children: string; className?: string }) {
+export function Markdown({
+  children,
+  className,
+  streaming = false,
+}: {
+  children: string;
+  className?: string;
+  streaming?: boolean;
+}) {
   return (
     <div className={cn('message-markdown', className)}>
       <ReactMarkdown
@@ -95,12 +120,21 @@ export function Markdown({ children, className }: { children: string; className?
         //
         // `detect` stays off: guessing a language from the code's contents
         // mislabels prose and costs time on every re-render.
+        //
+        // `languages` replaces the default set outright, so `common` is spread in
+        // rather than passed over — naming only the grammar here would leave every
+        // other fence in every message unhighlighted.
         rehypePlugins={[
           rehypeKatex,
-          [rehypeHighlight, { detect: false, languages: { ...common } }],
+          [rehypeHighlight, { detect: false, languages: { ...common, mermaid: mermaidLang } }],
           [rehypeCodeLines, {}],
         ]}
-        components={components}
+        components={{
+          ...components,
+          // `pre` is overridden per-render because it is the only component that
+          // needs to know whether the message is still arriving.
+          pre: (props) => <CodeBlock {...props} streaming={streaming} />,
+        }}
       >
         {children}
       </ReactMarkdown>

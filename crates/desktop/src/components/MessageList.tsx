@@ -78,7 +78,10 @@ function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <Markdown className="border-t border-border px-3 py-2 text-muted-foreground">
+          <Markdown
+            className="border-t border-border px-3 py-2 text-muted-foreground"
+            streaming={live}
+          >
             {thought}
           </Markdown>
         </CollapsibleContent>
@@ -126,7 +129,7 @@ export function MessageList({ turns }: MessageListProps) {
                     <ThoughtBlock thought={step.thought} live={turn.endReason === undefined} />
                   )}
                   {step.assistantText && (
-                <Markdown>{step.assistantText}</Markdown>
+                <Markdown streaming={turn.endReason === undefined}>{step.assistantText}</Markdown>
               )}
                   {step.toolCalls.map((tc) => (
                     <Collapsible key={tc.id}>
