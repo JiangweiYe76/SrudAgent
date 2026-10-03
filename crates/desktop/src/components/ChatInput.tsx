@@ -38,7 +38,13 @@ export function ChatInput({ onSend, onNew, busy, onStop }: ChatInputProps) {
         }}
       />
       <div className="flex items-center justify-between">
-        <Button variant="ghost" size="icon" onClick={onNew} title={t('sidebar.newChat')}>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onNew}
+          title={t('sidebar.newChat')}
+          aria-label={t('sidebar.newChat')}
+        >
           <Plus className="h-4 w-4" />
         </Button>
         <div className="flex items-center gap-1.5">
@@ -49,7 +55,11 @@ export function ChatInput({ onSend, onNew, busy, onStop }: ChatInputProps) {
             disabled={!busy}
             title={t('chat.stop')}
             aria-label={t('chat.stop')}
-            className="h-8 w-8 rounded-full"
+            // Red while it can be pressed, and back to the neutral outline once
+            // there is nothing to stop. Coloured rather than plain outline because
+            // stopping a running turn is the one control here that discards work
+            // rather than adding it.
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           >
             <Square className="h-3 w-3 fill-current" />
           </Button>
@@ -59,7 +69,7 @@ export function ChatInput({ onSend, onNew, busy, onStop }: ChatInputProps) {
             disabled={!value.trim() || busy}
             title={t('chat.send')}
             aria-label={t('chat.send')}
-            className="h-8 w-8 rounded-full disabled:bg-border disabled:text-muted-foreground"
+            className="disabled:bg-border disabled:text-muted-foreground"
           >
             <ArrowUp className="h-4 w-4" />
           </Button>
