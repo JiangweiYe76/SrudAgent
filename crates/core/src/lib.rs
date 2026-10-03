@@ -12,17 +12,26 @@
 //! - [`tools`] — the [`Tool`](tools::Tool) trait and the registry.
 //! - [`client`] — the model seam: [`ModelClient`](client::ModelClient).
 //! - [`prompt`] — building a model request from session history.
+//! - [`session_event`] — the durable record: what a session's log holds.
+//! - [`session_store`] — writing and reading that log.
+//! - [`session_log`] — the seam between the turn loop and a log.
 //! - [`turn`] — the turn loop that ties everything together.
 
 pub mod client;
 pub mod context;
 pub mod prompt;
 pub mod session;
+pub mod session_event;
+pub mod session_log;
+pub mod session_store;
 pub mod tools;
 pub mod turn;
 pub mod types;
 
 pub use session::{ActiveTurnGuard, Session, SessionState};
+pub use session_event::{MessageId, SessionEvent};
+pub use session_log::{RecordError, SessionLog, Volatile};
+pub use session_store::{read as read_session_log, ReadLog, SessionLogWriter, SkipReason};
 pub use tools::{
     DuplicateTool, Tool, ToolContext, ToolDefinition, ToolError, ToolOutcome, ToolRegistry,
 };
