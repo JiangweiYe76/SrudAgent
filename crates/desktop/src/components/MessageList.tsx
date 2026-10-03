@@ -3,6 +3,7 @@ import { Brain, Check, ChevronDown, Copy, Wrench } from 'lucide-react';
 import type { Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
+import { JsonBlock } from '@/components/JsonBlock';
 import {
   Collapsible,
   CollapsibleContent,
@@ -239,10 +240,17 @@ export function MessageList({ turns }: MessageListProps) {
                           <span className="min-w-0 flex-1 truncate text-muted-foreground">{tc.args}</span>
                           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
                         </CollapsibleTrigger>
-                        <CollapsibleContent>
-                          <pre className="m-0 border-t border-border px-3 py-2 font-mono break-words whitespace-pre-wrap">
-                            {tc.result ?? t('toolCall.noResult')}
-                          </pre>
+                        {/* Both sides, because the collapsed row shows the arguments and
+                            nothing else: a reader who opens a call to see what
+                            came back finds only what went in. The two payloads
+                            are both JSON and look alike, so each is labelled. */}
+                        <CollapsibleContent className="flex flex-col gap-3 border-t border-border px-3 py-2">
+                          <JsonBlock label={t('toolCall.input')} value={tc.args} />
+                          <JsonBlock
+                            label={t('toolCall.output')}
+                            value={tc.result ?? ''}
+                            fallback={t('toolCall.noResult')}
+                          />
                         </CollapsibleContent>
                       </div>
                     </Collapsible>
