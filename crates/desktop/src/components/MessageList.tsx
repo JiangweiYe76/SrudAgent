@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Brain, Check, ChevronDown, Copy, Wrench } from 'lucide-react';
-import type { Turn } from '@/lib/types';
+import type { Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
 import {
@@ -78,6 +78,24 @@ function awaitingFirstToken(turn: Turn): boolean {
   return !turn.steps.some(
     (step) => step.thought || step.assistantText || step.toolCalls.length > 0,
   );
+}
+
+/**
+ * Whether a step is still producing reasoning.
+ *
+ * A turn outlives its reasoning by most of its length: the model thinks, then writes
+ * the answer, and only then does the turn close. So the turn being open says nothing
+ * about whether thinking is still going on, and a mark tied to the turn kept
+ * animating for the whole answer.
+ *
+ * Reasoning is over once the step has moved past it. Answer text in the same step
+ * means the model has begun writing, and a tool call means it has left reasoning
+ * altogether — the store starts a new step for reasoning that follows a call, so
+ * tool calls here are the boundary between one sample and the next.
+ */
+function isThinking(turn: Turn, step: Step): boolean {
+  if (turn.endReason !== undefined) return false;
+  return !step.assistantText && step.toolCalls.length === 0;
 }
 
 // The model's reasoning, folded into a block above the answer it produced.
@@ -205,7 +223,7 @@ export function MessageList({ turns }: MessageListProps) {
               {turn.steps.map((step) => (
                 <div key={step.id} className="flex flex-col gap-2">
                   {step.thought && (
-                    <ThoughtBlock thought={step.thought} live={turn.endReason === undefined} />
+                    <ThoughtBlock thought={step.thought} live={isThinking(turn, step)} />
                   )}
                   {step.assistantText && (
                     <Markdown streaming={turn.endReason === undefined}>

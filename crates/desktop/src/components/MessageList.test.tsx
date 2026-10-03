@@ -408,3 +408,82 @@ describe('waiting for the first token', () => {
     expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
   });
 });
+
+describe('thinking dots', () => {
+  // The turn outlives its reasoning by most of its length: the model thinks, then
+  // writes, and only then does the turn close. A mark tied to the turn therefore kept
+  // animating for the entire answer, which is the bug these cover.
+  const thinking = { id: 's1', thought: 'Let me think', assistantText: '', toolCalls: [] };
+
+  it('marks reasoning that is still arriving', () => {
+    render([turn({ id: 't1', steps: [thinking] })]);
+
+    expect(dots()).toHaveLength(3);
+  });
+
+  it('stops once the answer starts, even though the turn is still open', () => {
+    render([
+      turn({
+        id: 't1',
+        steps: [{ ...thinking, assistantText: 'Here you go.' }],
+      }),
+    ]);
+
+    expect(dots()).toHaveLength(0);
+  });
+
+  it('stops once the model issues a tool call', () => {
+    // The store opens a new step for reasoning that follows a call, so a call marks
+    // the end of this step's reasoning rather than the start of more.
+    render([
+      turn({
+        id: 't1',
+        steps: [
+          {
+            id: 's1',
+            thought: 'I should look',
+            assistantText: '',
+            toolCalls: [{ id: 'tc1', name: 'read', args: 'a.ts', result: 'ok' }],
+          },
+        ],
+      }),
+    ]);
+
+    expect(dots()).toHaveLength(0);
+  });
+
+  it('keeps marking a later step that is still thinking', () => {
+    // A tool call ended the first step's reasoning; the sampling after it reasons
+    // again, and that is a new step which really is thinking.
+    render([
+      turn({
+        id: 't1',
+        steps: [
+          {
+            id: 's1',
+            thought: 'I should look',
+            assistantText: '',
+            toolCalls: [{ id: 'tc1', name: 'read', args: 'a.ts', result: 'ok' }],
+          },
+          { id: 's2', thought: 'Now I can answer', assistantText: '', toolCalls: [] },
+        ],
+      }),
+    ]);
+
+    expect(dots()).toHaveLength(3);
+  });
+
+  it('stops when the turn ends', () => {
+    render([turn({ id: 't1', steps: [thinking], endReason: 'completed', endedAt: 1 })]);
+
+    expect(dots()).toHaveLength(0);
+  });
+
+  it('stops on an interrupted turn too', () => {
+    // Stopping mid-thought is the case a reader is most likely to notice, since the
+    // dots would otherwise keep going with nothing behind them.
+    render([turn({ id: 't1', steps: [thinking], endReason: 'interrupted' })]);
+
+    expect(dots()).toHaveLength(0);
+  });
+});
