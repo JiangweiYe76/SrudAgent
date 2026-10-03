@@ -7,18 +7,20 @@
 
 use std::sync::Arc;
 
-use srud_core::tools::{read::ReadTool, ToolRegistry};
+use srud_core::tools::{bash::BashTool, read::ReadTool, ToolRegistry};
 
 /// The tools every agent is built with.
 ///
-/// One tool today. The set is small on purpose: it is the whole of what the
-/// model can reach, and every entry here is a capability this crate carries
-/// into each turn.
+/// The set is small on purpose: it is the whole of what the model can reach, and
+/// every entry here is a capability this crate carries into each turn.
 #[must_use]
 pub fn standard_tools() -> Arc<ToolRegistry> {
     let mut tools = ToolRegistry::new();
     tools
         .register(Arc::new(ReadTool))
+        .expect("the registry is fresh");
+    tools
+        .register(Arc::new(BashTool::default()))
         .expect("the registry is fresh");
     Arc::new(tools)
 }
@@ -28,9 +30,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_standard_set_can_read() {
+    fn the_standard_set_can_read_and_run() {
         let tools = standard_tools();
         assert!(tools.contains("read"), "the read tool is registered");
+        assert!(tools.contains("bash"), "the bash tool is registered");
     }
 
     #[test]

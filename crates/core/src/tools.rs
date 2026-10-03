@@ -5,6 +5,7 @@
 //! failed returns [`ToolOutcome::failure`]; an `Err` means the runtime itself
 //! could not proceed.
 
+pub mod bash;
 pub mod read;
 
 use std::collections::BTreeMap;
