@@ -69,6 +69,15 @@ export async function initialize(): Promise<Json> {
   return rpcRequest('initialize', { protocolVersion: 1, clientCapabilities: {} });
 }
 
+// Creates a session. `cwd` is where the user wants it to work; an empty string
+// means they have not chosen one, and the agent gives the session a workspace of
+// its own under its configuration directory. A path that is not an existing
+// directory means the same thing to the agent.
+//
+// ACP has no "not chosen" here — its `session/new` requires an absolute working
+// directory and requires the agent to use it:
+// https://agentclientprotocol.com/protocol/session-setup#working-directory
+// Sending the empty string is SrudAgent's way of saying otherwise.
 export async function newSession(cwd: string): Promise<string> {
   const result = await rpcRequest('session/new', { cwd, mcpServers: [] });
   return String(result.sessionId);

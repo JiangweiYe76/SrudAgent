@@ -3,7 +3,6 @@ import type { Session, Turn, TurnEndReason } from './types';
 import { t } from './i18n';
 import {
   cancelTurn,
-  defaultCwd,
   deleteSession as requestDelete,
   initialize,
   newSession,
@@ -214,7 +213,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       let backendId = get().sessions.find((s) => s.id === sessionId)?.backendId ?? null;
       if (!backendId) {
         try {
-          const created = await newSession(await defaultCwd());
+          // No working directory chosen yet: the app has no directory picker, so the
+          // agent gives the session a workspace of its own. That is also what it
+          // did when this passed the launch directory, because the agent only
+          // uses a directory that exists — so nothing changes until a picker
+          // exists and a user picks somewhere.
+          const created = await newSession('');
           const draftTitle = get().sessions.find((s) => s.id === sessionId)?.title?.trim() || '';
           useSessionStore.setState((s) => ({
             sessions: s.sessions.map((sess) =>

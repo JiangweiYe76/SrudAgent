@@ -66,7 +66,9 @@ async fn a_prompt_round_trip_streams_an_llm_response() {
     let reply = agent
         .handle(request(
             "session/new",
-            json!({ "cwd": "/tmp", "mcpServers": [] }),
+            // No working directory named, so the session gets a workspace of its
+            // own rather than working in the shared system temp directory.
+            json!({ "cwd": "", "mcpServers": [] }),
         ))
         .await;
     let Response::Result { result, .. } = reply.into_inner() else {
