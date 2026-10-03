@@ -1,13 +1,13 @@
-//! The in-memory session registry.
+//! The session registry.
 //!
 //! Owns the mapping between the wire's opaque `sessionId` strings and the
 //! core runtime's [`Session`] values, settles each session's working directory,
 //! and holds the log that session's turns are recorded into.
 //!
-//! **The registry itself is still in-memory**: a restart empties it. What
-//! survives is what each session wrote to its log — the turns are on disk, but
-//! nothing reads them back yet, so a restarted agent starts empty. Rebuilding
-//! the registry from those logs is the next piece of work.
+//! **The registry is in-memory, but the sessions are not**: a restart empties the
+//! map, and `session/load` and `session/resume` rebuild an entry from the log the
+//! session left behind. [`find_log`] locates one by the id in its filename, which
+//! is what stands in for an index until there is one.
 //!
 //! A session works in a directory the client named, or in one of its own under
 //! the configuration directory, so one session's files are never another's.
@@ -19,14 +19,14 @@
 //! the agent overrides that and why.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::Datelike;
 use srud_core::session::Session;
 use srud_core::session_event::SessionEvent;
 use srud_core::session_log::{RecordError, SessionLog};
-use srud_core::session_store::SessionLogWriter;
+use srud_core::session_store::{Loaded, SessionLogWriter};
 use srud_protocol::acp::{SessionId, SessionInfo};
 
 use crate::config;
@@ -88,6 +88,19 @@ fn usable_directory(cwd: Option<PathBuf>) -> Option<PathBuf> {
     cwd.filter(|dir| dir.is_absolute() && dir.is_dir())
 }
 
+/// Whether two directories are the one directory.
+///
+/// Canonicalised when both can be, so a client naming `/w/` or a symlink to it
+/// means the same directory as the written path. Compared as written when they
+/// cannot: a workspace can be gone by the time its session is loaded, and then
+/// the only thing to compare is the text.
+fn same_directory(recorded: &Path, requested: &Path) -> bool {
+    match (recorded.canonicalize(), requested.canonicalize()) {
+        (Ok(recorded), Ok(requested)) => recorded == requested,
+        _ => recorded == requested,
+    }
+}
+
 /// Collapses a candidate title to a single line, or drops it when it holds no
 /// visible characters.
 ///
@@ -131,6 +144,68 @@ pub enum CreateError {
         /// What the filesystem said.
         source: std::io::Error,
     },
+}
+
+/// Why a session could not be brought back from its log.
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreError {
+    /// There is no configuration directory to look in.
+    #[error(transparent)]
+    Config(#[from] config::ConfigError),
+
+    /// No log holds that session.
+    #[error("no log for session {0}")]
+    NotFound(SessionId),
+
+    /// The log could not be read, or names no session.
+    #[error(transparent)]
+    Load(#[from] srud_core::session_store::LoadError),
+
+    /// The caller named a different working directory from the one recorded.
+    ///
+    /// ACP requires the two to match, and they have to: the tools resolve relative
+    /// paths against it, and the recorded history was produced somewhere.
+    #[error("the session works in {recorded}, not {requested}")]
+    Cwd {
+        /// The directory the log records.
+        recorded: PathBuf,
+        /// The directory the caller asked for.
+        requested: PathBuf,
+    },
+
+    /// A repair the log needed could not be written back.
+    #[error(transparent)]
+    Repair(#[from] srud_core::session_log::RecordError),
+}
+
+/// Finds the log a session was written to.
+///
+/// Searched rather than computed: the filename carries the moment the session was
+/// created, which only the write path knew. An index would answer this in one
+/// lookup, and this is what stands in for one until then.
+async fn find_log(id: &SessionId) -> Result<PathBuf, RestoreError> {
+    let home = config::home().ok_or(config::ConfigError::NoHome)?;
+    let suffix = format!("-{id}.jsonl");
+
+    let mut dirs = vec![home.join(SESSIONS_DIR)];
+    while let Some(dir) = dirs.pop() {
+        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+            // A date directory this build never wrote, or one being pruned.
+            continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if entry.file_type().await.is_ok_and(|kind| kind.is_dir()) {
+                dirs.push(path);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(&suffix))
+            {
+                return Ok(path);
+            }
+        }
+    }
+    Err(RestoreError::NotFound(id.clone()))
 }
 
 /// Opens the log for a session about to work in `cwd`.
@@ -177,6 +252,12 @@ pub struct SessionManager {
     /// holding one across the write is not `Send`. Without this, two changes could
     /// record in one order and apply in another.
     titles: tokio::sync::Mutex<()>,
+    /// Serialises restores.
+    ///
+    /// The repairs a log needs are derived from what it holds, so two restores
+    /// running at once would both derive them and both write them — leaving a
+    /// tool call answered twice, which a model API will not take.
+    restoring: tokio::sync::Mutex<()>,
 }
 
 impl SessionManager {
@@ -252,6 +333,82 @@ impl SessionManager {
                 },
             );
         Ok(id)
+    }
+
+    /// Brings a session back from its log, returning what was rebuilt.
+    ///
+    /// The repairs the log needed are written before the session is registered, for
+    /// the same reason a new session's first record is: what answers has to be a
+    /// session whose log and history agree. A restore of a session that is already
+    /// live rebuilds from the log and records nothing — the repairs are already
+    /// there, and a second writer on one log would interleave with the first.
+    ///
+    /// # Errors
+    ///
+    /// [`RestoreError::NotFound`] when no log holds that session,
+    /// [`RestoreError::Cwd`] when the caller names a different directory from the
+    /// one recorded, and [`RestoreError::Load`] or [`RestoreError::Repair`] when
+    /// the log cannot be read or written.
+    pub async fn restore(&self, id: &SessionId, cwd: &Path) -> Result<Loaded, RestoreError> {
+        let _restoring = self.restoring.lock().await;
+
+        let live = self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .contains_key(id.0.as_ref());
+        let path = find_log(id).await?;
+
+        // A session that is still open has not stopped, so nothing is repaired
+        // and nothing is written: its gaps have not happened yet. It is already
+        // registered, and a second writer on one log would interleave with the
+        // first.
+        let loaded = if live {
+            srud_core::session_store::load_running(&path).await?
+        } else {
+            srud_core::session_store::load(&path).await?
+        };
+        if !same_directory(&loaded.cwd, cwd) {
+            return Err(RestoreError::Cwd {
+                recorded: loaded.cwd.clone(),
+                requested: cwd.to_path_buf(),
+            });
+        }
+        if live {
+            return Ok(loaded);
+        }
+
+        let log = SessionLogWriter::create(&path).await.map_err(|source| {
+            RestoreError::Repair(srud_core::session_log::RecordError::Io {
+                what: "the session's log".into(),
+                source,
+            })
+        })?;
+        for repair in &loaded.repairs {
+            SessionLog::record(&log, repair).await?;
+        }
+
+        let session = Arc::new(Session::restored(
+            loaded.session_id,
+            loaded.cwd.clone(),
+            loaded.history.clone(),
+        ));
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .insert(
+                id.to_string(),
+                Tracked {
+                    session,
+                    log: Arc::new(log),
+                    title: loaded.title.clone(),
+                    // A directory this agent made is one it may remove again; the
+                    // recorded cwd says which it was.
+                    workspace_is_ours: workspace_for(loaded.session_id)
+                        .is_ok_and(|own| own == loaded.cwd),
+                },
+            );
+        Ok(loaded)
     }
 
     /// A session and its log, if the session exists.
@@ -524,6 +681,17 @@ mod tests {
         assert!(!manager.name_if_unnamed(&id, "second").await.unwrap());
 
         assert_eq!(recorded_titles(&id).await, vec![Some("first".to_string())]);
+    }
+
+    #[test]
+    fn a_directory_named_another_way_is_the_same_directory() {
+        // ACP has the client name the session's cwd again on load, and a trailing
+        // separator is not a different directory.
+        let dir = std::env::temp_dir();
+        let with_slash = dir.join("");
+
+        assert!(same_directory(&dir, &with_slash));
+        assert!(!same_directory(&dir, Path::new("/definitely/not/this")));
     }
 
     #[tokio::test]

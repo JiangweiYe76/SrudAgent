@@ -13,7 +13,8 @@
 //!   non-text content is dropped (the agent declares text-only prompt
 //!   capabilities).
 
-use srud_core::types::{Event, TurnEndReason};
+use srud_core::session_event::SessionEvent;
+use srud_core::types::{Event, ResponseItem, Role, TurnEndReason};
 use srud_protocol::acp::{
     AcpError, ContentBlock, ContentChunk, Meta, Notification, SessionId, SessionNotification,
     SessionUpdate, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
@@ -57,35 +58,59 @@ pub fn to_session_update(event: Event) -> Option<Result<SessionUpdate, Skipped>>
             call_id,
             name,
             arguments,
-        } => SessionUpdate::ToolCall(
-            ToolCall::new(call_id, name.clone())
-                .name(name)
-                .status(ToolCallStatus::InProgress)
-                .raw_input(arguments),
-        ),
+        } => tool_call(call_id, name, arguments),
         Event::ToolCallEnd {
             call_id, result, ..
-        } => {
-            let status = if result.is_error {
-                ToolCallStatus::Failed
-            } else {
-                ToolCallStatus::Completed
-            };
-            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                call_id,
-                ToolCallUpdateFields::new()
-                    .status(status)
-                    .content(vec![ToolCallContent::Content(
-                        srud_protocol::acp::ToolCallContentBlock::new(ContentBlock::Text(
-                            TextContent::new(result.output),
-                        )),
-                    )])
-                    .raw_output(serde_json::json!({ "is_error": result.is_error })),
-            ))
-        }
+        } => tool_result(call_id, result.output, result.is_error),
         Event::TurnComplete { .. } => return Some(Err(Skipped::TurnComplete)),
     };
     Some(Ok(update))
+}
+
+/// The update announcing a tool call.
+///
+/// Shared with replay so a replayed call and a live one are the same update: a
+/// client that has to handle both would otherwise need to know which it was
+/// looking at.
+fn tool_call(call_id: String, name: String, arguments: serde_json::Value) -> SessionUpdate {
+    SessionUpdate::ToolCall(
+        ToolCall::new(call_id, name.clone())
+            .name(name)
+            .status(ToolCallStatus::InProgress)
+            .raw_input(arguments),
+    )
+}
+
+/// The arguments as a client should read them.
+///
+/// The log keeps them as the model produced them — a string, so a crash preserves
+/// exactly what was asked for — and a client renders the object. Arguments that do
+/// not parse are sent as null rather than omitted: the call happened either way,
+/// and the tool is the one that has to say the arguments were wrong.
+fn raw_arguments(arguments: &str) -> serde_json::Value {
+    serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null)
+}
+
+/// The update settling a tool call.
+///
+/// As [`tool_call`], and for the same reason.
+fn tool_result(call_id: String, output: String, is_error: bool) -> SessionUpdate {
+    let status = if is_error {
+        ToolCallStatus::Failed
+    } else {
+        ToolCallStatus::Completed
+    };
+    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+        call_id,
+        ToolCallUpdateFields::new()
+            .status(status)
+            .content(vec![ToolCallContent::Content(
+                srud_protocol::acp::ToolCallContentBlock::new(ContentBlock::Text(
+                    TextContent::new(output),
+                )),
+            )])
+            .raw_output(serde_json::json!({ "is_error": is_error })),
+    ))
 }
 
 /// A text chunk tagged with the message it belongs to.
@@ -139,6 +164,73 @@ fn attach_turn_meta(update: SessionUpdate, turn_id: &str) -> (SessionUpdate, Met
         .to_meta()
         .expect("a payload with turnId is never empty");
     (update, meta)
+}
+
+/// Builds the notification that replays one recorded item.
+///
+/// This is how `session/load` hands a client a conversation it was not there for.
+/// The mapping is deliberately the same as the live one: a replayed call and a
+/// live call go out as the same update through the same builders, so a client
+/// cannot end up handling two shapes for one thing.
+///
+/// Returns `None` for a record a client is not shown. The env-context block is
+/// context the model reads — showing it would put the agent's own notes on screen
+/// as something the user said — and a [`Reasoning`](srud_core::types::ResponseItem::Reasoning)
+/// item **is** shown, because the client renders thinking and the model is the
+/// one that never sees it again.
+#[must_use]
+pub fn replay_notification(
+    session_id: &SessionId,
+    event: &SessionEvent,
+) -> Option<Notification<SessionNotification>> {
+    let SessionEvent::Item {
+        turn_id,
+        message_id,
+        item,
+    } = event
+    else {
+        return None;
+    };
+
+    // Context the model reads, shown to nobody: putting it on screen would render
+    // the agent's own notes as something the user said.
+    if srud_core::context::is_item(item) {
+        return None;
+    }
+
+    let update = match item {
+        ResponseItem::Message { role, content } => match role {
+            Role::User => {
+                SessionUpdate::UserMessageChunk(chunk(content.clone(), message_id.clone()))
+            }
+            Role::Assistant => {
+                SessionUpdate::AgentMessageChunk(chunk(content.clone(), message_id.clone()))
+            }
+            // Tool output travels as a `FunctionCallOutput`, which carries the
+            // call id a `Message` would need to be attributed to one.
+            Role::Tool => return None,
+        },
+        ResponseItem::Reasoning { content } => {
+            SessionUpdate::AgentThoughtChunk(chunk(content.clone(), message_id.clone()))
+        }
+        ResponseItem::FunctionCall {
+            call_id,
+            name,
+            arguments,
+        } => tool_call(call_id.clone(), name.clone(), raw_arguments(arguments)),
+        ResponseItem::FunctionCallOutput {
+            call_id,
+            output,
+            is_error,
+        } => tool_result(call_id.clone(), output.clone(), *is_error),
+    };
+
+    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string());
+    let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
+    Some(Notification {
+        method: CLIENT_METHOD_NAMES.session_update.into(),
+        params: Some(notification),
+    })
 }
 
 /// Concatenates the text of a prompt's content blocks.

@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::session_event::{Logged, SessionEvent};
-use crate::types::{ResponseItem, TurnEndReason, TurnId};
+use crate::types::{ResponseItem, SessionId, TurnEndReason, TurnId};
 
 /// Where one session's log lives, and what to write in it.
 ///
@@ -181,6 +181,208 @@ pub struct ReadLog {
     pub entries: Vec<ReadEntry>,
     /// The lines that were not, in order.
     pub skipped: Vec<SkippedLine>,
+}
+
+/// A session rebuilt from its log.
+///
+/// A log is a sequence of events; a session needs the history the model saw, and
+/// a client being shown the session needs the conversation it was part of. Those
+/// are not the same list — the env-context block is in one and not the other — so
+/// both are built here rather than left to each caller to filter, and the repairs
+/// that make them usable are decided once.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Loaded {
+    /// The session the log names.
+    pub session_id: SessionId,
+    /// The directory the session works in.
+    pub cwd: PathBuf,
+    /// The format version the log was written at.
+    ///
+    /// Carried rather than checked: a newer log is read for what this build
+    /// understands and the rest skipped, so the session is partially recovered
+    /// instead of refused.
+    pub version: u32,
+    /// The title, as last set.
+    pub title: Option<String>,
+    /// The history the model should see next, oldest first.
+    pub history: Vec<ResponseItem>,
+    /// What a client replaying the session should be shown, oldest first.
+    pub conversation: Vec<SessionEvent>,
+    /// Records to append before the session runs again, closing what the log left
+    /// open.
+    pub repairs: Vec<SessionEvent>,
+}
+
+/// Why a log could not be rebuilt into a session.
+#[derive(Debug, thiserror::Error)]
+pub enum LoadError {
+    /// The log could not be read.
+    #[error("cannot read the session log: {0}")]
+    Io(#[from] io::Error),
+
+    /// The log holds no session record, so it names no session.
+    #[error("the session log has no session record")]
+    NoSession,
+}
+
+/// Reads a session's log and rebuilds the session it describes.
+///
+/// For a session that stopped. What its log is missing was lost, so it is
+/// repaired; a session that is still open wants [`load_running`], where what is
+/// missing has simply not happened yet.
+///
+/// # Errors
+///
+/// Fails if the log cannot be read, or if it holds no session record — without
+/// one there is no id and no directory to work in.
+pub async fn load(path: impl AsRef<Path>) -> Result<Loaded, LoadError> {
+    rebuild(&read(path).await?, true)
+}
+
+/// Rebuilds a session that has not stopped.
+///
+/// Nothing is repaired: a turn with no end is one still running, and a call with
+/// no result is one still out. This is what a client loading a session another
+/// client already has open is shown.
+///
+/// # Errors
+///
+/// As [`load`].
+pub async fn load_running(path: impl AsRef<Path>) -> Result<Loaded, LoadError> {
+    rebuild(&read(path).await?, false)
+}
+
+/// Rebuilds the session a log describes.
+///
+/// `stopped` says whether a log that stops mid-turn is read as a session that
+/// stopped, and so needs its gaps repaired, or as one that is still going.
+fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
+    let Some((session_id, cwd, version)) =
+        log.entries.iter().find_map(|entry| match &entry.event {
+            SessionEvent::Session {
+                session_id,
+                cwd,
+                version,
+            } => Some((*session_id, cwd.clone(), *version)),
+            _ => None,
+        })
+    else {
+        return Err(LoadError::NoSession);
+    };
+
+    let mut title = None;
+    // Turns the log opened and never closed. A turn's end record can fail to
+    // write while the turn itself still ends, so more than one can be open.
+    let mut open: Vec<TurnId> = Vec::new();
+    // Every recorded entry, in order.
+    let mut items: Vec<&SessionEvent> = Vec::new();
+
+    for entry in &log.entries {
+        match &entry.event {
+            SessionEvent::Title { title: last } => title = last.clone(),
+            SessionEvent::TurnStarted { turn_id } => open.push(*turn_id),
+            SessionEvent::TurnEnded { turn_id, .. } => open.retain(|id| id != turn_id),
+            SessionEvent::Item { .. } => items.push(&entry.event),
+            SessionEvent::Session { .. } | SessionEvent::System { .. } => {}
+        }
+    }
+
+    // A session that has not stopped has nothing to repair: what the log is
+    // missing is what has not happened yet.
+    let repairs = if stopped {
+        repairs(&items, &open)
+    } else {
+        Vec::new()
+    };
+
+    // The repairs that carry an item are part of both the history and the
+    // conversation; the one that only closes a turn is in neither, since a turn
+    // boundary is not something the model or the client is shown.
+    let ordered = items.iter().copied().chain(
+        repairs
+            .iter()
+            .filter(|event| event.history_item().is_some()),
+    );
+
+    let history = ordered
+        .clone()
+        .filter_map(|event| event.history_item().cloned())
+        .collect();
+    let conversation = ordered
+        .filter(|event| {
+            event
+                .history_item()
+                .is_none_or(|item| !crate::context::is_item(item))
+        })
+        .cloned()
+        .collect();
+
+    Ok(Loaded {
+        session_id,
+        cwd,
+        version,
+        title,
+        history,
+        conversation,
+        repairs,
+    })
+}
+
+/// The records that close what the log left open.
+///
+/// A log stops where the process did, so what is missing is what was never
+/// written: a turn with no end, which a reader cannot tell from a turn still
+/// running, and a tool call with no result, which most model APIs refuse. A call
+/// that was answered is left alone, since a result is recorded immediately after
+/// its call and anything later belongs to a turn that got that far.
+fn repairs(items: &[&SessionEvent], open: &[TurnId]) -> Vec<SessionEvent> {
+    let answered: std::collections::HashSet<&str> = items
+        .iter()
+        .filter_map(|event| match event.history_item() {
+            Some(ResponseItem::FunctionCallOutput { call_id, .. }) => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    let mut repairs: Vec<SessionEvent> = items
+        .iter()
+        .filter_map(|event| match event.history_item() {
+            Some(ResponseItem::FunctionCall { call_id, name, .. })
+                if !answered.contains(call_id.as_str()) =>
+            {
+                Some(SessionEvent::item(
+                    // The call's turn, which the call itself was recorded inside.
+                    event.turn_id().expect("a call is recorded inside a turn"),
+                    None,
+                    ResponseItem::FunctionCallOutput {
+                        call_id: call_id.clone(),
+                        output: unanswered_text(name),
+                        is_error: true,
+                    },
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Last, so the log ends with the turns closed rather than with a record
+    // inside one.
+    repairs.extend(open.iter().map(|turn_id| SessionEvent::TurnEnded {
+        turn_id: *turn_id,
+        reason: TurnEndReason::Interrupted,
+    }));
+    repairs
+}
+
+/// What the model is told about a call whose result never arrived.
+///
+/// Different from a tool that ran and failed: nothing ran, and saying which is
+/// what keeps the model from retrying something that was already attempted.
+fn unanswered_text(name: &str) -> String {
+    crate::tools::failure_text(
+        format!("The `{name}` call did not finish. The session stopped before it returned."),
+        Some("The tool may or may not have run. Check before calling it again."),
+    )
 }
 
 /// Reads a log back.
@@ -509,5 +711,276 @@ mod tests {
         if let Some(root) = path.ancestors().nth(3) {
             let _ = std::fs::remove_dir_all(root);
         }
+    }
+
+    /// A log built from events, as a reader would have found them.
+    fn log_of(events: Vec<SessionEvent>) -> ReadLog {
+        ReadLog {
+            entries: events
+                .into_iter()
+                .enumerate()
+                .map(|(index, event)| ReadEntry {
+                    line: index + 1,
+                    time: chrono::Utc::now(),
+                    event,
+                })
+                .collect(),
+            skipped: Vec::new(),
+        }
+    }
+
+    /// A session record naming a session that works in `/w`.
+    fn opening() -> SessionEvent {
+        SessionEvent::session(SessionId::new(), PathBuf::from("/w"))
+    }
+
+    /// A user message, as the loop records one.
+    fn said(turn_id: TurnId, text: &str) -> SessionEvent {
+        SessionEvent::item(turn_id, None, ResponseItem::user(text))
+    }
+
+    #[test]
+    fn a_finished_turn_rebuilds_without_repairs() {
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            said(turn_id, "hello"),
+            SessionEvent::TurnEnded {
+                turn_id,
+                reason: TurnEndReason::Completed,
+            },
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.cwd, PathBuf::from("/w"));
+        assert_eq!(loaded.version, crate::session_event::FORMAT_VERSION);
+        assert_eq!(loaded.history, vec![ResponseItem::user("hello")]);
+        assert!(loaded.repairs.is_empty(), "{:?}", loaded.repairs);
+    }
+
+    #[test]
+    fn a_log_that_stopped_mid_turn_is_closed_as_interrupted() {
+        // Without the synthetic end, a reader cannot tell a turn that was
+        // interrupted from one still running.
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            said(turn_id, "hello"),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(
+            loaded.repairs,
+            vec![SessionEvent::TurnEnded {
+                turn_id,
+                reason: TurnEndReason::Interrupted,
+            }]
+        );
+    }
+
+    #[test]
+    fn every_turn_left_open_is_closed() {
+        // A turn's end record can fail to write while the turn itself still ends,
+        // so a log can carry more than one turn that never closed.
+        let first = TurnId::new();
+        let second = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id: first },
+            said(first, "one"),
+            SessionEvent::TurnStarted { turn_id: second },
+            said(second, "two"),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(
+            loaded.repairs,
+            vec![
+                SessionEvent::TurnEnded {
+                    turn_id: first,
+                    reason: TurnEndReason::Interrupted,
+                },
+                SessionEvent::TurnEnded {
+                    turn_id: second,
+                    reason: TurnEndReason::Interrupted,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_call_with_no_result_is_answered() {
+        // A model API refuses a call nothing answered, so a resumed session could
+        // not send a request at all without this.
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            SessionEvent::item(
+                turn_id,
+                None,
+                ResponseItem::FunctionCall {
+                    call_id: "call_1".into(),
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                },
+            ),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        let repaired = loaded
+            .repairs
+            .iter()
+            .find_map(|event| event.history_item())
+            .expect("an answer was supplied");
+        match repaired {
+            ResponseItem::FunctionCallOutput {
+                call_id, is_error, ..
+            } => {
+                assert_eq!(call_id, "call_1");
+                assert!(is_error, "nothing ran, so the answer says so");
+            }
+            other => panic!("expected a tool result: {other:?}"),
+        }
+        // And the answer is part of the history the model will read.
+        assert!(
+            loaded.history.iter().any(|item| matches!(
+                item,
+                ResponseItem::FunctionCallOutput { call_id, .. } if call_id == "call_1"
+            )),
+            "{:?}",
+            loaded.history
+        );
+    }
+
+    #[test]
+    fn an_answered_call_is_left_alone() {
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            SessionEvent::item(
+                turn_id,
+                None,
+                ResponseItem::FunctionCall {
+                    call_id: "call_1".into(),
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                },
+            ),
+            SessionEvent::item(
+                turn_id,
+                None,
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".into(),
+                    output: "contents".into(),
+                    is_error: false,
+                },
+            ),
+            SessionEvent::TurnEnded {
+                turn_id,
+                reason: TurnEndReason::Completed,
+            },
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert!(loaded.repairs.is_empty(), "{:?}", loaded.repairs);
+        assert_eq!(loaded.history.len(), 2);
+    }
+
+    #[test]
+    fn the_conversation_leaves_out_what_the_user_never_said() {
+        // The env-context block is recorded so the model reads it; a client
+        // replaying the session is not being shown the agent's own notes.
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            SessionEvent::item(
+                turn_id,
+                None,
+                crate::context::item(std::path::Path::new("/w")),
+            ),
+            said(turn_id, "hello"),
+            SessionEvent::item(
+                turn_id,
+                Some(MessageId::new()),
+                ResponseItem::Reasoning {
+                    content: "thinking".into(),
+                },
+            ),
+            SessionEvent::TurnEnded {
+                turn_id,
+                reason: TurnEndReason::Completed,
+            },
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        // The model sees the context; the client does not.
+        assert_eq!(loaded.history.len(), 3, "{:?}", loaded.history);
+        let shown: Vec<&ResponseItem> = loaded
+            .conversation
+            .iter()
+            .filter_map(SessionEvent::history_item)
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                &ResponseItem::user("hello"),
+                // Reasoning is model-invisible but the client renders it, so the
+                // two projections are not each other's complement.
+                &ResponseItem::Reasoning {
+                    content: "thinking".into()
+                },
+            ],
+            "the env-context block is the one left out"
+        );
+    }
+
+    #[test]
+    fn the_last_title_wins() {
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::title(Some("first".into())),
+            SessionEvent::title(Some("second".into())),
+            SessionEvent::title(None),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.title, None, "a cleared title clears it");
+    }
+
+    #[test]
+    fn a_running_session_is_not_repaired() {
+        // Loading a session another client already has open: the turn with no end
+        // is one still running, not one that stopped, so nothing is invented for
+        // it.
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            said(turn_id, "hello"),
+        ]);
+
+        let loaded = rebuild(&log, false).expect("a session");
+
+        assert!(loaded.repairs.is_empty(), "{:?}", loaded.repairs);
+        assert_eq!(loaded.history.len(), 1, "and nothing was added to it");
+    }
+
+    #[test]
+    fn a_log_with_no_session_record_names_no_session() {
+        let log = log_of(vec![SessionEvent::system("# Role")]);
+
+        assert!(matches!(rebuild(&log, true), Err(LoadError::NoSession)));
     }
 }

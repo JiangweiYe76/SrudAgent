@@ -2,8 +2,9 @@
 //! that may be running.
 //!
 //! The history is the authority; everything else is derived from it. The turn
-//! loop is the only writer, so recorded history and model-visible context stay
-//! in agreement.
+//! loop is the only writer, and the only other way history comes to exist is
+//! [`Session::restored`] rebuilding it from a log — so recorded history and
+//! model-visible context stay in agreement.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -32,6 +33,12 @@ impl SessionState {
         Self {
             history: Vec::new(),
         }
+    }
+
+    /// Rebuilds state from a log's history.
+    #[must_use]
+    pub fn restored(history: Vec<ResponseItem>) -> Self {
+        Self { history }
     }
 
     /// Reads the recorded history.
@@ -84,6 +91,23 @@ impl Session {
             id,
             cwd: cwd.into(),
             state: Mutex::new(SessionState::new()),
+            active_turn: Mutex::new(None),
+        }
+    }
+
+    /// Rebuilds a session from the history its log holds.
+    ///
+    /// The turn loop is the only writer of history after this, so seeding here is
+    /// the one other path — and it is what makes the log the authority rather than
+    /// the process that wrote it. What is seeded is expected to be a history a
+    /// model API accepts: closing a turn the log left open, and answering a call
+    /// whose result never arrived, is [`crate::session_store::load`]'s job.
+    #[must_use]
+    pub fn restored(id: SessionId, cwd: impl Into<PathBuf>, history: Vec<ResponseItem>) -> Self {
+        Self {
+            id,
+            cwd: cwd.into(),
+            state: Mutex::new(SessionState::restored(history)),
             active_turn: Mutex::new(None),
         }
     }
