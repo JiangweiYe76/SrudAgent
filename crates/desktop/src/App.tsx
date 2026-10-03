@@ -21,6 +21,7 @@ function App() {
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
+  const reopening = useSessionStore((s) => s.reopening);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useTheme();
@@ -61,7 +62,16 @@ function App() {
           </div>
         )}
         <MessageList turns={active?.turns ?? []} />
-        <ChatInput onSend={sendTurn} onNew={addSession} busy={isBusy(active)} onStop={stopTurn} />
+        {/* Busy while a turn runs, and while a session is still being reopened:
+            the conversation is arriving then, so a prompt would interleave with
+            it. There is no turn to stop in that window, so the stop control does
+            nothing until one is open. */}
+        <ChatInput
+          onSend={sendTurn}
+          onNew={addSession}
+          busy={isBusy(active) || reopening}
+          onStop={stopTurn}
+        />
       </main>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>

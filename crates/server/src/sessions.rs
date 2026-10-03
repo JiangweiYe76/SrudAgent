@@ -18,11 +18,11 @@
 //! work in the directory [`session/new`] named. [`usable_directory`] says when
 //! the agent overrides that and why.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use chrono::Datelike;
+use chrono::{Datelike, SecondsFormat};
 use srud_core::session::Session;
 use srud_core::session_event::SessionEvent;
 use srud_core::session_log::{RecordError, SessionLog};
@@ -178,15 +178,14 @@ pub enum RestoreError {
     Repair(#[from] srud_core::session_log::RecordError),
 }
 
-/// Finds the log a session was written to.
+/// Every session log under the configuration directory.
 ///
-/// Searched rather than computed: the filename carries the moment the session was
-/// created, which only the write path knew. An index would answer this in one
-/// lookup, and this is what stands in for one until then.
-async fn find_log(id: &SessionId) -> Result<PathBuf, RestoreError> {
+/// Walked rather than indexed, which stands in for an index until there is one:
+/// a listing has to reach all of them and a single load has to reach one, and
+/// both start by knowing where they are.
+async fn log_files() -> Result<Vec<PathBuf>, RestoreError> {
     let home = config::home().ok_or(config::ConfigError::NoHome)?;
-    let suffix = format!("-{id}.jsonl");
-
+    let mut found = Vec::new();
     let mut dirs = vec![home.join(SESSIONS_DIR)];
     while let Some(dir) = dirs.pop() {
         let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
@@ -197,15 +196,29 @@ async fn find_log(id: &SessionId) -> Result<PathBuf, RestoreError> {
             let path = entry.path();
             if entry.file_type().await.is_ok_and(|kind| kind.is_dir()) {
                 dirs.push(path);
-            } else if path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().ends_with(&suffix))
-            {
-                return Ok(path);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                found.push(path);
             }
         }
     }
-    Err(RestoreError::NotFound(id.clone()))
+    Ok(found)
+}
+
+/// Finds the log a session was written to.
+///
+/// Searched rather than computed: the filename carries the moment the session was
+/// created, which only the write path knew. An index would answer this in one
+/// lookup, and [`log_files`] is what stands in for one until then.
+async fn find_log(id: &SessionId) -> Result<PathBuf, RestoreError> {
+    let suffix = format!("-{id}.jsonl");
+    log_files()
+        .await?
+        .into_iter()
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(&suffix))
+        })
+        .ok_or_else(|| RestoreError::NotFound(id.clone()))
 }
 
 /// Opens the log for a session about to work in `cwd`.
@@ -368,7 +381,14 @@ impl SessionManager {
         } else {
             srud_core::session_store::load(&path).await?
         };
-        if !same_directory(&loaded.cwd, cwd) {
+        // ACP has the client confirm the directory, so a session is not loaded
+        // into a different one. A client that named no directory is not
+        // disagreeing with the recorded one — it has nothing to compare — and the
+        // same word means "not chosen" on `session/new`, where the agent picks.
+        // Refusing here would make every session the app did not create in this
+        // run unloadable, which is the only kind it has after a restart.
+        if usable_directory(Some(cwd.to_path_buf())).is_some() && !same_directory(&loaded.cwd, cwd)
+        {
             return Err(RestoreError::Cwd {
                 recorded: loaded.cwd.clone(),
                 requested: cwd.to_path_buf(),
@@ -521,45 +541,120 @@ impl SessionManager {
             .map(|tracked| Arc::clone(&tracked.session))
     }
 
+    /// Drops a session from memory, keeping its log, and returns whether it was held.
+    ///
+    /// What closing a session means: it will take no more turns, but it is not
+    /// deleted and is still there to be loaded — which is why this is not
+    /// [`remove`](Self::remove).
+    pub fn forget(&self, id: &SessionId) -> bool {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .remove(id.0.as_ref())
+            .is_some()
+    }
+
     /// Removes a session, returning whether it existed.
     ///
-    /// A workspace this agent created goes with it. A directory the client named
-    /// does not: the session record is the agent's, the files in there are the
-    /// user's. Failing to delete leaves files behind rather than failing the
-    /// call, because the session is gone either way and the caller has nothing
-    /// useful to do about a directory that would not go.
-    pub fn remove(&self, id: &SessionId) -> bool {
+    /// A workspace this agent created goes with it, and so does the log: a client
+    /// listing sessions reads what is on disk, so a log left behind would bring the
+    /// session back on the next start. A directory the client named does not go: the
+    /// session record is the agent's, the files in there are the user's. Failing to
+    /// delete leaves files behind rather than failing the call, because the session
+    /// is gone either way and the caller has nothing useful to do about files that
+    /// would not go.
+    ///
+    /// A session this agent is not holding is removed from disk alone. A client can
+    /// only be shown a session it was told about, and every one of those came from
+    /// here.
+    pub async fn remove(&self, id: &SessionId) -> bool {
         let removed = self
             .sessions
             .lock()
             .expect("session map lock poisoned")
             .remove(id.0.as_ref());
-        let Some(tracked) = removed else {
-            return false;
+
+        let Ok(path) = find_log(id).await else {
+            return removed.is_some();
         };
-        if tracked.workspace_is_ours {
-            let _ = std::fs::remove_dir_all(tracked.session.cwd());
+
+        // A session this agent is not holding is deleted from disk alone, so what
+        // it worked in is in its log rather than in memory.
+        let (cwd, workspace_is_ours) = match &removed {
+            Some(tracked) => (
+                tracked.session.cwd().to_path_buf(),
+                tracked.workspace_is_ours,
+            ),
+            // The session came from a listing and is deleted without ever being
+            // opened, so what it worked in is in its log and nowhere else.
+            None => {
+                let Ok(summary) = srud_core::session_store::summarize(&path).await else {
+                    return false;
+                };
+                // Whether the directory is the agent's to remove is decided the
+                // same way as at creation, by whether it is the one the agent
+                // would have made for this session.
+                let ours = workspace_for(summary.session_id).is_ok_and(|w| w == summary.cwd);
+                (summary.cwd, ours)
+            }
+        };
+
+        let _ = tokio::fs::remove_file(path).await;
+        if workspace_is_ours {
+            let _ = tokio::fs::remove_dir_all(cwd).await;
         }
         true
     }
 
-    /// Snapshots every live session as wire-level [`SessionInfo`] values.
-    #[must_use]
-    pub fn list(&self) -> Vec<SessionInfo> {
-        self.sessions
-            .lock()
-            .expect("session map lock poisoned")
-            .iter()
-            .map(|(id, tracked)| {
-                let mut info = SessionInfo::new(
-                    SessionId::new(id.clone()),
-                    tracked.session.cwd().to_path_buf(),
-                );
-                info.title = tracked.title.clone();
-                info.updated_at = None;
-                info
-            })
-            .collect()
+    /// Every session this agent knows about, the live ones first and then the
+    /// stored ones newest first.
+    ///
+    /// Read from disk as well as from memory, because a session outlives the run
+    /// that created it: a client can only be shown a session it was told about,
+    /// and a session nobody has opened since the last restart is on disk only. A
+    /// live session is described from memory, where its title is the one just
+    /// accepted rather than the one last written.
+    pub async fn list(&self) -> Vec<SessionInfo> {
+        let (mut all, live_ids) = {
+            let sessions = self.sessions.lock().expect("session map lock poisoned");
+            let live: Vec<SessionInfo> = sessions
+                .iter()
+                .map(|(id, tracked)| {
+                    let mut info = SessionInfo::new(
+                        SessionId::new(id.clone()),
+                        tracked.session.cwd().to_path_buf(),
+                    );
+                    info.title = tracked.title.clone();
+                    info
+                })
+                .collect();
+            (live, sessions.keys().cloned().collect::<HashSet<String>>())
+        };
+
+        // A log that cannot be read describes no session, and one session being
+        // unreadable is not a reason to fail the listing of all the others.
+        let mut stored = Vec::new();
+        for path in log_files().await.unwrap_or_default() {
+            let Ok(summary) = srud_core::session_store::summarize(&path).await else {
+                continue;
+            };
+            if live_ids.contains(&*summary.session_id.0.to_string()) {
+                continue;
+            }
+            let mut info =
+                SessionInfo::new(SessionId::new(summary.session_id.to_string()), summary.cwd);
+            info.title = summary.title;
+            info.updated_at = Some(
+                summary
+                    .updated_at
+                    .to_rfc3339_opts(SecondsFormat::Millis, true),
+            );
+            stored.push((summary.updated_at, info));
+        }
+        stored.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
+
+        all.extend(stored.into_iter().map(|(_, info)| info));
+        all
     }
 
     /// Returns how many sessions are live.
@@ -821,7 +916,7 @@ mod tests {
         let id = create(&manager).await;
         let cwd = manager.get(&id).expect("registered").cwd().to_path_buf();
 
-        assert!(manager.remove(&id));
+        assert!(manager.remove(&id).await);
 
         assert!(!cwd.exists(), "{cwd:?} went with the session");
     }
@@ -832,7 +927,7 @@ mod tests {
         let chosen = test_env::unique_dir("srud-chosen");
         let id = manager.create(Some(chosen.clone())).await.expect("created");
 
-        assert!(manager.remove(&id));
+        assert!(manager.remove(&id).await);
 
         assert!(
             chosen.exists(),
@@ -850,8 +945,8 @@ mod tests {
     async fn remove_drops_the_session() {
         let (manager, _env) = manager();
         let id = create(&manager).await;
-        assert!(manager.remove(&id));
-        assert!(!manager.remove(&id), "a second removal finds nothing");
+        assert!(manager.remove(&id).await);
+        assert!(!manager.remove(&id).await, "a second removal finds nothing");
         assert!(manager.is_empty());
     }
 
@@ -860,7 +955,7 @@ mod tests {
         let (manager, _env) = manager();
         let id = create(&manager).await;
         assert_eq!(manager.title(&id), None);
-        assert!(manager.list()[0].title.is_none());
+        assert!(manager.list().await[0].title.is_none());
     }
 
     #[tokio::test]
@@ -916,7 +1011,7 @@ mod tests {
         let (manager, _env) = manager();
         let named = create(&manager).await;
         manager.set_title(&named, "Named session").await.unwrap();
-        let listed = manager.list();
+        let listed = manager.list().await;
         let titled = listed
             .iter()
             .find(|info| info.session_id == named)
@@ -925,12 +1020,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_reports_a_session_that_only_exists_on_disk() {
+        // The case a restart produces: nothing in memory, every session on disk.
+        // A client can only be shown a session it was told about, so a session the
+        // agent will not name cannot be loaded.
+        let (manager, _env) = manager();
+        let named = create(&manager).await;
+        manager
+            .set_title(&named, "From an earlier run")
+            .await
+            .unwrap();
+        manager.remove(&named).await;
+
+        let listed = manager.list().await;
+
+        assert!(
+            listed.is_empty(),
+            "the log went with the session: {:?}",
+            listed.iter().map(|i| i.title.clone()).collect::<Vec<_>>()
+        );
+
+        // Written the way an earlier run would have left it: a log, and no entry.
+        let second = create(&manager).await;
+        manager.set_title(&second, "Still there").await.unwrap();
+        manager.forget(&second);
+        let on_disk = manager.list().await;
+        let found = on_disk
+            .iter()
+            .find(|info| info.session_id == second)
+            .expect("a session only on disk is still listed");
+        assert_eq!(found.title.as_deref(), Some("Still there"));
+        assert!(
+            found.updated_at.is_some(),
+            "and it says when it was last active, or the sidebar cannot order it"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_reports_a_stored_session_newest_first() {
+        // A sidebar reads as a conversation list, so the one just used is the one
+        // at the top. The order comes from each log's own last line, which is the
+        // only thing that says when a session was last active.
+        let (manager, _env) = manager();
+        let older = create(&manager).await;
+        // A log records time to the millisecond, so two sessions made in the same
+        // one would be in whatever order the walk found them.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let newer = create(&manager).await;
+        manager.forget(&older);
+        manager.forget(&newer);
+
+        let listed: Vec<String> = manager
+            .list()
+            .await
+            .iter()
+            .map(|info| info.session_id.to_string())
+            .collect();
+
+        assert_eq!(listed, vec![newer.0.to_string(), older.0.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_live_session_is_listed_from_memory_not_from_its_log() {
+        // Its title in memory is the one just accepted; the log only learns of it
+        // when the next record is written.
+        let (manager, _env) = manager();
+        let id = create(&manager).await;
+        manager.set_title(&id, "Accepted").await.unwrap();
+
+        let listed = manager.list().await;
+
+        assert_eq!(listed.len(), 1, "listed once, not once per source");
+        assert_eq!(listed[0].title.as_deref(), Some("Accepted"));
+    }
+
+    #[tokio::test]
+    async fn closing_a_session_keeps_its_log() {
+        // Closing is not deleting: the session is over, and the next listing is how
+        // a client learns it can be loaded again.
+        let (manager, _env) = manager();
+        let id = create(&manager).await;
+        manager.set_title(&id, "Finished").await.unwrap();
+
+        assert!(manager.forget(&id));
+        assert!(manager.is_empty(), "it takes no more turns");
+        assert!(!manager.forget(&id), "and is not held a second time");
+
+        let listed = manager.list().await;
+        assert_eq!(listed.len(), 1, "but it is still there to load");
+        assert_eq!(listed[0].title.as_deref(), Some("Finished"));
+    }
+
+    #[tokio::test]
+    async fn removing_a_stored_session_takes_its_workspace() {
+        // Deleting from the sidebar without ever opening it: the workspace is the
+        // agent's to remove, and it only knows the directory from the log.
+        let (manager, _env) = manager();
+        let id = create(&manager).await;
+        let cwd = manager.get(&id).expect("registered").cwd().to_path_buf();
+        manager.forget(&id);
+
+        assert!(manager.remove(&id).await);
+
+        assert!(!cwd.exists(), "{cwd:?} went with the session");
+        assert!(manager.list().await.is_empty(), "and so does its log");
+    }
+
+    #[tokio::test]
+    async fn removing_a_stored_session_leaves_a_directory_the_client_named() {
+        let (manager, _env) = manager();
+        let chosen = test_env::unique_dir("srud-chosen-stored");
+        let id = manager.create(Some(chosen.clone())).await.expect("created");
+        manager.forget(&id);
+
+        assert!(manager.remove(&id).await);
+
+        assert!(
+            chosen.exists(),
+            "the user's files are not the agent's to delete, loaded or not"
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_a_session_takes_its_log() {
+        // Otherwise the next listing brings a deleted session back.
+        let (manager, _env) = manager();
+        let id = create(&manager).await;
+
+        assert!(manager.remove(&id).await);
+
+        assert!(manager.list().await.is_empty(), "the log went too");
+    }
+
+    #[tokio::test]
     async fn list_reports_the_working_directory_for_every_session() {
         let (manager, _env) = manager();
         let mut expected = [create(&manager).await, create(&manager).await];
         expected.sort_by_key(ToString::to_string);
 
-        let mut listed = manager.list();
+        let mut listed = manager.list().await;
         listed.sort_by_key(|info| info.session_id.to_string());
 
         let ids: Vec<String> = listed

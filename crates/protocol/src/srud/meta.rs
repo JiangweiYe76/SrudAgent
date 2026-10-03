@@ -48,9 +48,12 @@ pub struct SrudMeta {
     /// can be attached to individual updates for UI state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interrupted: Option<bool>,
-    /// The SrudAgent turn-end reason when it diverges from the standard
-    /// `stopReason` — currently only `"blocked"` (approval denied), which maps
-    /// to `stopReason: "end_turn"` plus this marker.
+    /// The SrudAgent turn-end reason when the standard `stopReason` does not carry
+    /// it — currently only `"blocked"` (approval denied), which maps to
+    /// `stopReason: "end_turn"` plus this marker — or when there is no `stopReason`
+    /// at all. A replayed turn is the second case: the client is shown the log and
+    /// gets no prompt response, so the reason of each turn rides on the last
+    /// update of that turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_end_reason: Option<String>,
     /// A limit that ended the turn, when `stopReason` is `max_tokens` /

@@ -141,7 +141,7 @@ pub fn to_notification(
         Ok(update) => update,
         Err(_) => return None,
     };
-    let (update, outer_meta) = attach_turn_meta(update, turn_id);
+    let (update, outer_meta) = attach_turn_meta(update, turn_id, None);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -149,21 +149,41 @@ pub fn to_notification(
     })
 }
 
-/// Attaches `_meta.srud.turnId` to an update.
+/// Attaches `_meta.srud` to an update.
 ///
-/// The turn id goes on the **outer** `SessionNotification` rather than the
-/// inner update variant, because several `SessionUpdate` variants do not carry
-/// a `meta` field of their own, and a single placement keeps the reader
-/// uniform.
-fn attach_turn_meta(update: SessionUpdate, turn_id: &str) -> (SessionUpdate, Meta) {
+/// The turn id goes on the **outer** `SessionNotification` rather than the inner
+/// update variant, because several `SessionUpdate` variants do not carry a `meta`
+/// field of their own, and a single placement keeps the reader uniform. The end
+/// reason rides with it, on the same placement, for the same reason.
+fn attach_turn_meta(
+    update: SessionUpdate,
+    turn_id: &str,
+    turn_end: Option<TurnEndReason>,
+) -> (SessionUpdate, Meta) {
     let srud = SrudMeta {
         turn_id: Some(turn_id.to_string()),
+        turn_end_reason: turn_end.map(replay_reason_wire).map(str::to_string),
         ..Default::default()
     };
     let meta = srud
         .to_meta()
         .expect("a payload with turnId is never empty");
     (update, meta)
+}
+
+/// The wire spelling of a reason a client is shown.
+///
+/// Spelled out rather than taken from the prompt response's mapping, which is how
+// a `StopReason` becomes a turn end — and a replay has no `StopReason` to
+// convert. These are the names a client already knows a turn end by, which is why
+// they are the variant names rather than ACP's stop reasons.
+fn replay_reason_wire(reason: TurnEndReason) -> &'static str {
+    match reason {
+        TurnEndReason::Completed => "completed",
+        TurnEndReason::Interrupted => "interrupted",
+        TurnEndReason::Blocked => "blocked",
+        TurnEndReason::Error => "error",
+    }
 }
 
 /// Builds the notification that replays one recorded item.
@@ -173,15 +193,21 @@ fn attach_turn_meta(update: SessionUpdate, turn_id: &str) -> (SessionUpdate, Met
 /// live call go out as the same update through the same builders, so a client
 /// cannot end up handling two shapes for one thing.
 ///
+/// `turn_end` closes the turn, on the last update of it. A client replaying a
+/// session has no `session/prompt` response to close its turns with, so the reason
+/// is carried here instead; live it arrives on that response and this is `None`.
+///
 /// Returns `None` for a record a client is not shown. The env-context block is
 /// context the model reads — showing it would put the agent's own notes on screen
-/// as something the user said — and a [`Reasoning`](srud_core::types::ResponseItem::Reasoning)
-/// item **is** shown, because the client renders thinking and the model is the
-/// one that never sees it again.
+/// as something the user said — and a
+/// [`Reasoning`](srud_core::types::ResponseItem::Reasoning) item **is** shown,
+/// because a client renders thinking and the model is the one that never sees it
+/// again.
 #[must_use]
 pub fn replay_notification(
     session_id: &SessionId,
     event: &SessionEvent,
+    turn_end: Option<TurnEndReason>,
 ) -> Option<Notification<SessionNotification>> {
     let SessionEvent::Item {
         turn_id,
@@ -225,7 +251,7 @@ pub fn replay_notification(
         } => tool_result(call_id.clone(), output.clone(), *is_error),
     };
 
-    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string());
+    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), turn_end);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),

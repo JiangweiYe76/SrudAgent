@@ -208,6 +208,12 @@ pub struct Loaded {
     pub history: Vec<ResponseItem>,
     /// What a client replaying the session should be shown, oldest first.
     pub conversation: Vec<SessionEvent>,
+    /// Why each turn ended, oldest first.
+    ///
+    /// A client being shown a session has no `session/prompt` response to close
+    /// its turns, so the reasons are read from here: a turn left without an end
+    /// record is in [`repairs`], and its reason is the one written there.
+    pub turn_ends: Vec<(TurnId, TurnEndReason)>,
     /// Records to append before the session runs again, closing what the log left
     /// open.
     pub repairs: Vec<SessionEvent>,
@@ -237,6 +243,70 @@ pub enum LoadError {
 /// one there is no id and no directory to work in.
 pub async fn load(path: impl AsRef<Path>) -> Result<Loaded, LoadError> {
     rebuild(&read(path).await?, true)
+}
+
+/// What a log says about the session it holds.
+///
+/// Enough to list a session without opening it: [`load`] also reads every entry
+/// to rebuild a history and to close what the log left open, and a client
+/// listing every session pays that once per session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Summary {
+    /// The session the log belongs to.
+    pub session_id: SessionId,
+    /// The directory the session works in.
+    pub cwd: PathBuf,
+    /// The last title the log recorded, if it recorded one.
+    pub title: Option<String>,
+    /// When the log was last written to, which is when the session last did
+    /// anything.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Reads just enough of a session's log to describe it.
+///
+/// # Errors
+///
+/// As [`load`]. A log that cannot be read describes no session, and a caller
+/// listing every log skips it rather than failing over one.
+pub async fn summarize(path: impl AsRef<Path>) -> Result<Summary, LoadError> {
+    summarize_log(&read(path).await?)
+}
+
+fn summarize_log(log: &ReadLog) -> Result<Summary, LoadError> {
+    let mut title = None;
+    let mut updated_at = None;
+    let mut session = None;
+    for entry in &log.entries {
+        match &entry.event {
+            SessionEvent::Session {
+                session_id, cwd, ..
+            } => {
+                session = Some((*session_id, cwd.clone()));
+            }
+            SessionEvent::Title { title: last } => title = last.clone(),
+            // Everything else is the session doing its work, which a description
+            // of the session has no use for.
+            SessionEvent::System { .. }
+            | SessionEvent::TurnStarted { .. }
+            | SessionEvent::Item { .. }
+            | SessionEvent::TurnEnded { .. } => {}
+        }
+        updated_at = Some(entry.time);
+    }
+
+    let (session_id, cwd) = session.ok_or(LoadError::NoSession)?;
+    // Unreachable alongside the line above, which a log can only pass by holding a
+    // record, and that record is an entry the loop took the time of. Reported as
+    // the same absence rather than unwrapped, so a log that somehow got here is a
+    // log describing no session rather than a panic.
+    let updated_at = updated_at.ok_or(LoadError::NoSession)?;
+    Ok(Summary {
+        session_id,
+        cwd,
+        title,
+        updated_at,
+    })
 }
 
 /// Rebuilds a session that has not stopped.
@@ -276,12 +346,21 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     let mut open: Vec<TurnId> = Vec::new();
     // Every recorded entry, in order.
     let mut items: Vec<&SessionEvent> = Vec::new();
+    let mut turn_ends: Vec<(TurnId, TurnEndReason)> = Vec::new();
 
     for entry in &log.entries {
         match &entry.event {
             SessionEvent::Title { title: last } => title = last.clone(),
             SessionEvent::TurnStarted { turn_id } => open.push(*turn_id),
-            SessionEvent::TurnEnded { turn_id, .. } => open.retain(|id| id != turn_id),
+            SessionEvent::TurnEnded { turn_id, reason } => {
+                // A turn ends once. A log carrying a second end for one is
+                // damaged, and the first is the one that says what happened, so
+                // a client is never shown two reasons for the same turn.
+                if open.contains(turn_id) {
+                    open.retain(|id| id != turn_id);
+                    turn_ends.push((*turn_id, *reason));
+                }
+            }
             SessionEvent::Item { .. } => items.push(&entry.event),
             SessionEvent::Session { .. } | SessionEvent::System { .. } => {}
         }
@@ -294,6 +373,14 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     } else {
         Vec::new()
     };
+
+    // A turn that only the repairs closed still ended, and a client replaying it
+    // is told so: otherwise the last turn of an interrupted session would have no
+    // reason and would look like it were still running.
+    turn_ends.extend(repairs.iter().filter_map(|event| match event {
+        SessionEvent::TurnEnded { turn_id, reason } => Some((*turn_id, *reason)),
+        _ => None,
+    }));
 
     // The repairs that carry an item are part of both the history and the
     // conversation; the one that only closes a turn is in neither, since a turn
@@ -324,6 +411,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         title,
         history,
         conversation,
+        turn_ends,
         repairs,
     })
 }
@@ -982,5 +1070,105 @@ mod tests {
         let log = log_of(vec![SessionEvent::system("# Role")]);
 
         assert!(matches!(rebuild(&log, true), Err(LoadError::NoSession)));
+    }
+
+    #[test]
+    fn every_turn_says_how_it_ended() {
+        // A client being shown the session has no prompt response to close its
+        // turns with, so each reason has to be readable from here.
+        let first = TurnId::new();
+        let second = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id: first },
+            said(first, "one"),
+            SessionEvent::TurnEnded {
+                turn_id: first,
+                reason: TurnEndReason::Completed,
+            },
+            SessionEvent::TurnStarted { turn_id: second },
+            said(second, "two"),
+            SessionEvent::TurnEnded {
+                turn_id: second,
+                reason: TurnEndReason::Interrupted,
+            },
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(
+            loaded.turn_ends,
+            vec![
+                (first, TurnEndReason::Completed),
+                (second, TurnEndReason::Interrupted),
+            ],
+            "in the order the turns ran"
+        );
+    }
+
+    #[test]
+    fn a_turn_only_the_repairs_closed_still_says_it_ended() {
+        // Without this the last turn of a session that stopped mid-turn would be
+        // shown with no reason at all, and would look like it were still running.
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            said(turn_id, "hello"),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(
+            loaded.turn_ends,
+            vec![(turn_id, TurnEndReason::Interrupted)],
+            "the reason the repair gives it"
+        );
+    }
+
+    #[test]
+    fn a_running_turn_says_nothing_about_how_it_will_end() {
+        // Its end has not happened yet, so inventing one would report a turn as
+        // over that is not.
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            said(turn_id, "hello"),
+        ]);
+
+        let loaded = rebuild(&log, false).expect("a session");
+
+        assert!(loaded.turn_ends.is_empty(), "{:?}", loaded.turn_ends);
+    }
+
+    #[test]
+    fn a_turn_that_ended_twice_is_counted_once() {
+        // Nothing writes a second end, so a log carrying one is damaged. The first
+        // is kept, so a client is shown one reason per turn however many the log
+        // claims.
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            said(turn_id, "hello"),
+            SessionEvent::TurnEnded {
+                turn_id,
+                reason: TurnEndReason::Completed,
+            },
+        ]);
+        let mut log = log;
+        log.entries.push(ReadEntry {
+            line: 4,
+            time: chrono::Utc::now(),
+            event: SessionEvent::TurnEnded {
+                turn_id,
+                reason: TurnEndReason::Interrupted,
+            },
+        });
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.turn_ends, vec![(turn_id, TurnEndReason::Completed)]);
     }
 }
