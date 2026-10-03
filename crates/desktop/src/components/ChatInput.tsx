@@ -55,6 +55,11 @@ export function ChatInput({ onSend, onNew, busy, onStop }: ChatInputProps) {
             disabled={!busy}
             title={t('chat.stop')}
             aria-label={t('chat.stop')}
+            // Red while it can be pressed, and back to the neutral outline once
+            // there is nothing to stop. Coloured rather than plain outline because
+            // stopping a running turn is the one control here that discards work
+            // rather than adding it.
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           >
             <Square className="h-3 w-3 fill-current" />
           </Button>
