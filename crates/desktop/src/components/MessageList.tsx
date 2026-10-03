@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { Brain, Check, ChevronDown, Circle, Copy, Wrench } from 'lucide-react';
 import type { Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
+import { Markdown } from '@/components/Markdown';
 import {
   Collapsible,
   CollapsibleContent,
@@ -79,9 +78,12 @@ function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <div className="message-markdown border-t border-border px-3 py-2 text-muted-foreground">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{thought}</ReactMarkdown>
-          </div>
+          <Markdown
+            className="border-t border-border px-3 py-2 text-muted-foreground"
+            streaming={live}
+          >
+            {thought}
+          </Markdown>
         </CollapsibleContent>
       </div>
     </Collapsible>
@@ -127,10 +129,8 @@ export function MessageList({ turns }: MessageListProps) {
                     <ThoughtBlock thought={step.thought} live={turn.endReason === undefined} />
                   )}
                   {step.assistantText && (
-                    <div className="message-markdown">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.assistantText}</ReactMarkdown>
-                    </div>
-                  )}
+                <Markdown streaming={turn.endReason === undefined}>{step.assistantText}</Markdown>
+              )}
                   {step.toolCalls.map((tc) => (
                     <Collapsible key={tc.id}>
                       <div className="rounded-lg border border-border bg-muted text-[12.5px]">
