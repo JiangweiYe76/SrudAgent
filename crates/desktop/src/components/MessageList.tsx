@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Brain, Check, ChevronDown, Circle, Copy, Wrench } from 'lucide-react';
+import { Brain, Check, ChevronDown, Copy, Wrench } from 'lucide-react';
 import type { Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
@@ -60,6 +60,23 @@ function ThinkingDots() {
         />
       ))}
     </span>
+  );
+}
+
+/**
+ * Whether a turn has been sent but nothing has come back yet.
+ *
+ * This is the gap between submitting and the first token, which is where nothing
+ * on screen has appeared yet and the reader has no way to tell the app heard them.
+ *
+ * A step is only opened when its first chunk lands, so a turn waiting on the model
+ * normally has no steps at all. The contents are still checked rather than trusting
+ * that, because a chunk carrying empty text can open a step with nothing in it.
+ */
+function awaitingFirstToken(turn: Turn): boolean {
+  if (turn.endReason !== undefined) return false;
+  return !turn.steps.some(
+    (step) => step.thought || step.assistantText || step.toolCalls.length > 0,
   );
 }
 
@@ -129,8 +146,10 @@ export function MessageList({ turns }: MessageListProps) {
                     <ThoughtBlock thought={step.thought} live={turn.endReason === undefined} />
                   )}
                   {step.assistantText && (
-                <Markdown streaming={turn.endReason === undefined}>{step.assistantText}</Markdown>
-              )}
+                    <Markdown streaming={turn.endReason === undefined}>
+                      {step.assistantText}
+                    </Markdown>
+                  )}
                   {step.toolCalls.map((tc) => (
                     <Collapsible key={tc.id}>
                       <div className="rounded-lg border border-border bg-muted text-[12.5px]">
@@ -150,10 +169,16 @@ export function MessageList({ turns }: MessageListProps) {
                   ))}
                 </div>
               ))}
-              {turn.endReason === undefined && (
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <Circle className="h-2 w-2 animate-pulse fill-accent text-accent" />
-                  {t('turn.running')}
+              {/* The wait for the model's first token, marked with the same dots the
+                  thinking header uses rather than a second spinner. Once anything has
+                  arrived the content itself is the progress indicator. */}
+              {awaitingFirstToken(turn) && (
+                <div
+                  className="flex items-center py-1"
+                  role="status"
+                  aria-label={t('turn.awaitingReply')}
+                >
+                  <ThinkingDots />
                 </div>
               )}
               {turn.endReason && (
