@@ -10,6 +10,7 @@ import rehypeCodeLines, { textOf, type HastNode } from '@/lib/rehypeCodeLines';
 import { t } from '@/lib/i18n';
 import { Mermaid } from '@/components/Mermaid';
 import { CodeBlockBar } from '@/components/CodeBlockBar';
+import { externalUrl, openExternal } from '@/lib/links';
 import { cn } from '@/lib/utils';
 import 'katex/dist/katex.min.css';
 
@@ -83,9 +84,49 @@ function TableBlock({ children }: { children?: ReactNode }) {
   );
 }
 
+/**
+ * A link, opened in the user's own browser rather than inside the app.
+ *
+ * The default is prevented either way, and that is the whole point: a click the
+ * webview acts on navigates the webview, which replaces the entire application with
+ * whatever page the model happened to link. A link whose scheme is not web content
+ * is left inert rather than opened — `href` is dropped as well, so it cannot be
+ * revived by a middle click or by "open in new tab".
+ *
+ * `rel` is set even though there is no navigation left to leak a referrer to; it is
+ * the default the browser would have applied anyway, and this element is created in
+ * one place where that guarantee is cheap to keep.
+ */
+function Link({
+  href,
+  children,
+  className,
+}: {
+  href?: string;
+  children?: ReactNode;
+  className?: string;
+}) {
+  const url = externalUrl(href);
+
+  return (
+    <a
+      href={url ?? undefined}
+      rel="noreferrer noopener"
+      className={className}
+      onClick={(event) => {
+        event.preventDefault();
+        if (url) void openExternal(url);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
 const components: Components = {
   pre: CodeBlock,
   table: TableBlock,
+  a: Link,
 };
 
 /**

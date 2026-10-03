@@ -154,6 +154,14 @@ pub fn run() {
         eprintln!("{error}");
     }
     tauri::Builder::default()
+        // Links in assistant output are opened in the user's own browser. Without
+        // this a click navigates the webview itself, replacing the whole app with a
+        // web page the reader then has to navigate back out of.
+        //
+        // Its `default` permission set scopes URLs to `http`, `https`, `mailto` and
+        // `tel`, so the check is enforced here rather than only in the webview —
+        // which matters because the text being rendered is model output.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let agent = build_agent();
             if let Some(agent) = &agent {
