@@ -25,10 +25,19 @@ export interface JsonPayload {
    * `null` is the honest answer rather than a best-effort tree: the grammar
    * colours commas as punctuation whether or not they separate anything, so
    * highlighting prose marks up punctuation in a sentence that has none, and the
-   * result reads as structure that is not there. A tool is free to answer with a
-   * message instead of a payload, and that answer is shown as it was written.
+   * result reads as structure that is not there. A tool that failed answers with
+   * a message rather than a payload, and that message is shown as it was written.
    */
   tree: HastNode | null;
+  /**
+   * Whether the text failed to parse.
+   *
+   * Reported rather than left implied by `tree === null`, because the two reasons
+   * a payload is not JSON are not the same. A tool that failed sends a message on
+   * purpose; a tool that succeeded sends something that is not JSON by mistake,
+   * and the second is a defect worth noticing rather than a shape to render.
+   */
+  unparsable: boolean;
 }
 
 /**
@@ -46,9 +55,9 @@ export function readJson(raw: string): JsonPayload {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { text: raw, tree: null };
+    return { text: raw, tree: null, unparsable: true };
   }
 
   const text = JSON.stringify(parsed, null, 2);
-  return { text, tree: lowlight.highlight('json', text) as unknown as HastNode };
+  return { text, tree: lowlight.highlight('json', text) as unknown as HastNode, unparsable: false };
 }

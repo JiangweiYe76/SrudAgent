@@ -378,6 +378,80 @@ async fn an_unknown_tool_becomes_a_failed_outcome_not_a_crash() {
         )
     });
     assert!(failed, "the failure is reported through ToolCallEnd");
+
+    // The text the model reads has to carry the failure too: `is_error` reaches
+    // this event but never the provider, whose tool output is a string.
+    let recorded = session
+        .state()
+        .history()
+        .iter()
+        .find_map(|item| match item {
+            srud_core::ResponseItem::FunctionCallOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .expect("the failed call was recorded");
+    assert!(
+        recorded.starts_with(srud_core::tools::FAILURE_MARKER),
+        "a failure reaching the model is marked: {recorded}"
+    );
+}
+
+/// The refusal to run a tool reaches the model marked, whatever stopped it.
+///
+/// Arguments the schema permits but the tool cannot act on come back as a
+/// `ToolError`, which the loop turns into a failed outcome. That is the path a
+/// model reaches by misreading its own result — told a file has no line 9999, it
+/// asks for offset 0 — so it has to look the same as any other failure.
+#[tokio::test]
+async fn rejected_arguments_reach_the_model_as_a_marked_failure() {
+    let session = session();
+    let sink = Recorder::default();
+    let mut tools = ToolRegistry::new();
+    tools
+        .register(std::sync::Arc::new(srud_core::tools::read::ReadTool))
+        .expect("fresh registry");
+    // Offset 0 passes the schema's `minimum: 1` only because the tool checks it,
+    // which makes this the argument rejection a model actually produces.
+    let client = Scripted::new(vec![
+        vec![
+            Ok(ModelEvent::ToolCall {
+                call_id: "c1".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"/etc/os-release","offset":0}"#.into(),
+            }),
+            done(),
+        ],
+        vec![text("adjusted"), done()],
+    ]);
+
+    srud_core::run_turn(
+        &session,
+        TurnInput { text: "go".into() },
+        client.as_ref(),
+        &tools,
+        &sink,
+    )
+    .await
+    .expect("turn runs");
+
+    let recorded = session
+        .state()
+        .history()
+        .iter()
+        .find_map(|item| match item {
+            srud_core::ResponseItem::FunctionCallOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .expect("the rejected call was recorded");
+
+    assert!(
+        recorded.starts_with(srud_core::tools::FAILURE_MARKER),
+        "rejected arguments are marked like any other failure: {recorded}"
+    );
+    assert!(
+        recorded.contains("before anything ran"),
+        "it says the tool did not run, so the model does not think a file was read: {recorded}"
+    );
 }
 
 #[tokio::test]

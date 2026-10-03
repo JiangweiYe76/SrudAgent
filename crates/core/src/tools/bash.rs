@@ -9,7 +9,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::{join, time::timeout};
 
-use super::{Tool, ToolContext, ToolError, ToolOutcome};
+use super::{failure_text, Tool, ToolContext, ToolError, ToolOutcome};
 
 /// The name the model calls.
 const NAME: &str = "bash";
@@ -106,15 +106,22 @@ impl Tool for BashTool {
             serde_json::from_value(arguments).map_err(|err| invalid_arguments(err.to_string()))?;
 
         if let Some(name) = refused_command(&args.command) {
-            return Ok(ToolOutcome::failure(format!(
-                "{name} is not available through this tool. Report that it cannot be done \
-                 rather than spelling the command differently."
-            )));
+            let message = format!("`{name}` is not available through this tool.");
+            let hint = "The refusal is on the program name, so another spelling of it, a full \
+                        path, or an alias will be refused too. Do not work around it: say that \
+                        the task cannot be done this way.";
+            return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
         }
 
         let mut child = match builder(ctx, &args.command).spawn() {
             Ok(child) => child,
-            Err(err) => return Ok(ToolOutcome::failure(format!("cannot run {SHELL}: {err}"))),
+            Err(err) => {
+                let message = format!("The command did not start: {err}");
+                return Ok(ToolOutcome::failure(failure_text(
+                    message,
+                    Some(spawn_hint(&err)),
+                )));
+            }
         };
         let stdout = child.stdout.take().expect("stdout was piped");
         let stderr = child.stderr.take().expect("stderr was piped");
@@ -138,19 +145,26 @@ impl Tool for BashTool {
                 // The signal reaches the shell, not what the shell started: a process
                 // tree is not something this holds a handle to.
                 let _ = child.start_kill();
-                return Ok(ToolOutcome::failure(format!(
-                    "stopped after {:?} without finishing",
-                    self.timeout
-                )));
+                let message = format!("Stopped after {:?} without finishing.", self.timeout);
+                let hint = "Whatever the command started may still be running: the signal \
+                            reaches the shell, not its children. Check for a leftover process \
+                            before retrying, and split the work into steps that finish inside \
+                            the limit.";
+                return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
             }
         };
 
         let status = match status {
             Ok(status) => status,
             Err(err) => {
-                return Ok(ToolOutcome::failure(format!(
-                    "cannot wait for the command: {err}"
-                )))
+                let message = format!("The command ran but its exit status is unavailable: {err}");
+                // Output was read, so whatever the command printed before it ended
+                // is still worth reporting.
+                let collected_so_far = String::from_utf8_lossy(&out);
+                return Ok(ToolOutcome::failure(failure_text(
+                    message,
+                    Some(&format!("stdout before it ended:\n{collected_so_far}")),
+                )));
             }
         };
 
@@ -191,6 +205,25 @@ fn builder(ctx: &ToolContext, command: &str) -> Command {
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default());
     child
+}
+
+/// What to try when the spawn itself failed.
+///
+/// A spawn that does not happen means the shell is missing or the working
+/// directory is gone, and the two call for opposite responses: nothing this tool
+/// can fix, or a path the model chose wrong.
+fn spawn_hint(err: &std::io::Error) -> &'static str {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => {
+            "Either the working directory does not exist, or the shell is not at /bin/sh. \
+             Check the path before running anything else from here."
+        }
+        std::io::ErrorKind::PermissionDenied => "The shell exists but this process may not run it.",
+        _ => {
+            "Nothing about the command was run, so retrying it as written will fail the \
+              same way."
+        }
+    }
 }
 
 /// Reads a stream to its end, stopping once `cap` bytes have arrived.
@@ -273,6 +306,7 @@ fn invalid_arguments(message: impl Into<String>) -> ToolError {
 mod tests {
     use std::path::PathBuf;
 
+    use super::super::FAILURE_MARKER;
     use super::*;
 
     /// A directory for one test to run in, emptied first so a rerun starts from
@@ -447,8 +481,13 @@ mod tests {
 
         assert!(outcome.is_error);
         assert!(
-            outcome.output.contains("stopped after"),
+            outcome.output.contains("Stopped after"),
             "the reply says it was stopped: {}",
+            outcome.output
+        );
+        assert!(
+            outcome.output.contains("may still be running"),
+            "the reply says what is left over: {}",
             outcome.output
         );
     }
@@ -468,8 +507,13 @@ mod tests {
             "a missing working directory is the tool's problem"
         );
         assert!(
-            outcome.output.contains("cannot run"),
+            outcome.output.contains("did not start"),
             "the reply says the command never started: {}",
+            outcome.output
+        );
+        assert!(
+            outcome.output.contains("working directory does not exist"),
+            "the reply names the likely cause: {}",
             outcome.output
         );
     }
@@ -497,6 +541,55 @@ mod tests {
 
         assert_eq!(out["truncated"], true);
         assert!(!outcome.is_error, "the command finished on its own");
+    }
+
+    #[tokio::test]
+    async fn every_refusal_is_marked_so_it_can_be_told_from_a_result() {
+        // A command that exits 1 is a result, not a refusal, and the two have to be
+        // separable from the text alone. That is what the marker is for.
+        let dir = scratch("marked");
+        let refused = refusal(&run(&dir, "rm note.txt").await);
+        let failed_but_ran = reply(&run(&dir, "exit 1").await);
+
+        assert!(
+            refused.starts_with(FAILURE_MARKER),
+            "a refusal is marked: {refused}"
+        );
+        assert!(
+            failed_but_ran["exit_code"] == 1 && failed_but_ran["truncated"] == false,
+            "a command that ran is a result carrying its exit code, not a refusal"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_result_never_carries_the_marker() {
+        // The marker is the only thing telling the two apart, so a result that
+        // happened to print it would make itself unreadable.
+        let dir = scratch("collision");
+        let outcome = run(&dir, "echo '[tool error] not really'").await;
+        reply(&outcome);
+
+        assert!(!outcome.is_error, "the command ran, so it is a result");
+        assert!(
+            !outcome.output.starts_with(FAILURE_MARKER),
+            "the marker is only at the front: {}",
+            outcome.output
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_says_working_around_it_will_not_help() {
+        let dir = scratch("no-workaround");
+        let message = refusal(&run(&dir, "rm note.txt").await);
+
+        assert!(
+            message.contains("another spelling"),
+            "the refusal says the name is what is refused: {message}"
+        );
+        assert!(
+            message.contains("Do not work around it"),
+            "the refusal tells the model not to try: {message}"
+        );
     }
 
     #[tokio::test]

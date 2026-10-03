@@ -8,6 +8,14 @@ export interface ToolCall {
   name: string;
   args: string;
   result?: string;
+  /**
+   * Whether the tool ran and failed.
+   *
+   * Sent alongside the result rather than inferred from it, because the two
+   * arrive in different shapes: a failure is prose, a success is JSON, and which
+   * one arrived says nothing about which it was until it is parsed.
+   */
+  isError?: boolean;
 }
 
 // One model sampling request-response pair, plus the tool calls it issued.

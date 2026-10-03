@@ -10,7 +10,7 @@ use crate::client::{ModelClient, ModelEvent, ModelRequest};
 use crate::context;
 use crate::prompt;
 use crate::session::Session;
-use crate::tools::{ToolContext, ToolError, ToolOutcome, ToolRegistry};
+use crate::tools::{failure_text, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use crate::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnId, TurnInput};
 
 /// What a finished turn produced.
@@ -229,8 +229,14 @@ async fn run_tool_call(
     };
     let outcome = match tools.dispatch(&call.name, &ctx, arguments).await {
         Ok(outcome) => outcome,
-        Err(ToolError::NotFound(name)) => ToolOutcome::failure(format!("unknown tool: {name}")),
-        Err(err) => ToolOutcome::failure(err.to_string()),
+        Err(ToolError::NotFound(name)) => ToolOutcome::failure(failure_text(
+            format!("There is no tool named `{name}`."),
+            Some("Call one of the tools listed above. Nothing was run."),
+        )),
+        Err(err) => ToolOutcome::failure(failure_text(
+            format!("The arguments were rejected before anything ran: {err}"),
+            Some("Nothing was run. Fix the arguments and call the tool again."),
+        )),
     };
 
     session.state().push(ResponseItem::FunctionCallOutput {
