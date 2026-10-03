@@ -101,12 +101,15 @@ export function Sidebar({
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-muted">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
         <span className="text-[15px] font-semibold">SrudAgent</span>
+        {/* The size and shape come from `size="icon"`, like every other icon button
+            in the shell. Overriding them made this one 26px square against the rest at
+            32px, with a square corner against their circles. */}
         <Button
-          variant="outline"
+          variant="ghost"
           size="icon"
-          className="h-6.5 w-6.5 rounded-md"
           onClick={onNew}
           title={t('sidebar.newChat')}
+          aria-label={t('sidebar.newChat')}
         >
           <Plus className="h-4 w-4" />
         </Button>
