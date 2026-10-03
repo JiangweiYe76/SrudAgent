@@ -217,14 +217,11 @@ impl SessionManager {
         // The session's own record, written once here rather than per turn: a log
         // that reopened with a header on every turn would give a reader as many
         // candidates for "where this session started" as the session had turns.
-        // UTC here, local in the path above, and the difference is deliberate. The
-        // record's timestamp is machine time: it is compared against other
-        // records and never read by a person. The path's date is read by a person
-        // looking for today's sessions, so it is theirs.
+        // The path above dates by the local day, which is the one a person looking
+        // for today's sessions means. A line's time is UTC instead: it is ordered
+        // as machine time, and converted where a person reads it.
         log.record(&srud_core::session_event::SessionEvent::session(
-            session_id,
-            cwd,
-            chrono::Utc::now(),
+            session_id, cwd,
         ))
         .await
         .map_err(|source| CreateError::Log {

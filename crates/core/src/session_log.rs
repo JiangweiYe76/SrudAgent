@@ -25,7 +25,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::session_event::{MessageId, SessionEvent};
+use crate::session_event::{Logged, MessageId, SessionEvent};
 use crate::types::{ResponseItem, TurnEndReason, TurnId};
 
 /// Why a record could not be written.
@@ -55,6 +55,10 @@ pub enum RecordError {
 pub trait SessionLog: Send + Sync {
     /// Makes one record readable, or says why it could not be.
     ///
+    /// The time is stamped here, not carried in by the caller: every line has one
+    /// and none of them names the moment it was taken, so an implementation that
+    /// forgot would produce a line a reader could not place.
+    ///
     /// Returning means durable. The loop announces a record only after this
     /// resolves, so a caller that has seen an event is looking at something the
     /// log already holds.
@@ -78,7 +82,7 @@ impl SessionLog for crate::session_store::SessionLogWriter {
 /// what makes it a stand-in rather than a bypass.
 #[derive(Debug, Default)]
 pub struct Volatile {
-    records: Mutex<Vec<SessionEvent>>,
+    records: Mutex<Vec<Logged>>,
 }
 
 impl Volatile {
@@ -90,10 +94,10 @@ impl Volatile {
 
     /// Everything recorded so far, in order.
     ///
-    /// For a caller that wants to assert on what a turn wrote without reading a
-    /// file back.
+    /// For a caller asserting on what a turn wrote without reading a file back.
+    /// Lines rather than events, so the times are there too.
     #[must_use]
-    pub fn records(&self) -> Vec<SessionEvent> {
+    pub fn records(&self) -> Vec<Logged> {
         self.records.lock().expect("records lock").clone()
     }
 
@@ -104,7 +108,9 @@ impl Volatile {
             .lock()
             .expect("records lock")
             .iter()
-            .any(|entry| matches!(entry, SessionEvent::TurnEnded { reason: r, .. } if *r == reason))
+            .any(|logged| {
+                matches!(&logged.event, SessionEvent::TurnEnded { reason: r, .. } if *r == reason)
+            })
     }
 }
 
@@ -114,7 +120,7 @@ impl SessionLog for Volatile {
         self.records
             .lock()
             .expect("records lock")
-            .push(entry.clone());
+            .push(Logged::now(entry.clone()));
         Ok(())
     }
 }
@@ -248,7 +254,7 @@ mod tests {
         // from a bad path, so the message has to carry it.
         let cases = [
             (
-                SessionEvent::session(SessionId::new(), PathBuf::from("/w"), chrono::Utc::now()),
+                SessionEvent::session(SessionId::new(), PathBuf::from("/w")),
                 "session",
             ),
             (SessionEvent::TurnStarted { turn_id: turn() }, "turn"),

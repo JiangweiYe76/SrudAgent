@@ -20,11 +20,11 @@
 //! # Shape
 //!
 //! ```text
-//! {"type":"session","session_id":"…","cwd":"…","created_at":"…","version":1}
-//! {"type":"system","content":"# Role\n\n…"}
-//! {"type":"turn_started","turn_id":"…"}
-//! {"type":"item","turn_id":"…","message_id":"…","item":{…}}
-//! {"type":"turn_ended","turn_id":"…","reason":"interrupted"}
+//! {"time":"2026-10-03T21:28:14.123Z","event":{"type":"session","session_id":"…","cwd":"…","version":1}}
+//! {"time":"…","event":{"type":"system","content":"# Role\n\n…"}}
+//! {"time":"…","event":{"type":"turn_started","turn_id":"…"}}
+//! {"time":"…","event":{"type":"item","turn_id":"…","message_id":"…","item":{…}}}
+//! {"time":"…","event":{"type":"turn_ended","turn_id":"…","reason":"interrupted"}}
 //! ```
 //!
 //! `version` is on the first record rather than in the filename: a reader has to
@@ -44,7 +44,7 @@
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{ResponseItem, TurnEndReason, TurnId};
@@ -96,8 +96,6 @@ pub enum SessionEvent {
         session_id: crate::types::SessionId,
         /// The directory the session works in.
         cwd: PathBuf,
-        /// When the session was created.
-        created_at: DateTime<Utc>,
         /// The [`FORMAT_VERSION`] this log was written at.
         version: u32,
     },
@@ -154,18 +152,55 @@ pub enum SessionEvent {
     },
 }
 
+/// One line of the log: an event, and when it was written.
+///
+/// The time sits beside the event rather than inside each of its variants, so
+/// every record carries one without the variants declaring it — and so
+/// [`SessionEvent`] stays a value that serialises on its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Logged {
+    /// When the line was written.
+    ///
+    /// Millisecond precision, fixed, so a log read as text is also in
+    /// chronological order: a variable-width timestamp does not sort as text once
+    /// one line carries a fractional second and another does not.
+    #[serde(serialize_with = "write_millis")]
+    pub time: DateTime<Utc>,
+    /// What happened.
+    pub event: SessionEvent,
+}
+
+impl Logged {
+    /// Stamps an event with the moment it is written.
+    ///
+    /// Truncated where the clock is read rather than where the line is
+    /// serialised: the log holds milliseconds, and a stand-in keeping nanoseconds
+    /// would disagree with the file it stands in for.
+    #[must_use]
+    pub fn now(event: SessionEvent) -> Self {
+        Self {
+            time: DateTime::from_timestamp_millis(Utc::now().timestamp_millis())
+                .expect("a millisecond timestamp is in range"),
+            event,
+        }
+    }
+}
+
+/// Writes a timestamp as UTC with fixed millisecond precision.
+fn write_millis<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&value.to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
 impl SessionEvent {
     /// Builds the session's first record.
     #[must_use]
-    pub fn session(
-        session_id: crate::types::SessionId,
-        cwd: PathBuf,
-        created_at: DateTime<Utc>,
-    ) -> Self {
+    pub fn session(session_id: crate::types::SessionId, cwd: PathBuf) -> Self {
         Self::Session {
             session_id,
             cwd,
-            created_at,
             version: FORMAT_VERSION,
         }
     }
@@ -219,33 +254,48 @@ mod tests {
     use super::*;
     use crate::types::{Role, SessionId};
 
-    /// The instant every timestamp in this module is built from.
+    /// A fixed instant, so a test asserting on a rendered time has one to assert
+    /// against.
     fn when() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 3, 15, 7, 23).unwrap()
     }
 
     #[test]
     fn the_first_record_names_the_session_and_the_format() {
-        let entry = SessionEvent::session(SessionId::new(), PathBuf::from("/w"), when());
+        let entry = SessionEvent::session(SessionId::new(), PathBuf::from("/w"));
         let value = serde_json::to_value(&entry).unwrap();
 
         assert_eq!(value["type"], "session");
         assert_eq!(value["cwd"], "/w");
         assert_eq!(value["version"], FORMAT_VERSION);
-        assert!(
-            value["created_at"]
-                .as_str()
-                .unwrap()
-                .starts_with("2026-10-03"),
-            "the timestamp is ISO 8601 so it sorts as text: {value}"
+    }
+
+    #[test]
+    fn a_line_carries_the_time_beside_the_event() {
+        // The shape a reader depends on: the event keeps its own tag, the time is
+        // fixed-width UTC beside it, and a line read back is the line written.
+        let line = Logged::now(SessionEvent::system("# Role"));
+        let value = serde_json::to_value(&line).unwrap();
+
+        assert_eq!(value["event"]["type"], "system");
+        assert_eq!(value["event"]["content"], "# Role");
+        let time = value["time"].as_str().unwrap();
+        assert_eq!(
+            time.len(),
+            "2026-10-03T21:28:14.123Z".len(),
+            "fixed millisecond precision, so lines sort as text: {time}"
         );
+        assert!(time.ends_with('Z'), "UTC, and the offset says so: {time}");
+
+        let back: Logged = serde_json::from_value(value).unwrap();
+        assert_eq!(back, line, "a line read back is the line written");
     }
 
     #[test]
     fn every_record_round_trips_through_json() {
         let turn_id = TurnId::new();
         let entries = vec![
-            SessionEvent::session(SessionId::new(), PathBuf::from("/w"), when()),
+            SessionEvent::session(SessionId::new(), PathBuf::from("/w")),
             SessionEvent::system("# Role\n\nYou are Srud."),
             SessionEvent::TurnStarted { turn_id },
             SessionEvent::item(
@@ -340,7 +390,7 @@ mod tests {
     fn a_record_with_no_turn_is_only_the_session_record() {
         // The reader reconstructs a session by walking records in order, so it
         // has to be able to tell which records open a turn.
-        let opening = SessionEvent::session(SessionId::new(), PathBuf::from("/w"), when());
+        let opening = SessionEvent::session(SessionId::new(), PathBuf::from("/w"));
         assert_eq!(opening.turn_id(), None);
 
         let turn_id = TurnId::new();

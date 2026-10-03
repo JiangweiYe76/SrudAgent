@@ -155,6 +155,17 @@ fn describe(entry: &SessionEvent) -> String {
     }
 }
 
+/// The events a log holds, in order.
+///
+/// For the tests that are about what was recorded rather than when; a test about
+/// the time uses [`Volatile::records`] and reads the line.
+fn events(log: &Volatile) -> Vec<SessionEvent> {
+    log.records()
+        .into_iter()
+        .map(|logged| logged.event)
+        .collect()
+}
+
 /// A model that says nothing, so a turn is env-context, user input, and an end.
 struct Silent;
 
@@ -319,7 +330,7 @@ async fn the_turn_opens_and_closes_in_the_log() {
     .await
     .expect("the turn runs");
 
-    let records = log.records();
+    let records = events(&log);
     assert!(
         matches!(records.first(), Some(SessionEvent::System { .. })),
         "the instruction is written before the turn opens: {:?}",
@@ -560,8 +571,7 @@ async fn the_recorded_message_carries_the_id_that_was_announced() {
         })
         .expect("an answer was streamed");
 
-    let recorded = log
-        .records()
+    let recorded = events(&log)
         .into_iter()
         .find_map(|entry| match entry {
             SessionEvent::Item {
@@ -608,7 +618,7 @@ async fn the_reasoning_is_recorded_before_the_message_it_produced() {
     .await
     .expect("the turn runs");
 
-    let order: Vec<String> = log.records().iter().map(describe).collect();
+    let order: Vec<String> = events(&log).iter().map(describe).collect();
     let reasoning = order.iter().position(|name| name == "reasoning");
     let message = order.iter().position(|name| name == "assistant_message");
     assert!(message.is_some() && reasoning.is_some(), "{order:?}");
@@ -730,8 +740,7 @@ async fn a_message_id_survives_a_round_trip_through_the_log() {
     .await
     .expect("the turn runs");
 
-    let entry = log
-        .records()
+    let entry = events(&log)
         .into_iter()
         .find(|entry| {
             // Matched on the assistant role, not on `Message` alone: the user's
@@ -784,8 +793,7 @@ async fn the_instruction_is_written_once_and_not_again_per_turn() {
         .expect("the turn runs");
     }
 
-    let written: Vec<SessionEvent> = log
-        .records()
+    let written: Vec<SessionEvent> = events(&log)
         .into_iter()
         .filter(|entry| matches!(entry, SessionEvent::System { .. }))
         .collect();
@@ -819,8 +827,7 @@ async fn the_instruction_recorded_is_the_one_the_request_carries() {
     .await
     .expect("the turn runs");
 
-    let recorded = log
-        .records()
+    let recorded = events(&log)
         .into_iter()
         .find_map(|entry| match entry {
             SessionEvent::System { content } => Some(content),

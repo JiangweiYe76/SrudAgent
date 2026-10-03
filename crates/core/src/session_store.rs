@@ -20,9 +20,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::session_event::SessionEvent;
+use crate::session_event::{Logged, SessionEvent};
 use crate::types::{ResponseItem, TurnEndReason, TurnId};
 
 /// Where one session's log lives, and what to write in it.
@@ -80,6 +81,9 @@ impl SessionLogWriter {
 
     /// Writes one record and flushes it.
     ///
+    /// The line is stamped here, with the moment of the write: a reader places a
+    /// record by when it reached the log.
+    ///
     /// Returns only once the record is on disk. A caller that emits after this
     /// returns is therefore emitting something already durable.
     ///
@@ -89,7 +93,8 @@ impl SessionLogWriter {
     /// rather than swallowed: a log that silently stopped accepting records
     /// would produce a session that looks fine and cannot be recovered.
     pub async fn record(&self, entry: &SessionEvent) -> Result<(), io::Error> {
-        let mut line = serde_json::to_string(entry).map_err(io::Error::other)?;
+        let mut line =
+            serde_json::to_string(&Logged::now(entry.clone())).map_err(io::Error::other)?;
         line.push('\n');
 
         // Serialising before taking the lock: nothing here needs the file, and
@@ -133,8 +138,10 @@ impl SessionLogWriter {
 pub struct ReadEntry {
     /// One-based, counting every line in the file.
     pub line: usize,
-    /// The record.
-    pub entry: SessionEvent,
+    /// When the line was written.
+    pub time: DateTime<Utc>,
+    /// What happened.
+    pub event: SessionEvent,
 }
 
 /// A line that could not be read, and why.
@@ -196,10 +203,11 @@ pub async fn read(path: impl AsRef<Path>) -> Result<ReadLog, io::Error> {
         if line.trim().is_empty() {
             continue;
         }
-        match serde_json::from_str::<SessionEvent>(&line) {
-            Ok(entry) => log.entries.push(ReadEntry {
+        match serde_json::from_str::<Logged>(&line) {
+            Ok(logged) => log.entries.push(ReadEntry {
                 line: number,
-                entry,
+                time: logged.time,
+                event: logged.event,
             }),
             Err(_) => log.skipped.push(SkippedLine {
                 line: number,
@@ -214,8 +222,6 @@ pub async fn read(path: impl AsRef<Path>) -> Result<ReadLog, io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeZone, Utc};
-
     use super::*;
     use crate::session_event::MessageId;
     use crate::types::SessionId;
@@ -253,7 +259,6 @@ mod tests {
             .record(&SessionEvent::session(
                 SessionId::new(),
                 PathBuf::from("/w"),
-                Utc.with_ymd_and_hms(2026, 10, 3, 15, 7, 23).unwrap(),
             ))
             .await
             .expect("the first record");
@@ -271,7 +276,7 @@ mod tests {
 
         assert_eq!(lines.len(), 3, "one line per record: {text}");
         for line in &lines {
-            serde_json::from_str::<SessionEvent>(line)
+            serde_json::from_str::<Logged>(line)
                 .unwrap_or_else(|e| panic!("not a record: {line}: {e}"));
         }
         assert!(text.ends_with('\n'), "every record ends its line");
@@ -287,7 +292,6 @@ mod tests {
             .record(&SessionEvent::session(
                 SessionId::new(),
                 PathBuf::from("/w"),
-                Utc::now(),
             ))
             .await
             .expect("the first record");
@@ -309,8 +313,29 @@ mod tests {
         assert!(log.skipped.is_empty(), "nothing skipped: {:?}", log.skipped);
         assert_eq!(log.entries.len(), 3);
         assert_eq!(log.entries[1].line, 2, "lines are numbered from one");
-        let item = log.entries[1].entry.history_item().unwrap();
+        let item = log.entries[1].event.history_item().unwrap();
         assert_eq!(item, &ResponseItem::assistant("hi"));
+    }
+
+    #[tokio::test]
+    async fn the_time_is_kept_to_the_millisecond() {
+        // Truncated as it is taken, so the instant a reader gets back is the one
+        // written. Compared against a captured `Logged::now`, this would race the
+        // clock the writer reads.
+        let (writer, path) = fresh("time-roundtrip").await;
+
+        writer
+            .record(&SessionEvent::system("# Role"))
+            .await
+            .expect("a record");
+
+        let log = read(&path).await.expect("a log to read");
+        let time = log.entries[0].time;
+        assert_eq!(
+            time.timestamp_subsec_nanos() % 1_000_000,
+            0,
+            "nothing below a millisecond survives: {time:?}"
+        );
     }
 
     #[tokio::test]
@@ -330,7 +355,7 @@ mod tests {
         let log = read(&path).await.expect("a log to read");
         assert_eq!(log.entries.len(), 1);
         assert!(matches!(
-            log.entries[0].entry,
+            log.entries[0].event,
             SessionEvent::TurnEnded {
                 reason: TurnEndReason::Completed,
                 ..
@@ -357,9 +382,14 @@ mod tests {
         // Appended rather than written over: the point is that a line this build
         // cannot read sits *between* records it can.
         let mut text = std::fs::read_to_string(&path).unwrap();
-        text.push_str("{\"type\":\"from_the_future\",\"payload\":{\"x\":1}}\n");
+        // A line this build understands the envelope of, wrapping an event type it
+        // has never heard of: the format is versioned, so this is what a newer
+        // build's record looks like, not corruption.
+        text.push_str(
+            "{\"time\":\"2026-10-03T21:28:14.123Z\",\"event\":{\"type\":\"from_the_future\",\"payload\":{\"x\":1}}}\n",
+        );
         text.push_str(&format!(
-            "{{\"type\":\"turn_ended\",\"turn_id\":\"{}\",\"reason\":\"interrupted\"}}\n",
+            "{{\"time\":\"2026-10-03T21:28:14.124Z\",\"event\":{{\"type\":\"turn_ended\",\"turn_id\":\"{}\",\"reason\":\"interrupted\"}}}}\n",
             turn()
         ));
         std::fs::write(&path, text).unwrap();
@@ -373,7 +403,7 @@ mod tests {
         // The record after the unreadable line is still read, so one bad line
         // costs that line and not the rest of the session.
         assert!(matches!(
-            log.entries[1].entry,
+            log.entries[1].event,
             SessionEvent::TurnEnded {
                 reason: TurnEndReason::Interrupted,
                 ..
@@ -390,7 +420,6 @@ mod tests {
             .record(&SessionEvent::session(
                 SessionId::new(),
                 PathBuf::from("/w"),
-                Utc::now(),
             ))
             .await
             .expect("the first record");
@@ -432,7 +461,7 @@ mod tests {
         let log = read(&path).await.expect("a log to read");
         assert_eq!(log.entries.len(), 2, "both records are present");
         assert!(matches!(
-            log.entries[1].entry,
+            log.entries[1].event,
             SessionEvent::TurnEnded {
                 reason: TurnEndReason::Interrupted,
                 ..
