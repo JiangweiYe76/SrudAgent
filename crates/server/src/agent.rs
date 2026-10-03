@@ -119,7 +119,7 @@ impl Agent {
 
         let outcome = match method {
             INITIALIZE => self.handle_initialize(params).map(serialize),
-            SESSION_NEW => self.handle_new_session(params).map(serialize),
+            SESSION_NEW => self.handle_new_session(params).await.map(serialize),
             SESSION_PROMPT => self.handle_prompt(params).await.map(serialize),
             SESSION_CANCEL => self
                 .handle_cancel(params)
@@ -164,20 +164,32 @@ impl Agent {
             .auth_methods(vec![]))
     }
 
-    fn handle_new_session(&self, params: Value) -> Result<NewSessionResponse, AcpError> {
+    async fn handle_new_session(&self, params: Value) -> Result<NewSessionResponse, AcpError> {
         let request: NewSessionRequest = parse_params(params)?;
-        let session_id = self.sessions.create(Some(request.cwd)).map_err(|err| {
-            AcpError::new(
-                INTERNAL_ERROR,
-                format!("could not create the session workspace: {err}"),
-            )
-        })?;
+        let session_id = self
+            .sessions
+            .create(Some(request.cwd))
+            .await
+            .map_err(|err| {
+                AcpError::new(
+                    INTERNAL_ERROR,
+                    format!("could not create the session workspace: {err}"),
+                )
+            })?;
         Ok(NewSessionResponse::new(session_id))
     }
 
     async fn handle_prompt(&self, params: Value) -> Result<PromptResponse, AcpError> {
         let request: PromptRequest = parse_params(params)?;
-        let session = self.require_session(&request.session_id)?;
+
+        // The session and its log together, so a turn cannot be recorded against
+        // another session's log. One lookup rather than two: the pair is
+        // registered together and is never separated.
+        let (session, log) = self
+            .sessions
+            .with_log(&request.session_id)
+            .ok_or_else(|| session_not_found(&request.session_id))?;
+
         let text = prompt_with_validation(&request.prompt)?;
         self.name_from_first_prompt(&request.session_id, &text);
 
@@ -187,10 +199,21 @@ impl Agent {
             srud_core::types::TurnInput { text },
             self.model.as_ref(),
             self.tools.as_ref(),
+            log.as_ref(),
             &sink,
         )
         .await
-        .map_err(|_| AcpError::new(SESSION_BUSY, "session already has an active turn"))?;
+        .map_err(|err| match err {
+            srud_core::TurnError::Busy => {
+                AcpError::new(SESSION_BUSY, "session already has an active turn")
+            }
+            // Distinct from `Busy`: nothing ran, and the session is still usable —
+            // the log is what refused. Saying "busy" would tell the client to wait
+            // for something that will never start.
+            srud_core::TurnError::Unrecordable(err) => {
+                AcpError::new(INTERNAL_ERROR, format!("cannot record this turn: {err}"))
+            }
+        })?;
 
         let wire: TurnEndWire = prompt_outcome(result.reason)?;
         let response = PromptResponse::new(wire.stop_reason);

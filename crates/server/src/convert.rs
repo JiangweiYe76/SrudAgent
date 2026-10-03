@@ -43,12 +43,16 @@ pub fn to_session_update(event: Event) -> Option<Result<SessionUpdate, Skipped>>
         Event::UserMessage { content } => SessionUpdate::UserMessageChunk(ContentChunk::new(
             ContentBlock::Text(TextContent::new(content)),
         )),
-        Event::AgentMessageDelta { delta } => SessionUpdate::AgentMessageChunk(ContentChunk::new(
-            ContentBlock::Text(TextContent::new(delta)),
-        )),
-        Event::AgentThoughtDelta { delta } => SessionUpdate::AgentThoughtChunk(ContentChunk::new(
-            ContentBlock::Text(TextContent::new(delta)),
-        )),
+        // The message id rides on the chunk: it is what tells a consumer where
+        // one message ends and the next begins, which the text of a fragment
+        // cannot say. Omitted rather than null when absent, because absent is the
+        // claim "this is not part of a message".
+        Event::AgentMessageDelta { message_id, delta } => {
+            SessionUpdate::AgentMessageChunk(chunk(delta, message_id))
+        }
+        Event::AgentThoughtDelta { message_id, delta } => {
+            SessionUpdate::AgentThoughtChunk(chunk(delta, message_id))
+        }
         Event::ToolCallBegin {
             call_id,
             name,
@@ -82,6 +86,20 @@ pub fn to_session_update(event: Event) -> Option<Result<SessionUpdate, Skipped>>
         Event::TurnComplete { .. } => return Some(Err(Skipped::TurnComplete)),
     };
     Some(Ok(update))
+}
+
+/// A text chunk tagged with the message it belongs to.
+///
+/// The id is converted at the boundary rather than carried as core's own type:
+/// core's `MessageId` is a log concept that happens to share the protocol's
+/// spelling, and the two are free to diverge — the log's format is frozen, the
+/// protocol's is not.
+fn chunk(delta: String, message_id: Option<srud_core::session_event::MessageId>) -> ContentChunk {
+    let chunk = ContentChunk::new(ContentBlock::Text(TextContent::new(delta)));
+    match message_id {
+        Some(id) => chunk.message_id(srud_protocol::acp::MessageId::from(id.to_string())),
+        None => chunk,
+    }
 }
 
 /// Builds the `session/update` notification for a core event.
@@ -199,6 +217,7 @@ mod tests {
     #[test]
     fn message_deltas_map_to_chunk_variants() {
         let n = notify(Event::AgentMessageDelta {
+            message_id: None,
             delta: "hello".into(),
         });
         assert!(matches!(
@@ -206,6 +225,7 @@ mod tests {
             SessionUpdate::AgentMessageChunk(_)
         ));
         let n = notify(Event::AgentThoughtDelta {
+            message_id: None,
             delta: "think".into(),
         });
         assert!(matches!(
@@ -263,7 +283,10 @@ mod tests {
 
     #[test]
     fn notification_carries_turn_id_under_meta_srud() {
-        let n = notify(Event::AgentMessageDelta { delta: "x".into() });
+        let n = notify(Event::AgentMessageDelta {
+            message_id: None,
+            delta: "x".into(),
+        });
         let value = serde_json::to_value(&n).unwrap();
         assert_eq!(value["method"], json!("session/update"));
         assert_eq!(value["params"]["sessionId"], json!("s-1"));

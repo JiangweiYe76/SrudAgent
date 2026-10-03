@@ -1,9 +1,13 @@
 //! The in-memory session registry.
 //!
 //! Owns the mapping between the wire's opaque `sessionId` strings and the
-//! core runtime's [`Session`] values, and settles each session's working
-//! directory. Sessions live only as long as the process: there is no rollout
-//! store, so a restart empties the registry.
+//! core runtime's [`Session`] values, settles each session's working directory,
+//! and holds the log that session's turns are recorded into.
+//!
+//! **The registry itself is still in-memory**: a restart empties it. What
+//! survives is what each session wrote to its log — the turns are on disk, but
+//! nothing reads them back yet, so a restarted agent starts empty. Rebuilding
+//! the registry from those logs is the next piece of work.
 //!
 //! A session works in a directory the client named, or in one of its own under
 //! the configuration directory, so one session's files are never another's.
@@ -18,6 +22,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use chrono::Datelike;
 use srud_core::session::Session;
 use srud_protocol::acp::{SessionId, SessionInfo};
 
@@ -27,9 +32,22 @@ use crate::config;
 /// configuration directory.
 const WORKSPACES_DIR: &str = "workspaces";
 
+/// The directory session logs are written under, beside the workspaces.
+///
+/// Separate from the workspaces because one is a place to work and the other is a
+/// record of what happened: a session's log outlives its workspace, and a
+/// workspace is removed when the session is.
+const SESSIONS_DIR: &str = "sessions";
+
 /// A tracked session: the runtime handle plus the wire-level context.
 struct Tracked {
     session: Arc<Session>,
+    /// Where this session's turns are recorded.
+    ///
+    /// Held beside the session rather than looked up per turn so that a turn and
+    /// its log cannot come from different sessions: the two are registered
+    /// together and are never separated.
+    log: Arc<srud_core::session_store::SessionLogWriter>,
     /// The agent's display title. `None` until the first prompt names the
     /// session, or until a client renames it.
     title: Option<String>,
@@ -96,6 +114,53 @@ pub enum CreateError {
         /// What the filesystem said.
         source: std::io::Error,
     },
+
+    /// The session's log could not be opened or written.
+    ///
+    /// A session that cannot record is a session that cannot be recovered, and one
+    /// that is announced before this fails would refuse every turn afterwards —
+    /// so this is reported at creation instead, where the client can start
+    /// another.
+    #[error("cannot record {what}: {source}")]
+    Log {
+        /// What was being written.
+        what: String,
+        /// What the filesystem said.
+        source: std::io::Error,
+    },
+}
+
+/// Opens the log for a session about to work in `cwd`.
+///
+/// Laid out by date, the way the design has it: `sessions/YYYY/MM/DD/session-<ts>-<id>.jsonl`.
+/// The date is the session's own creation date rather than the turn's, so every
+/// turn of one session lands in one file and the path reads as when the
+/// conversation began.
+///
+/// Local time, not UTC, for the same reason `context` uses it: a reader looking for
+/// today's sessions means their own today. A user east of Greenwich would
+/// otherwise find a session they started after midnight filed under the day
+/// before.
+async fn open_log(
+    session_id: srud_core::types::SessionId,
+) -> Result<srud_core::session_store::SessionLogWriter, CreateError> {
+    let now = chrono::Local::now();
+    let home = config::home().ok_or(config::ConfigError::NoHome)?;
+
+    let path = home.join(SESSIONS_DIR).join(format!(
+        "{:04}/{:02}/{:02}/session-{}-{session_id}.jsonl",
+        now.year(),
+        now.month(),
+        now.day(),
+        now.format("%Y%m%dT%H%M%S"),
+    ));
+
+    srud_core::session_store::SessionLogWriter::create(path)
+        .await
+        .map_err(|source| CreateError::Log {
+            what: "the session's log".into(),
+            source,
+        })
 }
 
 /// A registry of live sessions, keyed by their wire id.
@@ -126,7 +191,7 @@ impl SessionManager {
     /// [`CreateError::Workspace`] when that workspace cannot be created. A
     /// session with no working directory cannot call a tool, so neither failure
     /// leaves a session half-started.
-    pub fn create(&self, cwd: Option<PathBuf>) -> Result<SessionId, CreateError> {
+    pub async fn create(&self, cwd: Option<PathBuf>) -> Result<SessionId, CreateError> {
         let session_id = srud_core::types::SessionId::new();
         let (cwd, workspace_is_ours) = match usable_directory(cwd) {
             Some(cwd) => (cwd, false),
@@ -139,8 +204,34 @@ impl SessionManager {
                 (path, true)
             }
         };
-        let session = Arc::new(Session::with_id(session_id, cwd));
+
+        // The log is opened before the session is registered, so a session that
+        // cannot record is never announced as created. Registering first and
+        // failing after would leave a session that answers `session/new` and then
+        // refuses every turn.
+        let log = open_log(session_id).await?;
+
+        let session = Arc::new(Session::with_id(session_id, cwd.clone()));
         let id = SessionId::new(session.id().to_string());
+
+        // The session's own record, written once here rather than per turn: a log
+        // that reopened with a header on every turn would give a reader as many
+        // candidates for "where this session started" as the session had turns.
+        // UTC here, local in the path above, and the difference is deliberate. The
+        // record's timestamp is machine time: it is compared against other
+        // records and never read by a person. The path's date is read by a person
+        // looking for today's sessions, so it is theirs.
+        log.record(&srud_core::session_event::SessionEvent::session(
+            session_id,
+            cwd,
+            chrono::Utc::now(),
+        ))
+        .await
+        .map_err(|source| CreateError::Log {
+            what: "the session's first record".into(),
+            source: std::io::Error::other(source),
+        })?;
+
         self.sessions
             .lock()
             .expect("session map lock poisoned")
@@ -148,11 +239,32 @@ impl SessionManager {
                 id.to_string(),
                 Tracked {
                     session,
+                    log: Arc::new(log),
                     title: None,
                     workspace_is_ours,
                 },
             );
         Ok(id)
+    }
+
+    /// A session and its log, if the session exists.
+    ///
+    /// Both or neither: a turn needs the two together, and handing them out
+    /// separately would let a caller pair one session's history with another's log.
+    /// The log is registered beside the session and never replaced, so one lookup
+    /// can return both.
+    pub fn with_log(
+        &self,
+        id: &SessionId,
+    ) -> Option<(
+        Arc<Session>,
+        Arc<srud_core::session_store::SessionLogWriter>,
+    )> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .map(|tracked| (Arc::clone(&tracked.session), Arc::clone(&tracked.log)))
     }
 
     /// Sets a session's display title, returning whether the session existed.
@@ -288,22 +400,25 @@ mod tests {
 
     /// Creates a session with no directory of its own asked for, failing the
     /// test rather than the caller when the workspace cannot be made.
-    fn create(manager: &SessionManager) -> SessionId {
-        manager.create(None).expect("the workspace is creatable")
+    async fn create(manager: &SessionManager) -> SessionId {
+        manager
+            .create(None)
+            .await
+            .expect("the workspace is creatable")
     }
 
-    #[test]
-    fn create_then_get_round_trips_the_id() {
+    #[tokio::test]
+    async fn create_then_get_round_trips_the_id() {
         let (manager, _env) = manager();
-        let id = create(&manager);
+        let id = create(&manager).await;
         let session = manager.get(&id).expect("the session is registered");
         assert_eq!(session.id().to_string(), id.0.as_ref());
     }
 
-    #[test]
-    fn create_makes_a_working_directory_for_the_session() {
+    #[tokio::test]
+    async fn create_makes_a_working_directory_for_the_session() {
         let (manager, _env) = manager();
-        let id = create(&manager);
+        let id = create(&manager).await;
         let session = manager.get(&id).expect("the session is registered");
         let cwd = session.cwd();
         assert!(cwd.is_dir(), "the working directory exists: {cwd:?}");
@@ -319,21 +434,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sessions_get_their_own_working_directory() {
+    #[tokio::test]
+    async fn sessions_get_their_own_working_directory() {
         let (manager, _env) = manager();
-        let a = manager.get(&create(&manager)).expect("registered");
-        let b = manager.get(&create(&manager)).expect("registered");
+        let a = manager.get(&create(&manager).await).expect("registered");
+        let b = manager.get(&create(&manager).await).expect("registered");
         assert_ne!(a.cwd(), b.cwd());
     }
 
-    #[test]
-    fn a_directory_the_client_named_is_used_as_it_stands() {
+    #[tokio::test]
+    async fn a_directory_the_client_named_is_used_as_it_stands() {
         let (manager, _env) = manager();
         let chosen = test_env::unique_dir("srud-chosen");
 
         let id = manager
             .create(Some(chosen.clone()))
+            .await
             .expect("no workspace is needed");
 
         assert_eq!(manager.get(&id).expect("registered").cwd(), chosen);
@@ -367,41 +483,42 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nothing_named_for_the_client_means_a_workspace() {
+    #[tokio::test]
+    async fn nothing_named_for_the_client_means_a_workspace() {
         let (manager, _env) = manager();
-        let id = manager.create(Some(PathBuf::new())).expect("created");
+        let id = manager.create(Some(PathBuf::new())).await.expect("created");
 
         assert_given_a_workspace(&manager, &id, "an empty path names no directory");
     }
 
-    #[test]
-    fn a_path_that_does_not_exist_means_a_workspace() {
+    #[tokio::test]
+    async fn a_path_that_does_not_exist_means_a_workspace() {
         let (manager, _env) = manager();
         let gone = test_env::unique_dir("srud-gone").join("never-created");
 
-        let id = manager.create(Some(gone)).expect("created");
+        let id = manager.create(Some(gone)).await.expect("created");
 
         assert_given_a_workspace(&manager, &id, "a directory that is not there");
     }
 
-    #[test]
-    fn a_file_where_a_directory_belongs_means_a_workspace() {
+    #[tokio::test]
+    async fn a_file_where_a_directory_belongs_means_a_workspace() {
         let (manager, _env) = manager();
         let file = test_env::unique_dir("srud-file").join("a-file");
         std::fs::write(&file, "not a directory").expect("a file");
 
-        let id = manager.create(Some(file)).expect("created");
+        let id = manager.create(Some(file)).await.expect("created");
 
         assert_given_a_workspace(&manager, &id, "a file is not a working directory");
     }
 
-    #[test]
-    fn a_relative_path_means_a_workspace() {
+    #[tokio::test]
+    async fn a_relative_path_means_a_workspace() {
         let (manager, _env) = manager();
 
         let id = manager
             .create(Some(PathBuf::from("relative/path")))
+            .await
             .expect("created");
 
         assert_given_a_workspace(
@@ -411,10 +528,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn removing_a_session_removes_the_workspace_it_created() {
+    #[tokio::test]
+    async fn removing_a_session_removes_the_workspace_it_created() {
         let (manager, _env) = manager();
-        let id = create(&manager);
+        let id = create(&manager).await;
         let cwd = manager.get(&id).expect("registered").cwd().to_path_buf();
 
         assert!(manager.remove(&id));
@@ -422,11 +539,11 @@ mod tests {
         assert!(!cwd.exists(), "{cwd:?} went with the session");
     }
 
-    #[test]
-    fn removing_a_session_leaves_a_directory_the_client_named() {
+    #[tokio::test]
+    async fn removing_a_session_leaves_a_directory_the_client_named() {
         let (manager, _env) = manager();
         let chosen = test_env::unique_dir("srud-chosen");
-        let id = manager.create(Some(chosen.clone())).expect("created");
+        let id = manager.create(Some(chosen.clone())).await.expect("created");
 
         assert!(manager.remove(&id));
 
@@ -442,47 +559,47 @@ mod tests {
         assert!(manager.get(&SessionId::new("nope")).is_none());
     }
 
-    #[test]
-    fn remove_drops_the_session() {
+    #[tokio::test]
+    async fn remove_drops_the_session() {
         let (manager, _env) = manager();
-        let id = create(&manager);
+        let id = create(&manager).await;
         assert!(manager.remove(&id));
         assert!(!manager.remove(&id), "a second removal finds nothing");
         assert!(manager.is_empty());
     }
 
-    #[test]
-    fn a_new_session_has_no_title() {
+    #[tokio::test]
+    async fn a_new_session_has_no_title() {
         let (manager, _env) = manager();
-        let id = create(&manager);
+        let id = create(&manager).await;
         assert_eq!(manager.title(&id), None);
         assert!(manager.list()[0].title.is_none());
     }
 
-    #[test]
-    fn name_if_unnamed_only_the_first_caller_wins() {
+    #[tokio::test]
+    async fn name_if_unnamed_only_the_first_caller_wins() {
         let (manager, _env) = manager();
-        let id = create(&manager);
+        let id = create(&manager).await;
         assert!(manager.name_if_unnamed(&id, "first message"));
         // A later prompt must not clobber the name the session already has.
         assert!(!manager.name_if_unnamed(&id, "second message"));
         assert_eq!(manager.title(&id).as_deref(), Some("first message"));
     }
 
-    #[test]
-    fn set_title_overwrites_and_reports_unknown_ids() {
+    #[tokio::test]
+    async fn set_title_overwrites_and_reports_unknown_ids() {
         let (manager, _env) = manager();
-        let id = create(&manager);
+        let id = create(&manager).await;
         assert!(manager.name_if_unnamed(&id, "derived"));
         assert!(manager.set_title(&id, "chosen by the user"));
         assert_eq!(manager.title(&id).as_deref(), Some("chosen by the user"));
         assert!(!manager.set_title(&SessionId::new("nope"), "x"));
     }
 
-    #[test]
-    fn a_blank_title_clears_the_name() {
+    #[tokio::test]
+    async fn a_blank_title_clears_the_name() {
         let (manager, _env) = manager();
-        let id = create(&manager);
+        let id = create(&manager).await;
         manager.name_if_unnamed(&id, "named");
         assert!(manager.set_title(&id, "   \n  "));
         assert_eq!(manager.title(&id), None);
@@ -490,18 +607,18 @@ mod tests {
         assert!(manager.name_if_unnamed(&id, "named again"));
     }
 
-    #[test]
-    fn titles_collapse_to_a_single_line() {
+    #[tokio::test]
+    async fn titles_collapse_to_a_single_line() {
         let (manager, _env) = manager();
-        let id = create(&manager);
+        let id = create(&manager).await;
         manager.set_title(&id, "  fix   the\n\n  timestamp  ");
         assert_eq!(manager.title(&id).as_deref(), Some("fix the timestamp"));
     }
 
-    #[test]
-    fn list_reports_the_title() {
+    #[tokio::test]
+    async fn list_reports_the_title() {
         let (manager, _env) = manager();
-        let named = create(&manager);
+        let named = create(&manager).await;
         manager.set_title(&named, "Named session");
         let listed = manager.list();
         let titled = listed
@@ -511,10 +628,10 @@ mod tests {
         assert_eq!(titled.title.as_deref(), Some("Named session"));
     }
 
-    #[test]
-    fn list_reports_the_working_directory_for_every_session() {
+    #[tokio::test]
+    async fn list_reports_the_working_directory_for_every_session() {
         let (manager, _env) = manager();
-        let mut expected = [create(&manager), create(&manager)];
+        let mut expected = [create(&manager).await, create(&manager).await];
         expected.sort_by_key(ToString::to_string);
 
         let mut listed = manager.list();

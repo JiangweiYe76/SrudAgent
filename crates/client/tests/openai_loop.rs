@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use srud_client::openai::{ChatClient, ClientConfig, ResponsesClient};
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
+use srud_core::session_log::Volatile;
 use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use srud_core::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnInput};
 
@@ -58,6 +59,11 @@ async fn assert_fails_cleanly(client: &dyn ModelClient) {
     let mut tools = ToolRegistry::new();
     assert!(tools.register(Arc::new(Static)).is_ok());
 
+    // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
+    // temporary, which compiles today and would not survive a stricter
+    // temporary-lifetime rule.
+    let log = Volatile::new();
+
     let result = srud_core::run_turn(
         &session,
         TurnInput {
@@ -65,6 +71,7 @@ async fn assert_fails_cleanly(client: &dyn ModelClient) {
         },
         client,
         &tools,
+        &log,
         &sink,
     )
     .await

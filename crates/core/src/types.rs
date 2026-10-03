@@ -103,9 +103,27 @@ pub enum Event {
     /// The user's input, echoed back so a consumer can render it in order.
     UserMessage { content: String },
     /// A chunk of assistant-visible text.
-    AgentMessageDelta { delta: String },
+    ///
+    /// Carries the id of the message the chunk belongs to, so a consumer can tell
+    /// where one message ends and the next begins. Every chunk of one message
+    /// repeats the same id; the text itself carries no boundary.
+    AgentMessageDelta {
+        /// Which message this chunk is part of.
+        message_id: Option<crate::session_event::MessageId>,
+        /// The text fragment.
+        delta: String,
+    },
     /// A chunk of reasoning text, if the model exposes it.
-    AgentThoughtDelta { delta: String },
+    ///
+    /// Ided separately from the answer: reasoning arrives as its own stream and a
+    /// consumer renders it apart, so one id across both would group two things it
+    /// already distinguishes.
+    AgentThoughtDelta {
+        /// Which message this chunk is part of.
+        message_id: Option<crate::session_event::MessageId>,
+        /// The text fragment.
+        delta: String,
+    },
     /// A tool call is about to run.
     ToolCallBegin {
         call_id: String,
@@ -154,7 +172,7 @@ pub enum Role {
 /// One entry in the recorded history.
 ///
 /// History is the source of truth. The turn loop is the only writer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
     /// A conversational message.
