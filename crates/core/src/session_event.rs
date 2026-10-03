@@ -21,6 +21,7 @@
 //!
 //! ```text
 //! {"type":"session","session_id":"…","cwd":"…","created_at":"…","version":1}
+//! {"type":"system","content":"# Role\n\n…"}
 //! {"type":"turn_started","turn_id":"…"}
 //! {"type":"item","turn_id":"…","message_id":"…","item":{…}}
 //! {"type":"turn_ended","turn_id":"…","reason":"interrupted"}
@@ -37,6 +38,9 @@
 //! recognised by the same [`crate::context::is_item`] sniff the runtime uses.
 //! Keeping it ordinary means the log has no case for it; the cost is that a
 //! reader wanting to tell context from conversation has to look at the content.
+//!
+//! The system instruction is also not an `Item`, and is recorded once as
+//! [`SessionEvent::System`] above the turns instead.
 
 use std::path::PathBuf;
 
@@ -98,6 +102,24 @@ pub enum SessionEvent {
         version: u32,
     },
 
+    /// The system instruction, written once above the turns.
+    ///
+    /// Not an [`Item`](Self::Item): in a model request this is a field beside the
+    /// conversation rather than a message inside it, so recording it as one would
+    /// leave a reader lifting it back out before it could rebuild a request. How
+    /// it reaches the wire — a `role: system` message, or a top-level field — is
+    /// the adapter's business, and the two adapters differ.
+    ///
+    /// Written once because it is constant, and constant because a provider
+    /// caches a request by its prefix: an instruction that moved would cost the
+    /// cache on every request. A reader rebuilding a request takes the last of
+    /// these, which is what lets a record of a *changed* instruction — a tool
+    /// removed, a skill unloaded — be added later without touching this format.
+    System {
+        /// The rendered instruction, as sent.
+        content: String,
+    },
+
     /// A turn began. Has no wire counterpart.
     TurnStarted {
         /// Which turn.
@@ -148,6 +170,14 @@ impl SessionEvent {
         }
     }
 
+    /// Builds the record of the system instruction.
+    #[must_use]
+    pub fn system(content: impl Into<String>) -> Self {
+        Self::System {
+            content: content.into(),
+        }
+    }
+
     /// Builds a history-entry record.
     #[must_use]
     pub fn item(turn_id: TurnId, message_id: Option<MessageId>, item: ResponseItem) -> Self {
@@ -160,11 +190,12 @@ impl SessionEvent {
 
     /// The turn this record belongs to, if it belongs to one.
     ///
-    /// The session's own record does not: it is written before any turn runs.
+    /// The session's own record and the system instruction do not: both are
+    /// written before any turn runs.
     #[must_use]
     pub fn turn_id(&self) -> Option<TurnId> {
         match self {
-            Self::Session { .. } => None,
+            Self::Session { .. } | Self::System { .. } => None,
             Self::TurnStarted { turn_id }
             | Self::Item { turn_id, .. }
             | Self::TurnEnded { turn_id, .. } => Some(*turn_id),
@@ -215,6 +246,7 @@ mod tests {
         let turn_id = TurnId::new();
         let entries = vec![
             SessionEvent::session(SessionId::new(), PathBuf::from("/w"), when()),
+            SessionEvent::system("# Role\n\nYou are Srud."),
             SessionEvent::TurnStarted { turn_id },
             SessionEvent::item(
                 turn_id,
@@ -250,6 +282,11 @@ mod tests {
         // the fields beside it are what a reader then reads.
         let turn_id = TurnId::new();
         let cases = [
+            (
+                SessionEvent::system("# Role\n\nYou are Srud."),
+                "system",
+                vec!["content"],
+            ),
             (
                 SessionEvent::TurnStarted { turn_id },
                 "turn_started",

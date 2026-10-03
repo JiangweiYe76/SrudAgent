@@ -159,6 +159,27 @@ impl<'a> Journal<'a> {
         Ok(())
     }
 
+    /// Records the system instruction, which belongs to no turn.
+    ///
+    /// Recorded and never announced: the protocol has nowhere to put it, and a
+    /// consumer has no use for the agent's own prefix. It goes in the log because
+    /// a reader rebuilding a model request needs it, and the request cannot be
+    /// rebuilt without it.
+    ///
+    /// Written above the first turn rather than inside it because it is the
+    /// session's prefix, not part of any turn's conversation — and because a
+    /// reader should not have to know that only the first turn's copy counts.
+    ///
+    /// # Errors
+    ///
+    /// If the log refuses the record. The turn has not opened and nothing has been
+    /// announced, so refusing here leaves no trace to take back.
+    pub async fn record_system(&self, content: &str) -> Result<(), RecordError> {
+        self.log
+            .record(&crate::session_event::SessionEvent::system(content))
+            .await
+    }
+
     /// Records the turn's end and then announces it.
     ///
     /// # Errors
@@ -229,6 +250,26 @@ pub async fn run_turn(
     let cancel = guard.cancellation();
     let journal = Journal::new(session, log, sink, turn_id);
 
+    // The sections are chosen here and handed down, rather than rebuilt inside
+    // `drive`, so the instruction recorded and the instruction sent are rendered
+    // from one value. Built in both places they would agree only until one of them
+    // was changed, and a log holding a different prefix from the one sent is worse
+    // than no log at all.
+    let sections = prompt::default_sections();
+
+    // Written once, above every turn. Emptiness is the test for whether this is
+    // the first: nothing is recorded before the turn's own opening, so an empty
+    // history means no turn has contributed an item yet. If a turn opens and then
+    // fails to record an item, the history stays empty while the log already holds
+    // a turn, and the next turn writes a second instruction — the reader takes the
+    // last, and the bytes are the same either way.
+    if journal.session().state().is_empty() {
+        journal
+            .record_system(&prompt::render_instructions(&sections))
+            .await
+            .map_err(TurnError::Unrecordable)?;
+    }
+
     // Everything up to the model's first request is recorded before it is announced.
     // Any failure here leaves a turn that opened in the log and never closed,
     // which every later reader would treat as unfinished — so the two openings are
@@ -240,7 +281,7 @@ pub async fn run_turn(
         return Err(TurnError::Unrecordable(err));
     }
 
-    let reason = drive(&journal, client, tools, &cancel).await;
+    let reason = drive(&journal, client, tools, &cancel, &sections).await;
 
     // The end is announced even when it could not be recorded. A log one record
     // short is recoverable; a turn left open on the wire is not, because the
@@ -296,6 +337,7 @@ async fn drive(
     client: &dyn ModelClient,
     tools: &ToolRegistry,
     cancel: &tokio_util::sync::CancellationToken,
+    sections: &[prompt::Section],
 ) -> TurnEndReason {
     loop {
         if cancel.is_cancelled() {
@@ -304,7 +346,7 @@ async fn drive(
 
         let request = {
             let state = journal.session.state();
-            prompt::build_prompt(&state, tools.definitions(), None)
+            prompt::build_prompt(&state, tools.definitions(), Some(sections))
         };
 
         match run_step(journal, client, tools, cancel, request).await {

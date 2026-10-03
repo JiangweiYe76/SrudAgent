@@ -127,6 +127,7 @@ impl SessionLog for Volatile {
 fn describe(entry: &SessionEvent) -> String {
     match entry {
         SessionEvent::Session { .. } => "the session record".into(),
+        SessionEvent::System { .. } => "the system instruction".into(),
         SessionEvent::TurnStarted { turn_id } => format!("the start of turn {turn_id}"),
         SessionEvent::TurnEnded { turn_id, .. } => format!("the end of turn {turn_id}"),
         SessionEvent::Item { turn_id, item, .. } => {

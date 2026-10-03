@@ -130,6 +130,7 @@ impl SessionLog for Beating {
 fn describe(entry: &SessionEvent) -> String {
     match entry {
         SessionEvent::Session { .. } => "session".into(),
+        SessionEvent::System { .. } => "system".into(),
         SessionEvent::TurnStarted { .. } => "turn_started".into(),
         SessionEvent::TurnEnded { .. } => "turn_ended".into(),
         SessionEvent::Item { item, .. } => match item {
@@ -247,6 +248,30 @@ fn session() -> Session {
     Session::new("workspace")
 }
 
+/// A model that remembers the instruction of every request it was asked with.
+///
+/// Wraps another model rather than replacing one, so a test about what the
+/// request carried reuses the rounds of whichever model it needs.
+struct Watching {
+    inner: Scripted,
+    seen: Arc<Mutex<Vec<Option<String>>>>,
+}
+
+#[async_trait]
+impl ModelClient for Watching {
+    async fn stream(
+        &self,
+        request: ModelRequest,
+        cancel: CancellationToken,
+    ) -> Result<ModelStream, ModelError> {
+        self.seen
+            .lock()
+            .expect("seen lock")
+            .push(request.instructions.clone());
+        self.inner.stream(request, cancel).await
+    }
+}
+
 #[tokio::test]
 async fn a_record_is_written_before_the_event_that_announces_it() {
     // The invariant, stated once: nothing is announced that the log does not
@@ -296,9 +321,14 @@ async fn the_turn_opens_and_closes_in_the_log() {
 
     let records = log.records();
     assert!(
-        matches!(records.first(), Some(SessionEvent::TurnStarted { .. })),
-        "a turn opens: {:?}",
+        matches!(records.first(), Some(SessionEvent::System { .. })),
+        "the instruction is written before the turn opens: {:?}",
         records.first()
+    );
+    assert!(
+        matches!(records.get(1), Some(SessionEvent::TurnStarted { .. })),
+        "then the turn opens: {:?}",
+        records.get(1)
     );
     assert!(
         matches!(records.last(), Some(SessionEvent::TurnEnded { .. })),
@@ -350,11 +380,13 @@ async fn every_announcement_has_a_record_written_first() {
 
     // Each of those was written before the next announcement was made. The two
     // streamed chunks share one record: they are fragments of one message, and it
-    // is written when the message closes rather than per fragment.
+    // is written when the message closes rather than per fragment. The instruction
+    // precedes all of them and is announced by nobody, so it is written first.
     let order: Vec<String> = log.beats().into_iter().map(|beat| beat.recorded).collect();
     assert_eq!(
         order,
         vec![
+            "system".to_string(),
             "turn_started".to_string(),
             "env_context".to_string(),
             "user_message".to_string(),
@@ -728,4 +760,78 @@ async fn a_message_id_survives_a_round_trip_through_the_log() {
         }
         other => panic!("expected an item: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn the_instruction_is_written_once_and_not_again_per_turn() {
+    // Constant because a provider caches a request by its prefix, so a second
+    // copy would buy nothing and a per-turn one would grow the log for as long
+    // as the session runs.
+    let log = Volatile::new();
+    let timeline = Timeline::default();
+    let session = session();
+
+    for text in ["first", "second", "third"] {
+        run_turn(
+            &session,
+            TurnInput { text: text.into() },
+            &Silent,
+            &tools(),
+            &log,
+            &timeline,
+        )
+        .await
+        .expect("the turn runs");
+    }
+
+    let written: Vec<SessionEvent> = log
+        .records()
+        .into_iter()
+        .filter(|entry| matches!(entry, SessionEvent::System { .. }))
+        .collect();
+    assert_eq!(written.len(), 1, "one session, one instruction");
+}
+
+#[tokio::test]
+async fn the_instruction_recorded_is_the_one_the_request_carries() {
+    // The record and the request are rendered from one value. If they were
+    // rendered separately they would agree only for as long as nothing changed
+    // between the two calls, and a log holding a different prefix from the one
+    // sent is worse than no log at all.
+    let log = Volatile::new();
+    let timeline = Timeline::default();
+    let session = session();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    let client = Watching {
+        inner: Scripted::new(vec![vec![ModelEvent::Done]]),
+        seen: Arc::clone(&seen),
+    };
+
+    run_turn(
+        &session,
+        TurnInput { text: "hi".into() },
+        &client,
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+
+    let recorded = log
+        .records()
+        .into_iter()
+        .find_map(|entry| match entry {
+            SessionEvent::System { content } => Some(content),
+            _ => None,
+        })
+        .expect("an instruction was recorded");
+
+    let sent = seen.lock().expect("seen lock").remove(0);
+    assert_eq!(
+        sent.as_deref(),
+        Some(recorded.as_str()),
+        "the log and the request must not diverge"
+    );
 }
