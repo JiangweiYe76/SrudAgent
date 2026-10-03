@@ -48,6 +48,14 @@
   --danger: var(--color-red-600);
   --warn: var(--color-amber-500);
   --success: var(--color-emerald-600);
+
+  /* Syntax highlighting, light. */
+  --code-keyword: #cf222e;
+  --code-string: #0a3069;
+  --code-number: #0550ae;
+  --code-title: #8250df;
+  --code-type: #953800;
+  --code-attr: #57606a;
 }
 
 .dark {
@@ -63,6 +71,14 @@
   --danger: var(--color-red-500);
   --warn: var(--color-amber-400);
   --success: var(--color-emerald-400);
+
+  /* Syntax highlighting, dark. */
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-number: #79c0ff;
+  --code-title: #d2a8ff;
+  --code-type: #ffa657;
+  --code-attr: #8b949e;
 }
 
 @layer base {
@@ -100,50 +116,289 @@
     blockquote {
       margin: 0.6em 0;
     }
+    /* Tailwind's preflight sets every heading to `font-size: inherit` and
+       `font-weight: inherit`, which leaves a heading indistinguishable from the
+       paragraph under it. Both are restored here. */
     h1,
     h2,
     h3,
-    h4 {
+    h4,
+    h5,
+    h6 {
       margin: 1em 0 0.5em;
       line-height: 1.3;
+      font-weight: 600;
     }
+    h1 {
+      font-size: 1.5em;
+    }
+    h2 {
+      font-size: 1.3em;
+    }
+    h3 {
+      font-size: 1.15em;
+    }
+    h4 {
+      font-size: 1em;
+    }
+    h5,
+    h6 {
+      font-size: 0.9em;
+      color: var(--text-dim);
+    }
+
+    /* Preflight also clears list markers and indentation, which turns a bulleted
+       list into a run of unindented lines. */
+    ul,
+    ol {
+      padding-left: 1.6em;
+    }
+    ul {
+      list-style: disc;
+    }
+    ol {
+      list-style: decimal;
+    }
+    li {
+      margin: 0.25em 0;
+    }
+    li > ul,
+    li > ol {
+      margin: 0.25em 0;
+    }
+    /* A nested list changes marker, since the parent's would repeat. */
+    ul ul {
+      list-style: circle;
+    }
+    ul ul ul {
+      list-style: square;
+    }
+
+    /* GFM task lists: the checkbox is a real input, so it needs the accent
+       colour and alignment preflight leaves to the browser default. */
+    .contains-task-list {
+      list-style: none;
+      padding-left: 0.2em;
+    }
+    .task-list-item {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5em;
+    }
+    .task-list-item input[type='checkbox'] {
+      accent-color: var(--accent);
+      margin: 0;
+      transform: translateY(1px);
+    }
+
     code {
       font-family: var(--font-mono);
-      font-size: 12.5px;
+      font-size: 0.9em;
       background: var(--bg-elevated);
       border: 1px solid var(--border);
       border-radius: 4px;
       padding: 1px 5px;
     }
-    pre {
+
+    /* A titled block: a header carrying the language and the copy button, over the
+       code. The header is tinted rather than outlined, so the block keeps one
+       border instead of drawing two lines a pixel apart. */
+    .code-block {
       margin: 0.6em 0;
-      padding: 12px;
+      border: 1px solid var(--border);
       border-radius: 8px;
       background: var(--bg-elevated);
-      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .code-block-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 3px 6px 3px 12px;
+      background: color-mix(in oklab, var(--bg-hover) 45%, var(--bg-elevated));
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      line-height: 1.7;
+    }
+    .code-block-lang {
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .code-block pre {
+      margin: 0;
+      /* Left padding is zero: the line numbers sit in the gutter each line opens
+         for itself, so indenting the whole block would double the indent. */
+      padding: 12px 12px 12px 0;
       overflow-x: auto;
-      code {
-        background: none;
-        border: none;
-        padding: 0;
-      }
+      background: none;
+      border: none;
+      border-radius: 0;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.55;
+      /* Code wraps rather than scrolling away: a horizontal scrollbar on every
+         long line hides the text instead of showing it. */
+      white-space: pre-wrap;
+      word-break: break-word;
+      tab-size: 4;
+    }
+    .code-block pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      font-size: inherit;
+      display: block;
+      /* Scoped to the block, so two code blocks each start at 1 instead of one
+         continuing the other's numbering. */
+      counter-reset: code-line;
+      /* One source of truth for the gutter, because the number's width is
+         derived from it below. Setting the two independently is what left the
+         number touching the code: `padding-left` only moves the gutter's left
+         edge, so any gap has to be subtracted back out of the number's width. */
+      --code-gutter: 3.5em;
+      --code-gutter-gap: 0.9em;
+    }
+    /* One element per line, so the number belongs to the line rather than to the
+       block: a wrapped line keeps its own number instead of showing two. */
+    .code-block pre code .code-line {
+      position: relative;
+      display: block;
+      counter-increment: code-line;
+      /* The code starts here; the number is placed in the space to its left. */
+      padding-left: var(--code-gutter);
+      /* Without a minimum an empty line collapses to nothing and its number has
+         nowhere to sit, so the gutter closes over it. */
+      min-height: 1.55em;
+    }
+    .code-line::before {
+      content: counter(code-line);
+      /* Out of flow, so a long line cannot push the number along and the gap is
+         a stated value rather than the remainder of a subtraction. */
+      position: absolute;
+      left: 0;
+      /* Ends one gap short of the code, which is what separates them. */
+      width: calc(var(--code-gutter) - var(--code-gutter-gap));
+      /* Right-aligned, so the numbers stay aligned as they pass one digit. */
+      text-align: right;
+      color: var(--text-dim);
+      opacity: 0.55;
+      /* Otherwise a drag-select across the block copies the numbers too. */
+      user-select: none;
+    }
+
+       column and pushing the rest of the answer off screen. */
+    .table-scroll {
+      margin: 0.6em 0;
+      overflow-x: auto;
     }
     table {
       border-collapse: collapse;
-      margin: 0.6em 0;
     }
     th,
     td {
       border: 1px solid var(--border);
       padding: 6px 10px;
+      text-align: left;
     }
+    th {
+      background: var(--bg-hover);
+      font-weight: 600;
+    }
+    tbody tr:nth-child(even) {
+      background: color-mix(in oklab, var(--bg-elevated) 50%, transparent);
+    }
+
     a {
       color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
     }
     blockquote {
       border-left: 3px solid var(--border);
       padding-left: 12px;
       color: var(--text-dim);
+    }
+    hr {
+      border: 0;
+      border-top: 1px solid var(--border);
+      margin: 1.2em 0;
+    }
+    img {
+      max-width: 100%;
+      border-radius: 6px;
+    }
+
+    /* Syntax highlighting.
+       `rehype-highlight` emits highlight.js class names; these map them onto the
+       app's own tokens so code follows the theme instead of shipping a second,
+       fixed palette that disagrees with it in dark mode. */
+    .hljs-comment,
+    .hljs-quote {
+      color: var(--text-dim);
+      font-style: italic;
+    }
+    .hljs-keyword,
+    .hljs-selector-tag,
+    .hljs-literal,
+    .hljs-doctag,
+    .hljs-formula {
+      color: var(--code-keyword);
+    }
+    .hljs-string,
+    .hljs-regexp,
+    .hljs-addition,
+    .hljs-attribute,
+    .hljs-meta .hljs-string {
+      color: var(--code-string);
+    }
+    .hljs-number,
+    .hljs-symbol,
+    .hljs-bullet,
+    .hljs-link {
+      color: var(--code-number);
+    }
+    /* Mermaid's links are the shape of the diagram, and sql and java are the only
+       other grammars in the set that emit this — so completing the mapping here
+       reaches those two and nothing else. */
+    .hljs-operator {
+      color: var(--code-type);
+    }
+    .hljs-title,
+    .hljs-section,
+    .hljs-name,
+    .hljs-selector-id,
+    .hljs-selector-class {
+      color: var(--code-title);
+    }
+    .hljs-type,
+    .hljs-class .hljs-title,
+    .hljs-built_in,
+    .hljs-builtin-name,
+    .hljs-params {
+      color: var(--code-type);
+    }
+    .hljs-attr,
+    .hljs-variable,
+    .hljs-template-variable,
+    .hljs-property,
+    .hljs-operator,
+    .hljs-punctuation {
+      color: var(--code-attr);
+    }
+    .hljs-meta,
+    .hljs-tag {
+      color: var(--text-dim);
+    }
+    .hljs-deletion {
+      color: var(--danger);
+    }
+    .hljs-emphasis {
+      font-style: italic;
+    }
+    .hljs-strong {
+      font-weight: 600;
     }
   }
 }

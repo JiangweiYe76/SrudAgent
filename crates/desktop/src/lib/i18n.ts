@@ -32,6 +32,10 @@ const en = {
 
   'msg.copy': 'Copy',
 
+  'code.copy': 'Copy code',
+  'code.copied': 'Copied',
+  'code.plainText': 'text',
+
   'common.close': 'Close',
   'common.cancel': 'Cancel',
 
