@@ -3,6 +3,19 @@
 //! Translates a `/chat/completions` stream into the core's [`ModelEvent`]
 //! vocabulary. The stream is flatter than the Responses API's: every chunk
 //! carries a list of choices whose deltas hold whatever arrived next.
+//!
+//! # Assembling the fragments
+//!
+//! The SDK stops at deserializing one SSE event into one chunk. It does not
+//! reassemble a tool call from the fragments that carry it, and cannot: this
+//! protocol sends an `index`-keyed fragment per chunk with no marker for "this
+//! call is complete", so how the pieces combine is a decision only the caller has
+//! the context to make. The Responses API needs no such step — its events carry
+//! their own types and a `finalized` signal — which is why that adapter is a
+//! mapping and this one has a [`CallAssembly`].
+//!
+//! So the policy here is ours to get right, and it is provider-dependent:
+//! [`CallAssembly::absorb`] documents the shape that broke it.
 
 use std::collections::BTreeMap;
 
@@ -177,22 +190,40 @@ struct PendingCall {
 
 /// Collects tool-call fragments.
 ///
-/// A call arrives across several chunks keyed by index. The id and name may
-/// arrive in one chunk and the arguments spread over the rest, so no single
-/// chunk is the call.
+/// A call arrives across several chunks keyed by index, and no single chunk is
+/// the call. The id and name are headers rather than payload: some providers send
+/// them on the first chunk only and leave them out or blank afterwards, others
+/// repeat them in full every time. [`CallAssembly::absorb`] is where those two
+/// shapes are reconciled, which is why the policy lives on the type rather than in
+/// the fold.
 #[derive(Debug, Default)]
 struct CallAssembly {
     calls: BTreeMap<u32, PendingCall>,
 }
 
 impl CallAssembly {
+    /// Folds one fragment into the call it belongs to.
+    ///
+    /// The id and name are **not** overwritten by an empty fragment. DashScope's
+    /// OpenAI-compatible endpoint sends both on the first chunk of a call and `""`
+    /// on every chunk after it, so taking the later value left every call with no
+    /// name at all: the runtime dispatched it and the tool answered that there is
+    /// no tool by that name — which reads like a wiring fault rather than as the
+    /// protocol quirk it is. The model then saw its own call come back nameless and
+    /// retried, over and over.
+    ///
+    /// Blank is not the same as absent, which is what makes this necessary rather
+    /// than defensive: `Option::is_none` does not cover `Some("")`.
+    ///
+    /// A non-empty value still replaces an earlier one, because a provider that
+    /// corrects itself mid-stream should be believed.
     fn absorb(&mut self, fragment: ChatCompletionMessageToolCallChunk) {
         let call = self.calls.entry(fragment.index).or_default();
-        if let Some(id) = fragment.id {
+        if let Some(id) = fragment.id.filter(|id| !id.is_empty()) {
             call.call_id = id;
         }
         if let Some(function) = fragment.function {
-            if let Some(name) = function.name {
+            if let Some(name) = function.name.filter(|name| !name.is_empty()) {
                 call.name = name;
             }
             if let Some(arguments) = function.arguments {
@@ -202,9 +233,20 @@ impl CallAssembly {
     }
 
     /// Drains the assembled calls in index order.
+    ///
+    /// A call with no name is dropped rather than forwarded. Nothing can act on it,
+    /// and forwarding it turns this adapter's parsing problem into a runtime error
+    /// that reads as the model's: the registry answers "there is no tool by that
+    /// name", and the model — which just asked correctly — retries the same call
+    /// until the turn ends. Dropping it here says nothing either, which is better
+    /// than saying the wrong thing.
+    ///
+    /// The id is not checked. A nameless call has no use for one, and a provider
+    /// that names a call but withholds its id is within what the wire allows.
     fn take(&mut self) -> Vec<ModelEvent> {
         std::mem::take(&mut self.calls)
             .into_values()
+            .filter(|call| !call.name.is_empty())
             .map(|call| ModelEvent::ToolCall {
                 call_id: call.call_id,
                 name: call.name,
@@ -498,6 +540,101 @@ mod tests {
                 arguments: "{\"path\":\"x\"}".into(),
             }]
         );
+    }
+
+    #[test]
+    fn a_provider_that_repeats_an_empty_id_and_name_does_not_erase_them() {
+        // DashScope's OpenAI-compatible endpoint sends the id and name on the
+        // first chunk of a call and `""` on every chunk after it. Overwriting with
+        // the later value left every call with no name, so the runtime dispatched
+        // it and the registry answered that no tool had that name — which reads
+        // like a wiring fault rather than as the protocol quirk it is, and sent the
+        // model back to retry a call it had already made correctly.
+        //
+        // `Some("")`, not `None`: that is the shape the provider sends and `None`
+        // is what the test above uses, which is exactly why that one passed here
+        // for as long as it did.
+        let mut calls = CallAssembly::default();
+        fold_chunk(
+            chunk(serde_json::json!([call(
+                0,
+                Some("call_3a2730d5"),
+                Some("bash"),
+                ""
+            )])),
+            &mut calls,
+        );
+        // What the provider actually sends afterwards.
+        for piece in [r#"{"command":"#, r#""echo hi"}"#] {
+            fold_chunk(
+                chunk(serde_json::json!([call(0, Some(""), Some(""), piece)])),
+                &mut calls,
+            );
+        }
+
+        assert_eq!(
+            calls.take(),
+            vec![ModelEvent::ToolCall {
+                call_id: "call_3a2730d5".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"echo hi"}"#.into(),
+            }],
+            "the first chunk's id and name survive the empty ones"
+        );
+    }
+
+    #[test]
+    fn a_call_that_never_got_a_name_is_dropped() {
+        // The second line of defence, behind the empty-value guard: a call with no
+        // name is forwarded to a registry that will answer "there is no tool by
+        // that name", and the model then retries a call it had already made
+        // correctly. Dropping it says nothing, which is better than saying the
+        // wrong thing — and the turn still ends on whatever the model says next.
+        let mut calls = CallAssembly::default();
+        fold_chunk(
+            chunk(serde_json::json!([call(
+                0,
+                Some(""),
+                Some(""),
+                r#"{"command":"#
+            )])),
+            &mut calls,
+        );
+        fold_chunk(
+            chunk(serde_json::json!([call(0, Some(""), Some(""), r#""ls"}"#)])),
+            &mut calls,
+        );
+
+        assert!(
+            calls.take().is_empty(),
+            "nothing the runtime could dispatch is forwarded"
+        );
+    }
+
+    #[test]
+    fn a_later_non_empty_name_still_replaces_an_earlier_one() {
+        // The other half of the rule: a provider that corrects itself mid-stream
+        // should be believed, so the guard is against emptiness and not against
+        // repetition.
+        let mut calls = CallAssembly::default();
+        fold_chunk(
+            chunk(serde_json::json!([call(
+                0,
+                Some("call_1"),
+                Some("wrong_name"),
+                ""
+            )])),
+            &mut calls,
+        );
+        fold_chunk(
+            chunk(serde_json::json!([call(0, None, Some("right_name"), "")])),
+            &mut calls,
+        );
+
+        match &calls.take()[0] {
+            ModelEvent::ToolCall { name, .. } => assert_eq!(name, "right_name"),
+            other => panic!("expected a tool call: {other:?}"),
+        }
     }
 
     #[test]
