@@ -309,16 +309,21 @@ pub async fn run_turn(
 ///
 /// # Errors
 ///
-/// Fails if the log refuses any of the three records.
+/// Fails if the log refuses any of the records. The first turn writes one more
+/// than the rest, because the context block is written once and never again.
 async fn open(journal: &Journal<'_>, input: &TurnInput) -> Result<(), RecordError> {
     journal.open_turn().await?;
 
-    // Where and when this turn runs is recorded ahead of the user's own words, so
-    // the model reads its context before the request it has to answer. No event is
-    // emitted for it: it is context, not something the user said.
-    journal
-        .record(None, context::item(journal.session().cwd()), None)
-        .await?;
+    // Where this session runs is recorded once, in front of the first thing said
+    // in it. The directory is the same for every turn, so a block ahead of each
+    // one is read again for nothing — and its time is then the time the session
+    // began rather than the time of the turn being answered. No event is emitted
+    // for it: it is context, not something the user said.
+    if journal.session().state().is_empty() {
+        journal
+            .record(None, context::item(journal.session().cwd()), None)
+            .await?;
+    }
 
     // The user's input is recorded next so every later request carries it.
     journal
