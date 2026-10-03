@@ -24,6 +24,8 @@ const en = {
   'empty.startChat': 'Start a new chat',
 
   'toolCall.noResult': '(no result)',
+  'toolCall.input': 'Input',
+  'toolCall.output': 'Output',
 
   'thought.title': 'Thinking',
 

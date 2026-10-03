@@ -428,76 +428,77 @@
       max-width: 100%;
       border-radius: 6px;
     }
+  }
 
-    /* Syntax highlighting.
-       `rehype-highlight` emits highlight.js class names; these map them onto the
-       app's own tokens so code follows the theme instead of shipping a second,
-       fixed palette that disagrees with it in dark mode. */
-    .hljs-comment,
-    .hljs-quote {
-      color: var(--text-dim);
-      font-style: italic;
-    }
-    .hljs-keyword,
-    .hljs-selector-tag,
-    .hljs-literal,
-    .hljs-doctag,
-    .hljs-formula {
-      color: var(--code-keyword);
-    }
-    .hljs-string,
-    .hljs-regexp,
-    .hljs-addition,
-    .hljs-attribute,
-    .hljs-meta .hljs-string {
-      color: var(--code-string);
-    }
-    .hljs-number,
-    .hljs-symbol,
-    .hljs-bullet,
-    .hljs-link {
-      color: var(--code-number);
-    }
-    /* Mermaid's links are the shape of the diagram, and sql and java are the only
-       other grammars in the set that emit this — so completing the mapping here
-       reaches those two and nothing else. */
-    .hljs-operator {
-      color: var(--code-type);
-    }
-    .hljs-title,
-    .hljs-section,
-    .hljs-name,
-    .hljs-selector-id,
-    .hljs-selector-class {
-      color: var(--code-title);
-    }
-    .hljs-type,
-    .hljs-class .hljs-title,
-    .hljs-built_in,
-    .hljs-builtin-name,
-    .hljs-params {
-      color: var(--code-type);
-    }
-    .hljs-attr,
-    .hljs-variable,
-    .hljs-template-variable,
-    .hljs-property,
-    .hljs-operator,
-    .hljs-punctuation {
-      color: var(--code-attr);
-    }
-    .hljs-meta,
-    .hljs-tag {
-      color: var(--text-dim);
-    }
-    .hljs-deletion {
-      color: var(--danger);
-    }
-    .hljs-emphasis {
-      font-style: italic;
-    }
-    .hljs-strong {
-      font-weight: 600;
-    }
+
+  /* Syntax highlighting.
+     `rehype-highlight` emits highlight.js class names; these map them onto the
+     app's own tokens so code follows the theme instead of shipping a second,
+     fixed palette that disagrees with it in dark mode. */
+  .hljs-comment,
+  .hljs-quote {
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-literal,
+  .hljs-doctag,
+  .hljs-formula {
+    color: var(--code-keyword);
+  }
+  .hljs-string,
+  .hljs-regexp,
+  .hljs-addition,
+  .hljs-attribute,
+  .hljs-meta .hljs-string {
+    color: var(--code-string);
+  }
+  .hljs-number,
+  .hljs-symbol,
+  .hljs-bullet,
+  .hljs-link {
+    color: var(--code-number);
+  }
+  /* Mermaid's links are the shape of the diagram, and sql and java are the only
+     other grammars in the set that emit this — so completing the mapping here
+     reaches those two and nothing else. */
+  .hljs-operator {
+    color: var(--code-type);
+  }
+  .hljs-title,
+  .hljs-section,
+  .hljs-name,
+  .hljs-selector-id,
+  .hljs-selector-class {
+    color: var(--code-title);
+  }
+  .hljs-type,
+  .hljs-class .hljs-title,
+  .hljs-built_in,
+  .hljs-builtin-name,
+  .hljs-params {
+    color: var(--code-type);
+  }
+  .hljs-attr,
+  .hljs-variable,
+  .hljs-template-variable,
+  .hljs-property,
+  .hljs-operator,
+  .hljs-punctuation {
+    color: var(--code-attr);
+  }
+  .hljs-meta,
+  .hljs-tag {
+    color: var(--text-dim);
+  }
+  .hljs-deletion {
+    color: var(--danger);
+  }
+  .hljs-emphasis {
+    font-style: italic;
+  }
+  .hljs-strong {
+    font-weight: 600;
   }
 }
