@@ -32,6 +32,7 @@ crates/desktop/src-tauri/target/
 
 # Agent workspace
 .workbuddy/
+.trae/
 
 # OS
 .DS_Store
