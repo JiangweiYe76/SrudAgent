@@ -825,6 +825,97 @@ async fn the_instruction_is_written_once_and_not_again_per_turn() {
 }
 
 #[tokio::test]
+async fn the_context_block_is_written_once_and_not_again_per_turn() {
+    // Ahead of the first thing said, not ahead of every turn: the directory is the
+    // same all session long, so a copy per turn is the model reading the same two
+    // lines once per conversation.
+    let log = Volatile::new();
+    let timeline = Timeline::default();
+    let session = session();
+
+    for text in ["first", "second", "third"] {
+        run_turn(
+            &session,
+            TurnInput { text: text.into() },
+            &Silent,
+            &tools(),
+            &log,
+            &timeline,
+        )
+        .await
+        .expect("the turn runs");
+    }
+
+    let blocks: Vec<ResponseItem> = events(&log)
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .history_item()
+                .is_some_and(srud_core::context::is_item)
+        })
+        .filter_map(|entry| entry.history_item().cloned())
+        .collect();
+    assert_eq!(
+        blocks.len(),
+        1,
+        "one session, one context block: {blocks:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_context_block_leads_the_first_turn_and_not_the_later_ones() {
+    // Which record it is matters as much as how many: a block ahead of the second
+    // turn would read as context for that turn rather than for the session.
+    let log = Volatile::new();
+    let timeline = Timeline::default();
+    let session = session();
+
+    for text in ["first", "second"] {
+        run_turn(
+            &session,
+            TurnInput { text: text.into() },
+            &Silent,
+            &tools(),
+            &log,
+            &timeline,
+        )
+        .await
+        .expect("the turn runs");
+    }
+
+    let order: Vec<String> = events(&log)
+        .into_iter()
+        .filter_map(|entry| match entry {
+            SessionEvent::TurnStarted { .. } => Some("turn_started".to_string()),
+            SessionEvent::Item { item, .. } => Some(
+                if srud_core::context::is_item(&item) {
+                    "env_context"
+                } else {
+                    "item"
+                }
+                .to_string(),
+            ),
+            SessionEvent::TurnEnded { .. } => Some("turn_ended".to_string()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        order,
+        vec![
+            "turn_started",
+            "env_context",
+            "item",
+            "turn_ended",
+            "turn_started",
+            "item",
+            "turn_ended",
+        ],
+        "the block is inside the first turn, and no turn after it repeats it"
+    );
+}
+
+#[tokio::test]
 async fn the_instruction_recorded_is_the_one_the_request_carries() {
     // The record and the request are rendered from one value. If they were
     // rendered separately they would agree only for as long as nothing changed
