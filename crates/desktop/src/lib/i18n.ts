@@ -27,7 +27,7 @@ const en = {
 
   'thought.title': 'Thinking',
 
-  'turn.running': 'Working…',
+  'turn.awaitingReply': 'Waiting for a reply',
   'turn.ended': 'turn {reason}',
 
   'msg.copy': 'Copy',
