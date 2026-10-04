@@ -160,6 +160,61 @@ afterEach(() => {
   container?.remove();
 });
 
+describe('a tool call still being written out', () => {
+  // The mark and the place it sits in are the same as the thinking header's, so
+  // a reader meets one wait signal in one place rather than two arrangements of it.
+  function row(): HTMLElement {
+    const card = container.querySelector<HTMLElement>('.rounded-lg.border.border-border')!;
+    return card.querySelector('button')!;
+  }
+
+  function classesOf(el: Element): string {
+    return el.getAttribute('class') ?? '';
+  }
+
+  it('marks a pending call with the dots against the chevron', () => {
+    render([
+      turn({
+        id: 't1',
+        steps: [
+          {
+            id: 's1',
+            assistantText: '',
+            toolCalls: [{ id: 'tc1', name: 'write', args: '', pending: true }],
+          },
+        ],
+      }),
+    ]);
+
+    // Right-aligned means: a flexible spacer, then the dots, then the chevron and
+    // nothing after it.
+    const [spacer, marks, chevron] = [...row().children].slice(-3);
+    expect(classesOf(spacer)).toContain('flex-1');
+    expect(marks.querySelectorAll('.animate-thinking-dot')).toHaveLength(3);
+    expect(classesOf(chevron)).toContain('rotate-180');
+  });
+
+  it('shows the arguments instead once they have arrived', () => {
+    render([
+      turn({
+        id: 't1',
+        steps: [
+          {
+            id: 's1',
+            assistantText: '',
+            toolCalls: [
+              { id: 'tc1', name: 'write', args: '{"path":"a.rs"}', pending: false },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    expect(dots()).toHaveLength(0);
+    expect(row().textContent).toContain('{"path":"a.rs"}');
+  });
+});
+
 describe('an empty conversation', () => {
   // An empty pane is two things at once: a conversation nobody has had yet, and one
   // still arriving from `session/load`. Telling a reader the second is empty is a
