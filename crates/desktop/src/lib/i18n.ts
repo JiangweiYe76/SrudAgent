@@ -22,6 +22,7 @@ const en = {
   'app.newSession': 'New session',
 
   'empty.startChat': 'Start a new chat',
+  'empty.loadingSession': 'Loading conversation…',
 
   'toolCall.noResult': '(no result)',
   'toolCall.input': 'Input',

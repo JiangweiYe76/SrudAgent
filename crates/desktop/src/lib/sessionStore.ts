@@ -223,10 +223,11 @@ interface SessionState {
   activeId: string;
   // Set when the backend handshake or a request fails; shown by the UI.
   initError: string | null;
-  // Set while a session's log is being replayed into the store. The conversation
-  // is still arriving then, so a prompt sent now would interleave with what is
-  // coming back.
-  reopening: boolean;
+  // Loads in flight. Counted rather than flagged: a session that cannot be loaded
+  // hands the view to its neighbour, so a second load can start before the first
+  // has finished failing, and one flag cleared by the first to settle would open
+  // the prompt while the second is still arriving.
+  reopeningCount: number;
   init: () => Promise<void>;
   select: (id: string) => void;
   addSession: () => void;
@@ -234,6 +235,20 @@ interface SessionState {
   stopTurn: () => void;
   renameSession: (id: string, title: string) => void;
   deleteSession: (id: string) => void;
+}
+
+// A session's conversation is on its way in.
+export function isReopening(state: Pick<SessionState, 'reopeningCount'>): boolean {
+  return state.reopeningCount > 0;
+}
+
+function beginReopen() {
+  useSessionStore.setState((s) => ({ reopeningCount: s.reopeningCount + 1 }));
+}
+
+function endReopen() {
+  // Floored, so a stray end cannot leave the prompt locked with nothing in flight.
+  useSessionStore.setState((s) => ({ reopeningCount: Math.max(0, s.reopeningCount - 1) }));
 }
 
 // A session is busy while its newest turn has not been closed. Cancellation is
@@ -304,7 +319,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   activeId: '',
   initError: null,
-  reopening: false,
+  reopeningCount: 0,
 
   init: () => {
     starting ??= start();
@@ -367,8 +382,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // again, and waiting for the reply would leave that window open.
     useSessionStore.setState((s) => ({
       sessions: s.sessions.map((sess) => (sess.id === id ? { ...sess, loaded: true } : sess)),
-      reopening: true,
     }));
+    beginReopen();
     void loadSession(session.backendId, session.cwd)
       .catch((err: unknown) => {
         // A session the agent will not name is one this app cannot show, and
@@ -381,9 +396,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         removeSession(id);
       })
-      .finally(() => {
-        useSessionStore.setState({ reopening: false });
-      });
+      .finally(endReopen);
   },
 
   addSession: () => {
@@ -396,7 +409,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const session = state.sessions.find((s) => s.id === state.activeId);
     // A turn refused mid-replay would be written into a conversation that is only
     // half back, and the two would end up interleaved.
-    if (!session || state.reopening || isBusy(session)) return;
+    if (!session || state.reopeningCount > 0 || isBusy(session)) return;
     const sessionId = session.id;
     const now = Date.now();
     const turn: Turn = { id: uid('t'), userInput, steps: [], createdAt: now };
@@ -496,15 +509,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 // flight keeps streaming updates into the old turn, which `applyUpdate` no
 // longer matches — harmless, since the session is gone from the list.
 function removeSession(id: string) {
+  // Where the view goes once the row is gone: `null` when the row that went was
+  // not the one on screen, so the view stays where it is and there is nothing
+  // more to ask for. An empty string means it was on screen and nothing is left.
+  let movedTo: string | null = null;
   useSessionStore.setState((s) => {
     const remaining = s.sessions.filter((sess) => sess.id !== id);
     if (remaining.length === s.sessions.length) return s;
-    // Deleting the session on screen moves the view to its neighbour; deleting
-    // the last one leaves no session to fall back to.
-    const activeId = s.activeId === id ? (remaining[0]?.id ?? '') : s.activeId;
-    return { sessions: remaining, activeId };
+    if (s.activeId !== id) return { sessions: remaining };
+    movedTo = remaining[0]?.id ?? '';
+    return { sessions: remaining, activeId: movedTo };
   });
-  if (!useSessionStore.getState().activeId) useSessionStore.getState().addSession();
+  if (movedTo === null) return;
+  // Nothing left to fall back to, so a draft: the sidebar is never a dead end.
+  if (movedTo === '') {
+    useSessionStore.getState().addSession();
+    return;
+  }
+  // The neighbour's conversation is not on screen yet, so it is asked for the way
+  // a click asks. Pointing the view at it alone would show it as one that nothing
+  // was ever said in.
+  useSessionStore.getState().select(movedTo);
 }
 
 function closeTurn(sessionId: string, turnId: string, endReason: TurnEndReason, error?: string) {

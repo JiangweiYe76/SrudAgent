@@ -5,7 +5,7 @@
 // reopen path (a remembered session's log replayed back into turns).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Session } from './types';
-import { displayTitle } from './sessionStore';
+import { displayTitle, isReopening } from './sessionStore';
 import { SESSION_NOT_FOUND } from './acp';
 
 const mocks = vi.hoisted(() => ({
@@ -52,6 +52,7 @@ async function boot(
   options: {
     failDelete?: boolean;
     loadFails?: { code: number; message: string };
+    loadFailsFirst?: { code: number; message: string };
     listed?: Array<Record<string, unknown>>;
   } = {},
 ) {
@@ -62,6 +63,7 @@ async function boot(
   const calls: string[] = [];
   const requested: Array<{ method: string; params: unknown }> = [];
   let created = 0;
+  let loads = 0;
   mocks.invoke = async (cmd, args) => {
     if (cmd === 'default_cwd') return '/work';
     if (cmd === 'rpc_request') {
@@ -79,15 +81,21 @@ async function boot(
           return prompt.promise.then((r) => reply(payload.id, r));
         case 'session/list':
           return reply(payload.id, { sessions: options.listed ?? [] });
-        case 'session/load':
-          if (options.loadFails) {
+        case 'session/load': {
+          // `loadFailsFirst` refuses one load and lets the rest through, so a test
+          // can watch what the app does with the session it falls back to.
+          const refusal =
+            options.loadFails ?? (loads === 0 ? options.loadFailsFirst : undefined);
+          loads += 1;
+          if (refusal) {
             // Built from the module instance the store itself sees: a class
             // imported before the reset is a different object, and the store
             // tells refusals apart by its own `instanceof`.
             const { RpcFailure } = await import('./acp');
-            throw new RpcFailure(options.loadFails.code, options.loadFails.message);
+            throw new RpcFailure(refusal.code, refusal.message);
           }
           return load.promise.then(() => reply(payload.id, {}));
+        }
         case 'session/cancel':
           return reply(payload.id, {});
         case '_srud/unstable/session/set_title':
@@ -690,7 +698,7 @@ describe('sessionStore listing path', () => {
   it('refuses a prompt while a listed conversation is still arriving', async () => {
     const { useSessionStore, calls, active } = await boot({ listed: [LISTED] });
     await vi.waitFor(() => {
-      expect(useSessionStore.getState().reopening).toBe(true);
+      expect(isReopening(useSessionStore.getState())).toBe(true);
     });
 
     useSessionStore.getState().sendTurn('too early');
@@ -729,7 +737,49 @@ describe('sessionStore listing path', () => {
     expect(
       useSessionStore.getState().sessions.some((s) => s.backendId === 'S-previous'),
     ).toBe(true);
-    expect(useSessionStore.getState().reopening).toBe(false);
+    expect(isReopening(useSessionStore.getState())).toBe(false);
+  });
+
+  it('loads the neighbour it falls back to rather than showing it empty', async () => {
+    // The one on screen turned out to be unloadable, so the view moves to its
+    // neighbour — and the neighbour's conversation is not on screen either. It has
+    // to be asked for, or the row stands in for a conversation nothing was said in.
+    const { calls, requested, active } = await boot({
+      listed: [LISTED, OLDER],
+      loadFailsFirst: { code: SESSION_NOT_FOUND, message: 'no such session' },
+    });
+
+    await vi.waitFor(() => {
+      expect(active().backendId).toBe('S-older');
+    });
+    await vi.waitFor(() => {
+      expect(calls.filter((m) => m === 'session/load')).toHaveLength(2);
+    });
+    const loads = requested.filter((r) => r.method === 'session/load');
+    expect(loads[loads.length - 1]?.params).toEqual({
+      sessionId: 'S-older',
+      cwd: '/work/older',
+      mcpServers: [],
+    });
+  });
+
+  it('keeps the prompt closed until the fallback conversation has arrived', async () => {
+    // The neighbour's load begins before the failed one has finished reporting, so
+    // a flag cleared by the first to settle would open the prompt while the second
+    // is still arriving and the two would interleave.
+    const { useSessionStore, calls, active } = await boot({
+      listed: [LISTED, OLDER],
+      loadFailsFirst: { code: SESSION_NOT_FOUND, message: 'no such session' },
+    });
+
+    await vi.waitFor(() => {
+      expect(active().backendId).toBe('S-older');
+    });
+    expect(isReopening(useSessionStore.getState())).toBe(true);
+
+    useSessionStore.getState().sendTurn('too early');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).not.toContain('session/prompt');
   });
 
   it('deletes a listed session without opening it first', async () => {
