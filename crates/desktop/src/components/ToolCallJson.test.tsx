@@ -101,7 +101,7 @@ afterEach(() => {
 
 describe('an opened tool call', () => {
   it('colours the arguments it was given', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls -la"}' });
+    render({ id: 'tc1', name: 'bash', args: '{"command":"ls -la"}', pending: false });
     openToolCall();
 
     expect(highlightedClasses()).toContain('hljs-attr');
@@ -112,7 +112,7 @@ describe('an opened tool call', () => {
     render({
       id: 'tc1',
       name: 'bash',
-      args: '{"command":"ls -la"}',
+      args: '{"command":"ls -la"}', pending: false,
       result: '{"stdout":"total 8\\n","exit_code":0}',
     });
     openToolCall();
@@ -123,7 +123,7 @@ describe('an opened tool call', () => {
   });
 
   it('shows both sides under a label each', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}', result: '{"exit_code":0}' });
+    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}', pending: false, result: '{"exit_code":0}' });
     openToolCall();
 
     const labels = [...container.querySelectorAll('span')].map((s) => s.textContent);
@@ -132,7 +132,7 @@ describe('an opened tool call', () => {
   });
 
   it('puts the arguments on their own lines', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}' });
+    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}', pending: false });
     openToolCall();
 
     // The payload arrives as one line. A block that stayed on one line would be
@@ -146,7 +146,7 @@ describe('an opened tool call', () => {
     render({
       id: 'tc1',
       name: 'bash',
-      args: '{"command":"rm -rf x"}',
+      args: '{"command":"rm -rf x"}', pending: false,
       result: 'rm is not available through this tool.',
     });
     openToolCall();
@@ -162,7 +162,7 @@ describe('an opened tool call', () => {
   });
 
   it('says so when there is no result yet', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}' });
+    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}', pending: false });
     openToolCall();
 
     expect(container.textContent).toContain('(no result)');
@@ -173,7 +173,7 @@ describe('an opened tool call', () => {
     // through the markdown pipeline would end the block at the fence and show
     // the rest of the JSON as prose.
     const result = JSON.stringify({ content: '# Title\n\n```js\nconst x = 1;\n```\n' });
-    render({ id: 'tc1', name: 'read', args: '{"path":"/tmp/a.md"}', result });
+    render({ id: 'tc1', name: 'read', args: '{"path":"/tmp/a.md"}', pending: false, result });
     openToolCall();
 
     expect(payloadUnder('Output').text).toContain('```js');
@@ -183,7 +183,7 @@ describe('an opened tool call', () => {
   it('leaves out the input side of a tool that takes no arguments', () => {
     // A label over an empty space reads as a payload that failed to load, which
     // is a different thing from a tool that has no arguments to show.
-    render({ id: 'tc1', name: 'now', args: '', result: '{"ok":true}' });
+    render({ id: 'tc1', name: 'now', args: '', pending: false, result: '{"ok":true}' });
     openToolCall();
 
     expect(container.textContent).not.toContain('Input');
@@ -191,7 +191,7 @@ describe('an opened tool call', () => {
   });
 
   it('offers no copy button for a side that has nothing to copy', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}' });
+    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}', pending: false });
     openToolCall();
 
     // Counted by the copy button's own title, not by `button[title]`: that would

@@ -338,6 +338,89 @@ describe('sessionStore live path', () => {
     expect(useSessionStore.getState().sessions).toHaveLength(1);
   });
 
+  it('marks a call pending until the update that carries its arguments', async () => {
+    // The agent names a tool before the model has finished writing its
+    // arguments, and for a tool taking a whole file that is the whole wait.
+    const { useSessionStore, fire } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().sessions.some((s) => s.backendId !== null)).toBe(true);
+    });
+    const active = () => {
+      const state = useSessionStore.getState();
+      return state.sessions.find((s) => s.id === state.activeId)!;
+    };
+
+    fire({ sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'write' });
+    expect(active().turns[0].steps[0].toolCalls[0]).toMatchObject({
+      name: 'write',
+      args: '',
+      pending: true,
+    });
+
+    fire({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc1',
+      status: 'in_progress',
+      rawInput: { path: 'x.rs', content: 'y' },
+    });
+    expect(active().turns[0].steps[0].toolCalls[0]).toMatchObject({
+      args: '{"path":"x.rs","content":"y"}',
+      pending: false,
+    });
+  });
+
+  it('treats an update that names no status as having moved past pending', async () => {
+    // `pending` is ACP's default and is left off the wire, so the common case is
+    // the absence of the field. Reading that as still pending would leave the
+    // mark spinning over a call that already has its arguments.
+    const { useSessionStore, fire } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().sessions.some((s) => s.backendId !== null)).toBe(true);
+    });
+    const active = () => {
+      const state = useSessionStore.getState();
+      return state.sessions.find((s) => s.id === state.activeId)!;
+    };
+
+    fire({ sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'read', rawInput: { path: 'a' } });
+    expect(active().turns[0].steps[0].toolCalls[0].pending).toBe(false);
+
+    fire({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc1',
+      rawInput: { path: 'a' },
+    });
+    expect(active().turns[0].steps[0].toolCalls[0].pending).toBe(false);
+  });
+
+  it('describes a call further rather than adding a second row for it', async () => {
+    // An agent announces a call and then describes it in full; a client that
+    // treats every `tool_call` as a new call shows the reader two rows for one.
+    const { useSessionStore, fire } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().sessions.some((s) => s.backendId !== null)).toBe(true);
+    });
+    const calls = () => {
+      const state = useSessionStore.getState();
+      return state.sessions.find((s) => s.id === state.activeId)!.turns[0].steps[0].toolCalls;
+    };
+
+    fire({ sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'read' });
+    fire({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'tc1',
+      title: 'read',
+      status: 'in_progress',
+      rawInput: { path: 'a.rs' },
+    });
+
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0]).toMatchObject({ args: '{"path":"a.rs"}', pending: false });
+  });
+
   it('streams agent text into the open turn and closes it on prompt completion', async () => {
     const { useSessionStore, active, fire, prompt, waitForBackend } = await boot();
     useSessionStore.getState().sendTurn('hi');

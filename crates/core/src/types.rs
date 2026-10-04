@@ -130,6 +130,18 @@ pub enum Event {
         name: String,
         arguments: serde_json::Value,
     },
+    /// The model has named a tool call; its arguments are still arriving.
+    ///
+    /// Ahead of [`Event::ToolCallBegin`] so a consumer can show which tool is
+    /// being called while the model is still writing the arguments, which for a
+    /// tool taking a whole file is the longest part of the call. Carries no
+    /// arguments, and nothing is run on it.
+    ///
+    /// Not written to the log: the attempt is recorded by [`Event::ToolCallBegin`],
+    /// when the arguments are whole and the tool is about to run. A log cut short
+    /// mid-stream has to answer "was anything attempted", and a name on its own is
+    /// not an attempt — it is the model thinking about one.
+    ToolCallNamed { call_id: String, name: String },
     /// A tool call finished.
     ToolCallEnd {
         call_id: String,

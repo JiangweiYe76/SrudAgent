@@ -442,6 +442,11 @@ async fn run_step(
                     delta,
                 });
             }
+            ModelEvent::ToolCallNamed { call_id, name } => {
+                // Forwarded, not recorded: see `Event::ToolCallNamed`. The log
+                // entry comes with `ToolCallBegin`, once there is an attempt to log.
+                journal.sink().emit(Event::ToolCallNamed { call_id, name });
+            }
             ModelEvent::ToolCall {
                 call_id,
                 name,

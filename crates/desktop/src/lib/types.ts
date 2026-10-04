@@ -7,6 +7,15 @@ export interface ToolCall {
   id: string;
   name: string;
   args: string;
+  /**
+   * Whether the model is still writing this call's arguments.
+   *
+   * True from the moment the agent names the tool, which is before it has the
+   * arguments, until the update that carries them. A call whose arguments are a
+   * whole file is most of the wait, and without this the row appears only once
+   * there is nothing left to wait for.
+   */
+  pending: boolean;
   result?: string;
   /**
    * Whether the tool ran and failed.

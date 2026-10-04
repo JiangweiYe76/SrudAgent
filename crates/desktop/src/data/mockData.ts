@@ -49,7 +49,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'read_file',
-                args: 'notes/multi-agent/README.md',
+                args: 'notes/multi-agent/README.md', pending: false,
                 result:
                   '# Multi-agent survey\n\n## Key conclusions\n\n1. Tokens buy parallelism; only pays off on independent tracks.\n2. Orchestrator + subagents is the recommended Tier 1 topology.\n3. Lead agent should dispatch 3-5 subagents at a time (Anthropic practice).\n...',
               },
@@ -77,7 +77,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'grep',
-                args: 'pattern="failure" path=notes/multi-agent/05-failure-modes.md',
+                args: 'pattern="failure" path=notes/multi-agent/05-failure-modes.md', pending: false,
                 result: 'notes/multi-agent/05-failure-modes.md:112: effort tiering\n...:118: interleaved thinking\n...:191: Claude 4 as prompt engineer',
               },
             ],
@@ -124,7 +124,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'cargo metadata --format-version 1',
+                args: 'cargo metadata --format-version 1', pending: false,
                 result: '{"packages":[...],"workspace_members":["srud-agent-desktop","core","app-server"],"resolve":{...}}',
               },
             ],
@@ -176,7 +176,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'read_file',
-                args: 'notes/multi-agent/04-context-and-memory.md',
+                args: 'notes/multi-agent/04-context-and-memory.md', pending: false,
                 result: '...subagent explores tens of thousands of tokens, returns only a 1000-2000 token summary...',
               },
             ],
@@ -214,7 +214,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'grep',
-                args: 'pattern="rollout" path=crates/core/src',
+                args: 'pattern="rollout" path=crates/core/src', pending: false,
                 result: 'crates/core/src/persist/mod.rs:14: pub fn append_item(...)\ncrates/core/src/persist/rollout.rs:8: pub struct RolloutWriter',
               },
             ],
@@ -226,7 +226,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'read_file',
-                args: 'crates/core/src/persist/rollout.rs',
+                args: 'crates/core/src/persist/rollout.rs', pending: false,
                 result: 'pub enum RolloutLine {\n    SessionMeta(SessionMeta),\n    ResponseItem(ResponseItem),\n    TurnComplete(TurnEndReason),\n}',
               },
             ],
@@ -238,7 +238,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'edit_file',
-                args: 'crates/core/src/persist/rollout.rs (+72 lines)',
+                args: 'crates/core/src/persist/rollout.rs (+72 lines)', pending: false,
                 result: 'ok',
               },
             ],
@@ -250,7 +250,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'read_file',
-                args: 'crates/app-server/src/dispatch.rs',
+                args: 'crates/app-server/src/dispatch.rs', pending: false,
                 result: 'match method {\n    "session/start" => ..., \n    "session/list" => ...,\n    _ => Err(MethodNotFound),\n}',
               },
             ],
@@ -262,7 +262,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'edit_file',
-                args: 'crates/app-server/src/dispatch.rs (+15 lines)',
+                args: 'crates/app-server/src/dispatch.rs (+15 lines)', pending: false,
                 result: 'ok',
               },
             ],
@@ -274,7 +274,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'cargo build -p core -p app-server',
+                args: 'cargo build -p core -p app-server', pending: false,
                 result: 'error[E0382]: borrow of moved value: `lines`\n  --> crates/core/src/persist/replay.rs:41:9',
               },
             ],
@@ -286,7 +286,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'edit_file',
-                args: 'crates/core/src/persist/replay.rs (fix E0382)',
+                args: 'crates/core/src/persist/replay.rs (fix E0382)', pending: false,
                 result: 'ok',
               },
             ],
@@ -298,7 +298,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'cargo build -p core -p app-server',
+                args: 'cargo build -p core -p app-server', pending: false,
                 result: 'Finished dev profile in 4.2s',
               },
             ],
@@ -310,7 +310,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'edit_file',
-                args: 'crates/core/src/persist/replay.rs (+48 lines, test)',
+                args: 'crates/core/src/persist/replay.rs (+48 lines, test)', pending: false,
                 result: 'ok',
               },
             ],
@@ -322,7 +322,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'cargo test -p core persist::',
+                args: 'cargo test -p core persist::', pending: false,
                 result: 'test persist::replay::tests::round_trip ... ok\ntest result: ok. 3 passed; 0 failed',
               },
             ],
@@ -334,7 +334,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'edit_file',
-                args: 'crates/core/src/persist/replay.rs (+22 lines)',
+                args: 'crates/core/src/persist/replay.rs (+22 lines)', pending: false,
                 result: 'ok',
               },
             ],
@@ -346,7 +346,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'cargo clippy -- -D warnings',
+                args: 'cargo clippy -- -D warnings', pending: false,
                 result: 'warning: this can be `digest` ... ignored\nerror: manual implementation of `Iterator::find`: crates/core/src/persist/replay.rs:88',
               },
             ],
@@ -358,7 +358,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'edit_file',
-                args: 'crates/core/src/persist/replay.rs:88 (use .find())',
+                args: 'crates/core/src/persist/replay.rs:88 (use .find())', pending: false,
                 result: 'ok',
               },
             ],
@@ -384,13 +384,13 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'git add crates/core/src/persist crates/app-server/src/dispatch.rs',
+                args: 'git add crates/core/src/persist crates/app-server/src/dispatch.rs', pending: false,
                 result: '(no output)',
               },
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'git commit -m "feat: add session/resume rollout replay"',
+                args: 'git commit -m "feat: add session/resume rollout replay"', pending: false,
                 result: '[feature/session-resume 4f2a9c1] feat: add session/resume rollout replay\n 3 files changed, 157 insertions(+)',
               },
             ],
@@ -416,13 +416,13 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'git push -u origin feature/session-resume',
+                args: 'git push -u origin feature/session-resume', pending: false,
                 result: 'branch \'feature/session-resume\' set up to track \'origin/feature/session-resume\'.',
               },
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'gh pr create --title "feat: add session/resume rollout replay" --body "..."',
+                args: 'gh pr create --title "feat: add session/resume rollout replay" --body "..."', pending: false,
                 result: 'https://github.com/srud/SrudAgent/pull/7',
               },
             ],
@@ -448,7 +448,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'gh run view --log-failed',
+                args: 'gh run view --log-failed', pending: false,
                 result: 'error: unused variable: `reason`\n  --> crates/core/src/persist/replay.rs:96:13',
               },
             ],
@@ -460,7 +460,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'edit_file',
-                args: 'crates/core/src/persist/replay.rs:96 (rename `reason` -> `_reason`)',
+                args: 'crates/core/src/persist/replay.rs:96 (rename `reason` -> `_reason`)', pending: false,
                 result: 'ok',
               },
             ],
@@ -472,7 +472,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'cargo clean -p core && cargo clippy -- -D warnings',
+                args: 'cargo clean -p core && cargo clippy -- -D warnings', pending: false,
                 result: 'Finished dev profile in 31.4s',
               },
             ],
@@ -484,7 +484,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'git commit -am "fix: silence unused variable in replay" && git push',
+                args: 'git commit -am "fix: silence unused variable in replay" && git push', pending: false,
                 result: 'To github.com:srud/SrudAgent.git\n   4f2a9c1..9be3d70  feature/session-resume',
               },
             ],
@@ -525,7 +525,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'ls crates/core/fuzz 2>/dev/null; grep -r arbitrary Cargo.toml',
+                args: 'ls crates/core/fuzz 2>/dev/null; grep -r arbitrary Cargo.toml', pending: false,
                 result: '(no fuzz dir, no arbitrary dep yet)',
               },
             ],
@@ -537,7 +537,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'edit_file',
-                args: 'crates/core/fuzz/fuzz_targets/rollout_parse.rs (+31 lines)',
+                args: 'crates/core/fuzz/fuzz_targets/rollout_parse.rs (+31 lines)', pending: false,
                 result: 'ok',
               },
             ],
@@ -549,7 +549,7 @@ export const seedSessions: Session[] = [
               {
                 id: id('tc'),
                 name: 'shell',
-                args: 'cargo fuzz run rollout_parse -- -max_total_time=30',
+                args: 'cargo fuzz run rollout_parse -- -max_total_time=30', pending: false,
                 result: 'info: corpus: 212 files; execs: 41k; no crashes found',
               },
             ],
