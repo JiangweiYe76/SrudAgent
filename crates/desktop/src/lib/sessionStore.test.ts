@@ -555,21 +555,44 @@ describe('sessionStore listing path', () => {
     title: 'Why the build fails',
     updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
   };
+  // An older one behind it. The agent lists the stored sessions newest first, so
+  // a pair is what tells "the newest" apart from "the only one".
+  const OLDER = {
+    sessionId: 'S-older',
+    cwd: '/work/older',
+    title: 'Rename the crate',
+    updatedAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+  };
 
-  it('asks the agent what sessions exist and shows them', async () => {
-    const { useSessionStore, calls, active } = await boot({ listed: [LISTED] });
+  it('asks the agent what sessions exist and opens the newest', async () => {
+    const { useSessionStore, calls, active } = await boot({ listed: [LISTED, OLDER] });
 
     expect(calls).toContain('session/list');
     const sessions = useSessionStore.getState().sessions;
-    // The draft leads, so a new conversation is where typing starts.
+    // No draft: there is a history to land on, and a blank one would sit on top of
+    // it and take the screen.
     expect(sessions).toHaveLength(2);
-    expect(active().backendId).toBeNull();
+    expect(sessions.every((s) => s.backendId !== null)).toBe(true);
+    expect(active().backendId).toBe('S-previous');
     const stored = sessions.find((s) => s.backendId === 'S-previous');
     expect(stored?.title).toBe('Why the build fails');
     expect(stored?.cwd).toBe('/work/previous');
-    // Its conversation has not been asked for yet.
-    expect(stored?.loaded).toBe(false);
-    expect(stored?.turns).toEqual([]);
+    // Its conversation is on its way rather than the row standing in for one that
+    // nothing was ever said in.
+    expect(calls).toContain('session/load');
+  });
+
+  it('starts once however many times it is asked', async () => {
+    const { useSessionStore, calls } = await boot({ listed: [LISTED] });
+
+    await useSessionStore.getState().init();
+
+    // React's strict mode asks twice in development. A second start would ask the
+    // agent for the conversation already on its way in, and every turn in it would
+    // land twice.
+    expect(calls.filter((m) => m === 'initialize')).toHaveLength(1);
+    expect(calls.filter((m) => m === 'session/list')).toHaveLength(1);
+    expect(calls.filter((m) => m === 'session/load')).toHaveLength(1);
   });
 
   it('opens with a draft alone when the agent has no sessions', async () => {
@@ -580,18 +603,12 @@ describe('sessionStore listing path', () => {
     expect(useSessionStore.getState().sessions[0].backendId).toBeNull();
   });
 
-  it('loads the conversation when a listed session is picked', async () => {
+  it('replays the conversation of the session it opens on', async () => {
     const { useSessionStore, calls, requested, fire, active, load } = await boot({
-      listed: [LISTED],
+      listed: [LISTED, OLDER],
     });
-    const listed = useSessionStore
-      .getState()
-      .sessions.find((s) => s.backendId === 'S-previous');
-    expect(useSessionStore.getState().activeId).not.toBe(listed?.id);
 
-    useSessionStore.getState().select(listed!.id);
-
-    expect(useSessionStore.getState().activeId).toBe(listed!.id);
+    expect(active().id).toBe(useSessionStore.getState().sessions[0].id);
     // The directory it works in is named back, which is how the agent is told
     // which session's directory to confirm.
     await vi.waitFor(() => {
@@ -618,9 +635,31 @@ describe('sessionStore listing path', () => {
     });
     expect(active().turns[0].userInput).toBe('the question');
     expect(active().turns[0].endReason).toBe('completed');
-    expect(
-      useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous')?.loaded,
-    ).toBe(true);
+    // The other one is untouched: what it holds is not on screen yet.
+    const older = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-older');
+    expect(older?.loaded).toBe(false);
+    expect(older?.turns).toEqual([]);
+  });
+
+  it('loads the conversation of another listed session when it is picked', async () => {
+    const { useSessionStore, calls, requested, load } = await boot({
+      listed: [LISTED, OLDER],
+    });
+    const older = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-older');
+
+    useSessionStore.getState().select(older!.id);
+
+    expect(useSessionStore.getState().activeId).toBe(older!.id);
+    await vi.waitFor(() => {
+      expect(calls.filter((m) => m === 'session/load')).toHaveLength(2);
+    });
+    const loads = requested.filter((r) => r.method === 'session/load');
+    expect(loads[loads.length - 1]?.params).toEqual({
+      sessionId: 'S-older',
+      cwd: '/work/older',
+      mcpServers: [],
+    });
+    load.resolve(null);
   });
 
   it('does not load the same conversation twice', async () => {
@@ -628,7 +667,6 @@ describe('sessionStore listing path', () => {
     // appear twice.
     const { useSessionStore, calls, fire, active, load } = await boot({ listed: [LISTED] });
     const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
-    useSessionStore.getState().select(listed!.id);
     fire(
       { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'once' } },
       { turnId: 'T1', turnEndReason: 'completed' },
@@ -639,6 +677,8 @@ describe('sessionStore listing path', () => {
     });
 
     const loads = calls.filter((m) => m === 'session/load').length;
+    // Away to a draft, which holds nothing to load, and back again.
+    useSessionStore.getState().addSession();
     useSessionStore.getState().select(useSessionStore.getState().sessions[0].id);
     useSessionStore.getState().select(listed!.id);
     await new Promise((r) => setTimeout(r, 0));
@@ -649,8 +689,6 @@ describe('sessionStore listing path', () => {
 
   it('refuses a prompt while a listed conversation is still arriving', async () => {
     const { useSessionStore, calls, active } = await boot({ listed: [LISTED] });
-    const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
-    useSessionStore.getState().select(listed!.id);
     await vi.waitFor(() => {
       expect(useSessionStore.getState().reopening).toBe(true);
     });
@@ -668,16 +706,13 @@ describe('sessionStore listing path', () => {
       listed: [LISTED],
       loadFails: { code: SESSION_NOT_FOUND, message: 'no such session' },
     });
-    const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
-    useSessionStore.getState().select(listed!.id);
 
+    // The row goes and a draft takes its place, so the sidebar is never a dead
+    // end — waited for on the replacement, since the row count is one either way.
     await vi.waitFor(() => {
-      expect(useSessionStore.getState().sessions).toHaveLength(1);
+      expect(active().backendId).toBeNull();
     });
     expect(useSessionStore.getState().initError).toBeNull();
-    // Deleting the one on screen opens a replacement, so the sidebar is never a
-    // dead end.
-    expect(active().backendId).toBeNull();
   });
 
   it('keeps a listed session and says so when loading it fails', async () => {
@@ -687,8 +722,6 @@ describe('sessionStore listing path', () => {
       listed: [LISTED],
       loadFails: { code: -32603, message: 'cannot load the session' },
     });
-    const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
-    useSessionStore.getState().select(listed!.id);
 
     await vi.waitFor(() => {
       expect(useSessionStore.getState().initError).toContain('cannot load the session');
@@ -700,19 +733,25 @@ describe('sessionStore listing path', () => {
   });
 
   it('deletes a listed session without opening it first', async () => {
-    const { useSessionStore, calls, requested } = await boot({ listed: [LISTED] });
-    const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
-    expect(calls).not.toContain('session/load');
+    // The second one, which is not the session the app opens on, so nothing has
+    // asked it for its conversation.
+    const { useSessionStore, calls, requested } = await boot({ listed: [LISTED, OLDER] });
+    const older = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-older');
+    expect(calls.filter((m) => m === 'session/load')).toHaveLength(1);
 
-    useSessionStore.getState().deleteSession(listed!.id);
+    useSessionStore.getState().deleteSession(older!.id);
 
     await vi.waitFor(() => {
       expect(calls).toContain('session/delete');
     });
     const req = requested.find((r) => r.method === 'session/delete');
-    expect((req?.params as { sessionId?: string })?.sessionId).toBe('S-previous');
+    expect((req?.params as { sessionId?: string })?.sessionId).toBe('S-older');
     expect(
-      useSessionStore.getState().sessions.some((s) => s.backendId === 'S-previous'),
+      useSessionStore.getState().sessions.some((s) => s.backendId === 'S-older'),
     ).toBe(false);
+    // The session on screen is left alone, and keeps the conversation it has.
+    expect(useSessionStore.getState().activeId).toBe(
+      useSessionStore.getState().sessions[0].id,
+    );
   });
 });

@@ -295,47 +295,63 @@ export function displayTitle(session: Session | undefined): string {
   return session?.title?.trim() || t('app.newSession');
 }
 
+// The app's one handshake and listing, shared by however many callers ask for it.
+// React's strict mode mounts the effect that asks twice in development, and a
+// second start would ask the agent for the same conversation all over again.
+let starting: Promise<void> | null = null;
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   activeId: '',
   initError: null,
   reopening: false,
 
-  init: async () => {
-    try {
-      await initialize();
-      onNotify((params) => {
-        const target = String(params.sessionId ?? '');
-        const { sessions } = get();
-        let changed = false;
-        const next = sessions.map((s) => {
-          if (s.backendId !== target) return s;
-          const updated = applyUpdate(s, params);
-          if (updated) {
-            changed = true;
-            return updated;
-          }
-          return s;
+  init: () => {
+    starting ??= start();
+    return starting;
+
+    async function start() {
+      try {
+        await initialize();
+        onNotify((params) => {
+          const target = String(params.sessionId ?? '');
+          const { sessions } = get();
+          let changed = false;
+          const next = sessions.map((s) => {
+            if (s.backendId !== target) return s;
+            const updated = applyUpdate(s, params);
+            if (updated) {
+              changed = true;
+              return updated;
+            }
+            return s;
+          });
+          if (changed) set({ sessions: next });
         });
-        if (changed) set({ sessions: next });
-      });
-      // The agent is asked what sessions exist before anything is shown, so a
-      // restart does not open on an empty app. Its list is the whole history: a
-      // session outlives the run that made it, so this is where the ones from
-      // earlier runs come from.
-      const listed = await listSessions();
-      const now = Date.now();
-      const sessions = listed.map((info) => listedSession(info, now));
-      // A draft so there is always something to type into. It leads the list
-      // because it is where a new conversation starts.
-      const draft = freshSession();
-      set({
-        sessions: [draft, ...sessions],
-        activeId: draft.id,
-        initError: null,
-      });
-    } catch (err) {
-      set({ initError: String(err) });
+        // The agent is asked what sessions exist before anything is shown, so a
+        // restart lands on the conversation the user left off in rather than on an
+        // empty app. Its list is the whole history: a session outlives the run that
+        // made it, so this is where the ones from earlier runs come from. It comes
+        // live sessions first and stored ones newest first, so the first is the one
+        // to reopen.
+        const listed = await listSessions();
+        const now = Date.now();
+        const sessions = listed.map((info) => listedSession(info, now));
+        if (sessions.length > 0) {
+          set({ sessions, initError: null });
+          get().select(sessions[0].id);
+          return;
+        }
+        // Nothing to go back to, so a draft to type into: with no session at all
+        // there is nowhere to put what the user is about to say.
+        const draft = freshSession();
+        set({ sessions: [draft], activeId: draft.id, initError: null });
+      } catch (err) {
+        set({ initError: String(err) });
+        // A start that failed is not remembered, so asking again is an attempt
+        // rather than a replay of the refusal.
+        starting = null;
+      }
     }
   },
 
