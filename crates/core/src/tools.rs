@@ -6,10 +6,12 @@
 //! could not proceed.
 
 pub mod bash;
+pub mod edit;
 pub mod read;
+pub mod write;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -74,6 +76,68 @@ impl ToolOutcome {
 /// recognised. A prefix is what lets a model tell a refusal from a result whose
 /// `exit_code` is 1, instead of inferring it from the prose.
 pub const FAILURE_MARKER: &str = "[tool error]";
+
+/// Resolves a path a tool was asked for: an absolute one is taken as given, a
+/// relative one is anchored to the working directory.
+///
+/// Shared rather than repeated, so a bare file name means the same thing to every
+/// tool that takes one — a name `read` resolved is a name `write` can open.
+#[must_use]
+pub(crate) fn resolve(ctx: &ToolContext, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        ctx.cwd.join(path)
+    }
+}
+
+/// The error for arguments a tool's schema permits but it cannot act on.
+pub(crate) fn invalid_arguments(name: &str, message: impl Into<String>) -> ToolError {
+    ToolError::InvalidArguments {
+        name: name.to_owned(),
+        message: message.into(),
+    }
+}
+
+/// A boolean argument, tolerant of the two ways a model quotes one.
+///
+/// Models sometimes send `"false"` where the schema says boolean, and a plain
+/// `bool` answers that with a type error naming the shape rather than the
+/// mistake. Reading it as truthiness instead would be worse: it turns `"false"`
+/// into `true`, so the tool would do the more destructive of the two things the
+/// argument chooses between.
+///
+/// Only the string literals are accepted, and the tolerance stops at
+/// deserialization — [`Tool::parameters`] still says `boolean`, so the model is
+/// told the real shape and nothing invites it to quote the value.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LenientBool(pub bool);
+
+impl<'de> serde::Deserialize<'de> for LenientBool {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Quoted {
+            Bare(bool),
+            Text(String),
+        }
+
+        match Quoted::deserialize(deserializer)? {
+            Quoted::Bare(value) => Ok(Self(value)),
+            Quoted::Text(text) => match text.as_str() {
+                "true" => Ok(Self(true)),
+                "false" => Ok(Self(false)),
+                other => Err(serde::de::Error::custom(format!(
+                    "`{other}` is not a boolean; send true or false, unquoted"
+                ))),
+            },
+        }
+    }
+}
 
 /// Builds the text a failed tool hands back.
 ///
