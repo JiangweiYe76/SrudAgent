@@ -1,12 +1,12 @@
 //! The `read` tool: a window onto one file.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use super::{failure_text, Tool, ToolContext, ToolError, ToolOutcome};
+use super::{failure_text, invalid_arguments, resolve, Tool, ToolContext, ToolError, ToolOutcome};
 
 /// The name the model calls.
 const NAME: &str = "read";
@@ -95,8 +95,8 @@ impl Tool for ReadTool {
         ctx: &ToolContext,
         arguments: serde_json::Value,
     ) -> Result<ToolOutcome, ToolError> {
-        let args: Args =
-            serde_json::from_value(arguments).map_err(|err| invalid_arguments(err.to_string()))?;
+        let args: Args = serde_json::from_value(arguments)
+            .map_err(|err| invalid_arguments(NAME, err.to_string()))?;
         let offset = args.offset.unwrap_or(1);
 
         let path = resolve(ctx, &args.path);
@@ -307,28 +307,10 @@ fn open_failure(path: &Path, err: &std::io::Error) -> String {
     failure_text(message, Some(hint))
 }
 
-/// Resolves the requested path: an absolute one is taken as given, a relative
-/// one is anchored to the working directory.
-fn resolve(ctx: &ToolContext, path: &str) -> PathBuf {
-    let path = Path::new(path);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        ctx.cwd.join(path)
-    }
-}
-
-/// The error for arguments the schema permits but the tool cannot act on.
-fn invalid_arguments(message: impl Into<String>) -> ToolError {
-    ToolError::InvalidArguments {
-        name: NAME.to_owned(),
-        message: message.into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// A directory for one test to read from, emptied first so a rerun starts
     /// from the same place.

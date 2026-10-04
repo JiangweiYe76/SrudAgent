@@ -7,9 +7,10 @@
 
 pub mod bash;
 pub mod read;
+pub mod write;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,29 @@ impl ToolOutcome {
 /// recognised. A prefix is what lets a model tell a refusal from a result whose
 /// `exit_code` is 1, instead of inferring it from the prose.
 pub const FAILURE_MARKER: &str = "[tool error]";
+
+/// Resolves a path a tool was asked for: an absolute one is taken as given, a
+/// relative one is anchored to the working directory.
+///
+/// Shared rather than repeated, so a bare file name means the same thing to every
+/// tool that takes one — a name `read` resolved is a name `write` can open.
+#[must_use]
+pub(crate) fn resolve(ctx: &ToolContext, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        ctx.cwd.join(path)
+    }
+}
+
+/// The error for arguments a tool's schema permits but it cannot act on.
+pub(crate) fn invalid_arguments(name: &str, message: impl Into<String>) -> ToolError {
+    ToolError::InvalidArguments {
+        name: name.to_owned(),
+        message: message.into(),
+    }
+}
 
 /// Builds the text a failed tool hands back.
 ///

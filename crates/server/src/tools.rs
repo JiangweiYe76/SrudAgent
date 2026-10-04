@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use srud_core::tools::{bash::BashTool, read::ReadTool, ToolRegistry};
+use srud_core::tools::{bash::BashTool, read::ReadTool, write::WriteTool, ToolRegistry};
 
 /// The tools every agent is built with.
 ///
@@ -20,6 +20,9 @@ pub fn standard_tools() -> Arc<ToolRegistry> {
         .register(Arc::new(ReadTool))
         .expect("the registry is fresh");
     tools
+        .register(Arc::new(WriteTool))
+        .expect("the registry is fresh");
+    tools
         .register(Arc::new(BashTool::default()))
         .expect("the registry is fresh");
     Arc::new(tools)
@@ -30,9 +33,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_standard_set_can_read_and_run() {
+    fn the_standard_set_can_read_write_and_run() {
         let tools = standard_tools();
         assert!(tools.contains("read"), "the read tool is registered");
+        assert!(tools.contains("write"), "the write tool is registered");
         assert!(tools.contains("bash"), "the bash tool is registered");
     }
 
