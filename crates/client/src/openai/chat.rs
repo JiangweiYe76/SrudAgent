@@ -174,7 +174,11 @@ fn fold_chunk(chunk: StreamChunk, calls: &mut CallAssembly) -> Vec<ModelEvent> {
             }
         }
         for fragment in choice.delta.tool_calls.into_iter().flatten() {
-            calls.absorb(fragment);
+            // Ahead of the runnable call, so a call taking a large payload is
+            // visible while the model is still writing it.
+            if let Some(named) = calls.named(fragment.clone()) {
+                events.push(named);
+            }
         }
     }
     events
@@ -230,6 +234,28 @@ impl CallAssembly {
                 call.arguments.push_str(&arguments);
             }
         }
+    }
+
+    /// The call this fragment named, the first time it names one.
+    ///
+    /// The name arrives in a header and the arguments in pieces after it, so the
+    /// moment a call becomes identifiable is well before it becomes runnable. A
+    /// provider that repeats the name on every fragment names it once here.
+    fn named(&mut self, fragment: ChatCompletionMessageToolCallChunk) -> Option<ModelEvent> {
+        let index = fragment.index;
+        let before = self
+            .calls
+            .get(&index)
+            .is_none_or(|call| call.name.is_empty());
+        self.absorb(fragment);
+        let call = self.calls.get(&index)?;
+        if !before && !call.name.is_empty() {
+            return None;
+        }
+        (!call.name.is_empty()).then(|| ModelEvent::ToolCallNamed {
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+        })
     }
 
     /// Drains the assembled calls in index order.
@@ -508,29 +534,37 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_call_accumulates_arguments_across_chunks() {
+    fn a_tool_call_is_named_before_its_arguments_are_whole() {
         let mut calls = CallAssembly::default();
-        // The id and name arrive first, the arguments in pieces afterwards.
-        assert!(fold_chunk(
-            chunk(serde_json::json!([call(
-                0,
-                Some("call_1"),
-                Some("read_file"),
-                ""
-            )])),
-            &mut calls
-        )
-        .is_empty());
-        assert!(fold_chunk(
-            chunk(serde_json::json!([call(0, None, None, "{\"pa")])),
-            &mut calls
-        )
-        .is_empty());
-        assert!(fold_chunk(
-            chunk(serde_json::json!([call(0, None, None, "th\":\"x\"}")])),
-            &mut calls
-        )
-        .is_empty());
+        // The id and name arrive first, the arguments in pieces afterwards. The
+        // first fragment is therefore the moment the call can be shown, and the
+        // rest of it is the moment it can be run.
+        assert_eq!(
+            fold_chunk(
+                chunk(serde_json::json!([call(
+                    0,
+                    Some("call_1"),
+                    Some("read_file"),
+                    ""
+                )])),
+                &mut calls
+            ),
+            vec![ModelEvent::ToolCallNamed {
+                call_id: "call_1".into(),
+                name: "read_file".into(),
+            }],
+            "the name alone is forwarded, so a call is visible before it is runnable"
+        );
+        for arguments in [r#"{"pa"#, r#"th":"x"}"#] {
+            assert!(
+                fold_chunk(
+                    chunk(serde_json::json!([call(0, None, None, arguments)])),
+                    &mut calls
+                )
+                .is_empty(),
+                "and nothing more: the call was already named"
+            );
+        }
 
         assert_eq!(
             calls.take(),
@@ -540,6 +574,27 @@ mod tests {
                 arguments: "{\"path\":\"x\"}".into(),
             }]
         );
+    }
+
+    #[test]
+    fn a_call_is_named_once_however_many_chunks_repeat_its_name() {
+        // DashScope repeats the id and name on every chunk of a call.
+        let mut calls = CallAssembly::default();
+        let mut named = 0;
+        for chunk_index in 0..3 {
+            named += fold_chunk(
+                chunk(serde_json::json!([call(
+                    0,
+                    Some("call_1"),
+                    Some("read_file"),
+                    if chunk_index == 0 { "" } else { "x" }
+                )])),
+                &mut calls,
+            )
+            .len();
+        }
+
+        assert_eq!(named, 1, "one announcement, not one per chunk");
     }
 
     #[test]

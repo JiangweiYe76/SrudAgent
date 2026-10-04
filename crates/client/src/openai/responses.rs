@@ -217,11 +217,18 @@ fn translate(event: ResponseStreamEvent, pending: &mut Option<PendingCall>) -> T
         }
         ResponseStreamEvent::ResponseOutputItemAdded(added) => {
             if let OutputItem::FunctionCall(call) = added.item {
+                let call_id = call.call_id;
+                let name = call.name;
                 *pending = Some(PendingCall {
-                    call_id: call.call_id,
-                    name: call.name,
+                    call_id: call_id.clone(),
+                    name: name.clone(),
                     arguments: String::new(),
                 });
+                // This event is where the name arrives and the arguments have not,
+                // which is the only moment a call can be shown but not yet run.
+                if !name.is_empty() {
+                    return Translated::Emit(ModelEvent::ToolCallNamed { call_id, name });
+                }
             }
             Translated::Ignore
         }
@@ -359,20 +366,24 @@ mod tests {
     }
 
     #[test]
-    fn a_function_call_accumulates_arguments_across_events() {
+    fn a_function_call_is_named_before_its_arguments_are_whole() {
         let mut pending = None;
+        // The item-added event is where the name arrives and the arguments have
+        // not, which is the only moment the call can be shown but not yet run.
         assert_eq!(
             translate(function_call_item("call_1", "read_file"), &mut pending),
-            Translated::Ignore
+            Translated::Emit(ModelEvent::ToolCallNamed {
+                call_id: "call_1".into(),
+                name: "read_file".into(),
+            })
         );
-        assert_eq!(
-            translate(args_delta("{\"pa"), &mut pending),
-            Translated::Ignore
-        );
-        assert_eq!(
-            translate(args_delta("th\":\"x\"}"), &mut pending),
-            Translated::Ignore
-        );
+        for arguments in [r#"{"pa"#, r#"th":"x"}"#] {
+            assert_eq!(
+                translate(args_delta(arguments), &mut pending),
+                Translated::Ignore,
+                "and nothing more: the call was already named"
+            );
+        }
 
         assert_eq!(
             translate(args_done(""), &mut pending),

@@ -71,6 +71,7 @@ fn kind_of(event: &Event) -> String {
         Event::AgentThoughtDelta { .. } => "AgentThoughtDelta".into(),
         Event::ToolCallBegin { .. } => "ToolCallBegin".into(),
         Event::ToolCallEnd { .. } => "ToolCallEnd".into(),
+        Event::ToolCallNamed { .. } => "ToolCallNamed".into(),
         Event::TurnComplete { .. } => "TurnComplete".into(),
     }
 }

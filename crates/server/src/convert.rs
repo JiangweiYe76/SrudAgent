@@ -54,11 +54,12 @@ pub fn to_session_update(event: Event) -> Option<Result<SessionUpdate, Skipped>>
         Event::AgentThoughtDelta { message_id, delta } => {
             SessionUpdate::AgentThoughtChunk(chunk(delta, message_id))
         }
+        Event::ToolCallNamed { call_id, name } => tool_call_named(call_id, name),
         Event::ToolCallBegin {
             call_id,
             name,
             arguments,
-        } => tool_call(call_id, name, arguments),
+        } => tool_call_input(call_id, name, arguments),
         Event::ToolCallEnd {
             call_id, result, ..
         } => tool_result(call_id, result.output, result.is_error),
@@ -67,11 +68,24 @@ pub fn to_session_update(event: Event) -> Option<Result<SessionUpdate, Skipped>>
     Some(Ok(update))
 }
 
+/// The update announcing a tool call whose arguments are still arriving.
+///
+/// Carries no `rawInput` and leaves `status` at ACP's default, which is
+/// `Pending` — documented as a call whose input is still streaming, and omitted
+/// from the wire because it is the default. So a client reads the absence as
+/// "this call is not runnable yet" without a SrudAgent extension, and a client
+/// that has never heard of this update still gets a well-formed `tool_call` it
+/// can show.
+fn tool_call_named(call_id: String, name: String) -> SessionUpdate {
+    SessionUpdate::ToolCall(ToolCall::new(call_id, name.clone()).name(name))
+}
+
 /// The update announcing a tool call.
 ///
-/// Shared with replay so a replayed call and a live one are the same update: a
-/// client that has to handle both would otherwise need to know which it was
-/// looking at.
+/// A `tool_call` rather than an update, for a client that has to handle this and
+/// the replayed form of it as the same thing: a replayed call arrives whole, from
+/// the log, with no earlier announcement to attach to. Live, [`tool_call_input`]
+/// follows an announcement instead.
 fn tool_call(call_id: String, name: String, arguments: serde_json::Value) -> SessionUpdate {
     SessionUpdate::ToolCall(
         ToolCall::new(call_id, name.clone())
@@ -79,6 +93,22 @@ fn tool_call(call_id: String, name: String, arguments: serde_json::Value) -> Ses
             .status(ToolCallStatus::InProgress)
             .raw_input(arguments),
     )
+}
+
+/// The update carrying a named call's arguments, live.
+///
+/// An update rather than a second `tool_call`, because the call already exists:
+/// [`Event::ToolCallNamed`] announced it before the arguments were whole. Sending
+/// the whole call twice would leave a client that treats the update as creating
+/// something with two of them.
+fn tool_call_input(call_id: String, name: String, arguments: serde_json::Value) -> SessionUpdate {
+    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+        call_id,
+        ToolCallUpdateFields::new()
+            .name(name)
+            .status(ToolCallStatus::InProgress)
+            .raw_input(arguments),
+    ))
 }
 
 /// The arguments as a client should read them.
@@ -360,19 +390,63 @@ mod tests {
     }
 
     #[test]
+    fn a_named_tool_call_carries_no_input_and_leaves_the_status_at_pending() {
+        // ACP's default status is `Pending`, documented as a call whose input is
+        // still streaming, and it is skipped on the wire because it is the default.
+        // So a client reads the absence as "not runnable yet" with no SrudAgent
+        // extension involved.
+        let n = notify(Event::ToolCallNamed {
+            call_id: "tc_1".into(),
+            name: "write".into(),
+        });
+        let value = serde_json::to_value(n.params.as_ref().unwrap()).unwrap();
+        let SessionUpdate::ToolCall(call) = n.params.unwrap().update else {
+            panic!("expected a tool_call");
+        };
+
+        assert_eq!(call.name.as_deref(), Some("write"));
+        assert_eq!(call.raw_input, None, "no arguments have arrived yet");
+        assert_eq!(call.status, ToolCallStatus::Pending);
+        assert!(
+            value.get("status").is_none(),
+            "and so the field is absent rather than spelled out: {value}"
+        );
+        assert_eq!(value.get("rawInput"), None, "{value}");
+    }
+
+    #[test]
     fn tool_call_begin_carries_input_and_in_progress_status() {
         let n = notify(Event::ToolCallBegin {
             call_id: "c1".into(),
             name: "echo".into(),
             arguments: json!({ "text": "hi" }),
         });
-        let SessionUpdate::ToolCall(call) = &n.params.as_ref().unwrap().update else {
-            panic!("expected ToolCall");
+        let SessionUpdate::ToolCallUpdate(update) = &n.params.as_ref().unwrap().update else {
+            panic!("an update: the call was announced before it had arguments");
         };
-        assert_eq!(call.title, "echo");
-        assert_eq!(call.name.as_deref(), Some("echo"));
-        assert_eq!(call.status, ToolCallStatus::InProgress);
-        assert_eq!(call.raw_input, Some(json!({ "text": "hi" })));
+        assert_eq!(update.fields.name.as_deref(), Some("echo"));
+        assert_eq!(update.fields.status, Some(ToolCallStatus::InProgress));
+        assert_eq!(update.fields.raw_input, Some(json!({ "text": "hi" })));
+    }
+
+    #[test]
+    fn a_replayed_call_arrives_whole_where_a_live_one_arrives_in_two() {
+        // A replayed call comes from the log with nothing before it, so it is one
+        // `tool_call`; live it is announced and then filled in. Both are well
+        // formed, and the frontend handles each on its own terms.
+        assert!(matches!(
+            tool_call("c1".into(), "echo".into(), json!({ "text": "hi" })),
+            SessionUpdate::ToolCall(_)
+        ));
+        let live = notify(Event::ToolCallBegin {
+            call_id: "c1".into(),
+            name: "echo".into(),
+            arguments: json!({ "text": "hi" }),
+        });
+        assert!(matches!(
+            live.params.unwrap().update,
+            SessionUpdate::ToolCallUpdate(_)
+        ));
     }
 
     #[test]

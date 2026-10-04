@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Session, Turn, TurnEndReason } from './types';
+import type { Session, Step, ToolCall, Turn, TurnEndReason } from './types';
 import { t } from './i18n';
 import {
   cancelTurn,
@@ -43,6 +43,46 @@ function resultOf(update: Json): string {
     if (text) return text;
   }
   return update.rawOutput === undefined ? '' : JSON.stringify(update.rawOutput);
+}
+
+// Whether a tool call is still being written out by the model.
+//
+// ACP's `pending` is documented as a call whose input is streaming, and it is the
+// default, so an agent that leaves it unset is saying the same thing by saying
+// nothing — which is what SrudAgent's own announcement does.
+//
+// An unset status is read as pending only when there is no input either. A call
+// that arrived whole without a status has plainly stopped waiting for its
+// arguments, and treating it as pending would put the waiting mark over a
+// complete one.
+function isPending(update: Json): boolean {
+  const status = update.status;
+  if (status === 'pending') return true;
+  if (status !== undefined) return false;
+  return update.rawInput === undefined;
+}
+
+// The parts of a call a `tool_call` update describes.
+//
+// A call arrives as an announcement with a name and no input, and the input comes
+// later — either as an update or, from a replayed log, in the same update. Which
+// is why `args` is empty rather than absent for one that has none yet.
+function toolCallFields(update: Json, id: string): ToolCall {
+  return {
+    id,
+    name: String(update.name ?? update.title ?? 'tool'),
+    args: update.rawInput === undefined ? '' : JSON.stringify(update.rawInput),
+    pending: isPending(update),
+  };
+}
+
+// The call with this id, wherever it is among the steps.
+function findCall(steps: Step[], id: string): ToolCall | undefined {
+  for (const step of steps) {
+    const call = step.toolCalls.find((c) => c.id === id);
+    if (call) return call;
+  }
+  return undefined;
 }
 
 // The `_meta.srud` an update carries, if any.
@@ -168,11 +208,16 @@ function applyUpdate(session: Session, params: Json): Session | null {
         last.assistantText += text;
       }
     } else if (kind === 'tool_call') {
-      const call = {
-        id: String(update.toolCallId ?? uid('tc')),
-        name: String(update.title ?? 'tool'),
-        args: update.rawInput === undefined ? '' : JSON.stringify(update.rawInput),
-      };
+      const id = String(update.toolCallId ?? uid('tc'));
+      const existing = findCall(steps, id);
+      // A call that is already on screen is being described further, not added:
+      // the agent announces a tool before the model has written its arguments,
+      // and an agent that sends the whole call twice must not produce two rows.
+      if (existing) {
+        Object.assign(existing, toolCallFields(update, id));
+        return null;
+      }
+      const call = toolCallFields(update, id);
       // The call belongs to the current step — one sampling streams its text
       // then issues its calls. Only a fresh turn (no step yet) opens a new one.
       if (last) {
@@ -186,6 +231,10 @@ function applyUpdate(session: Session, params: Json): Session | null {
       for (const step of steps) {
         const tc = step.toolCalls.find((c) => c.id === callId);
         if (tc) {
+          // An update that arrives at all means the agent has moved past naming
+          // the call, whether or not it says where it moved to.
+          if (!isPending(update)) tc.pending = false;
+          if (update.rawInput !== undefined) tc.args = JSON.stringify(update.rawInput);
           tc.result = resultOf(update);
           // The backend states whether the tool failed rather than leaving it to
           // be read off the text, which the UI needs before it can render

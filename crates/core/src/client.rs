@@ -52,6 +52,13 @@ pub enum ModelEvent {
     TextDelta { delta: String },
     /// A chunk of reasoning text.
     ThoughtDelta { delta: String },
+    /// A tool call the model has named. Its arguments are still arriving.
+    ///
+    /// Sent ahead of [`ModelEvent::ToolCall`] so a call whose arguments are large
+    /// — a `write` of a whole file — is visible while the model is still writing
+    /// them, rather than only once the last one has arrived. Nothing can be run on
+    /// it yet; it says which tool is being called and by what name.
+    ToolCallNamed { call_id: String, name: String },
     /// A complete tool call.
     ToolCall {
         call_id: String,
@@ -160,7 +167,9 @@ mod tests {
             match event.expect("no error") {
                 ModelEvent::TextDelta { delta } => text.push_str(&delta),
                 ModelEvent::Done => break,
-                ModelEvent::ThoughtDelta { .. } | ModelEvent::ToolCall { .. } => {}
+                ModelEvent::ThoughtDelta { .. }
+                | ModelEvent::ToolCall { .. }
+                | ModelEvent::ToolCallNamed { .. } => {}
             }
         }
         assert_eq!(text, "hello");

@@ -41,6 +41,7 @@ fn kind_of(event: &Event) -> &'static str {
         Event::AgentThoughtDelta { .. } => "AgentThoughtDelta",
         Event::ToolCallBegin { .. } => "ToolCallBegin",
         Event::ToolCallEnd { .. } => "ToolCallEnd",
+        Event::ToolCallNamed { .. } => "ToolCallNamed",
         Event::TurnComplete { .. } => "TurnComplete",
     }
 }
