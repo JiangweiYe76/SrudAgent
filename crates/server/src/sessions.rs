@@ -19,6 +19,7 @@
 //! the agent overrides that and why.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -204,20 +205,27 @@ async fn log_files() -> Result<Vec<PathBuf>, RestoreError> {
     Ok(found)
 }
 
+/// Whether `path` is the log `id` is recorded under.
+///
+/// Both ends of this naming go through here, because they have to agree. A log
+/// renamed or copied away is one no `session/load` can find, and a session nothing
+/// can load must not be named by a listing either.
+fn names_session(path: &Path, id: &impl Display) -> bool {
+    let suffix = format!("-{id}.jsonl");
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().ends_with(&suffix))
+}
+
 /// Finds the log a session was written to.
 ///
 /// Searched rather than computed: the filename carries the moment the session was
 /// created, which only the write path knew. An index would answer this in one
 /// lookup, and [`log_files`] is what stands in for one until then.
 async fn find_log(id: &SessionId) -> Result<PathBuf, RestoreError> {
-    let suffix = format!("-{id}.jsonl");
     log_files()
         .await?
         .into_iter()
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().ends_with(&suffix))
-        })
+        .find(|path| names_session(path, id))
         .ok_or_else(|| RestoreError::NotFound(id.clone()))
 }
 
@@ -638,6 +646,12 @@ impl SessionManager {
             let Ok(summary) = srud_core::session_store::summarize(&path).await else {
                 continue;
             };
+            // A log named for some other session describes one `session/load`
+            // cannot find, so listing it would offer a client a session that
+            // cannot be opened.
+            if !names_session(&path, &summary.session_id) {
+                continue;
+            }
             if live_ids.contains(&*summary.session_id.0.to_string()) {
                 continue;
             }
@@ -1053,6 +1067,36 @@ mod tests {
         assert!(
             found.updated_at.is_some(),
             "and it says when it was last active, or the sidebar cannot order it"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_skips_a_log_named_for_no_session() {
+        // A log renamed or copied away still describes the session inside it, but
+        // `session/load` finds a log by the id in its filename. Listing it would
+        // offer a client a session it can select and never open.
+        let (manager, _env) = manager();
+        let id = create(&manager).await;
+        manager.set_title(&id, "Renamed away").await.unwrap();
+        manager.forget(&id);
+
+        let path = session_log_path(&id);
+        std::fs::rename(
+            &path,
+            path.with_file_name("session-20000101T000000_renamed.jsonl"),
+        )
+        .expect("the log can be renamed");
+
+        assert!(
+            manager.list().await.is_empty(),
+            "a log no filename carries the id for describes no session a client could open"
+        );
+        assert!(
+            matches!(
+                manager.restore(&id, Path::new("")).await,
+                Err(RestoreError::NotFound(_))
+            ),
+            "which is because `session/load` cannot find it either"
         );
     }
 

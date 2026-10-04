@@ -38,7 +38,7 @@ function render(toolCall: ToolCall): HTMLElement {
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<MessageList turns={[turn]} />);
+    root.render(<MessageList reopening={false} turns={[turn]} />);
   });
   return container;
 }

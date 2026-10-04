@@ -67,7 +67,7 @@ function render(turns: Turn[]): HTMLElement {
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<MessageList turns={turns} />);
+    root.render(<MessageList reopening={false} turns={turns} />);
   });
   return container;
 }
@@ -125,7 +125,7 @@ function follow(): void {
   // hands out a new one per token, and re-rendering with the same reference would
   // not count as a new token.
   act(() => {
-    root.render(<MessageList turns={[...lastTurns]} />);
+    root.render(<MessageList reopening={false} turns={[...lastTurns]} />);
   });
 }
 
@@ -160,6 +160,34 @@ afterEach(() => {
   container?.remove();
 });
 
+describe('an empty conversation', () => {
+  // An empty pane is two things at once: a conversation nobody has had yet, and one
+  // still arriving from `session/load`. Telling a reader the second is empty is a
+  // claim about the session that is simply false.
+  function renderEmpty(reopening: boolean): void {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(<MessageList reopening={reopening} turns={[]} />);
+    });
+  }
+
+  it('says a conversation is on its way rather than that it is empty', () => {
+    renderEmpty(true);
+
+    expect(container.textContent).toContain('Loading conversation');
+    expect(container.textContent).not.toContain('Start a new chat');
+  });
+
+  it('invites a first message only when nothing is being loaded', () => {
+    renderEmpty(false);
+
+    expect(container.textContent).toContain('Start a new chat');
+    expect(container.textContent).not.toContain('Loading conversation');
+  });
+});
+
 describe('following the bottom while streaming', () => {
   it('lands on the bottom as tokens arrive, without animating', () => {
     // The old code used `scrollIntoView({ behavior: 'smooth' })` on every token.
@@ -173,6 +201,7 @@ describe('following the bottom while streaming', () => {
     act(() => {
       root.render(
         <MessageList
+          reopening={false}
           turns={[
             turn({
               id: 't1',
@@ -199,6 +228,7 @@ describe('following the bottom while streaming', () => {
       act(() => {
         root.render(
           <MessageList
+            reopening={false}
             turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'x'.repeat(i), toolCalls: [] }] })]}
           />,
         );
@@ -216,7 +246,7 @@ describe('following the bottom while streaming', () => {
     setGeometry(el, { scrollHeight: 1000, clientHeight: 400 });
     act(() => {
       root.render(
-        <MessageList turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'done', toolCalls: [] }] })]} />,
+        <MessageList reopening={false} turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'done', toolCalls: [] }] })]} />,
       );
     });
 
@@ -241,7 +271,7 @@ describe('following the bottom while streaming', () => {
     setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
     act(() => {
       root.render(
-        <MessageList turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }] })]} />,
+        <MessageList reopening={false} turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }] })]} />,
       );
     });
 
@@ -273,7 +303,7 @@ describe('following the bottom while streaming', () => {
     setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
     act(() => {
       root.render(
-        <MessageList turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }] })]} />,
+        <MessageList reopening={false} turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }] })]} />,
       );
     });
 
@@ -289,6 +319,7 @@ describe('following the bottom while streaming', () => {
     act(() => {
       root.render(
         <MessageList
+          reopening={false}
           turns={[
             turn({ id: 't1', endReason: 'completed', endedAt: 1 }),
             turn({ id: 't2' }),
@@ -312,7 +343,7 @@ describe('following the bottom while streaming', () => {
     setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
     act(() => {
       root.render(
-        <MessageList turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'm', toolCalls: [] }] })]} />,
+        <MessageList reopening={false} turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'm', toolCalls: [] }] })]} />,
       );
     });
 

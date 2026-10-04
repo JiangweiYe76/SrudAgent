@@ -5,7 +5,7 @@ import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
-import { useSessionStore, displayTitle, isBusy } from './lib/sessionStore';
+import { useSessionStore, displayTitle, isBusy, isReopening } from './lib/sessionStore';
 import { useTheme } from './lib/theme';
 import { t } from './lib/i18n';
 import './styles.css';
@@ -21,7 +21,7 @@ function App() {
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
-  const reopening = useSessionStore((s) => s.reopening);
+  const reopening = useSessionStore(isReopening);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useTheme();
@@ -61,7 +61,7 @@ function App() {
             {initError}
           </div>
         )}
-        <MessageList turns={active?.turns ?? []} />
+        <MessageList turns={active?.turns ?? []} reopening={reopening} />
         {/* Busy while a turn runs, and while a session is still being reopened:
             the conversation is arriving then, so a prompt would interleave with
             it. There is no turn to stop in that window, so the stop control does

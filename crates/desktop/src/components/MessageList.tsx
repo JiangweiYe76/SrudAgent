@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Brain, Check, ChevronDown, Copy, Wrench } from 'lucide-react';
+import { Brain, Check, ChevronDown, Copy, Loader2, Wrench } from 'lucide-react';
 import type { Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
@@ -12,6 +12,9 @@ import {
 
 interface MessageListProps {
   turns: Turn[];
+  // True while a session's log is being replayed into the store, which is what
+  // tells an empty conversation apart from one that has not arrived yet.
+  reopening: boolean;
 }
 
 // Wall-clock time of an event, 24-hour. The hour must be included: minutes
@@ -130,7 +133,7 @@ function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
 // the end has not scrolled away, and must not be treated as if they had.
 const STICK_SLOP = 32;
 
-export function MessageList({ turns }: MessageListProps) {
+export function MessageList({ turns, reopening }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
@@ -192,10 +195,18 @@ export function MessageList({ turns }: MessageListProps) {
     return () => observer.disconnect();
   }, []);
 
+  // An empty pane is two things at once: a conversation nobody has had yet, and
+  // one still on its way in. Saying "start a new chat" to a session mid-replay
+  // would claim it is empty, which is the opposite of what is happening.
   if (turns.length === 0) {
     return (
       <div ref={listRef} className="flex flex-1 flex-col overflow-y-auto">
-        <div className="m-auto text-sm text-muted-foreground">{t('empty.startChat')}</div>
+        <div className="m-auto flex items-center gap-2 text-sm text-muted-foreground">
+          {reopening && (
+            <Loader2 className="h-4 w-4 animate-spin" role="status" aria-live="polite" />
+          )}
+          <span>{t(reopening ? 'empty.loadingSession' : 'empty.startChat')}</span>
+        </div>
       </div>
     );
   }
