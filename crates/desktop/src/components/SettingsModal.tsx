@@ -4,6 +4,7 @@ import { t } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { Modal, ModalContent } from '@/components/ui/modal';
 import { useThemeStore, type ThemeMode } from '@/lib/theme';
+import { percentOf, useZoomStore, ZOOM_LEVELS } from '@/lib/zoom';
 
 interface SettingsModalProps {
   open: boolean;
@@ -26,6 +27,8 @@ const THEME_OPTIONS: { mode: ThemeMode; label: Parameters<typeof t>[0]; Icon: Lu
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const mode = useThemeStore((s) => s.mode);
   const setMode = useThemeStore((s) => s.setMode);
+  const level = useZoomStore((s) => s.level);
+  const setLevel = useZoomStore((s) => s.setLevel);
   const [section, setSection] = useState<Section>('appearance');
 
   return (
@@ -58,33 +61,62 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </span>
 
               {section === 'appearance' ? (
-                <>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-sm">{t('settings.theme')}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {t('settings.theme.hint')}
-                    </span>
+                <div className="flex flex-col gap-6">
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm">{t('settings.theme')}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {t('settings.theme.hint')}
+                      </span>
+                    </div>
+
+                    <div className="flex gap-2">
+                      {THEME_OPTIONS.map(({ mode: option, label, Icon }) => (
+                        <button
+                          key={option}
+                          onClick={() => setMode(option)}
+                          aria-pressed={mode === option}
+                          className={cn(
+                            'flex flex-1 cursor-pointer flex-col items-center gap-1.5 rounded-lg border px-2 py-3 text-[13px] transition-colors',
+                            mode === option
+                              ? 'border-accent bg-item-hover text-accent'
+                              : 'border-border text-muted-foreground hover:bg-item-hover hover:text-foreground',
+                          )}
+                        >
+                          <Icon className="h-4 w-4" />
+                          {t(label)}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
-                  <div className="flex gap-2">
-                    {THEME_OPTIONS.map(({ mode: option, label, Icon }) => (
-                      <button
-                        key={option}
-                        onClick={() => setMode(option)}
-                        aria-pressed={mode === option}
-                        className={cn(
-                          'flex flex-1 cursor-pointer flex-col items-center gap-1.5 rounded-lg border px-2 py-3 text-[13px] transition-colors',
-                          mode === option
-                            ? 'border-accent bg-item-hover text-accent'
-                            : 'border-border text-muted-foreground hover:bg-item-hover hover:text-foreground',
-                        )}
-                      >
-                        <Icon className="h-4 w-4" />
-                        {t(label)}
-                      </button>
-                    ))}
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm">{t('settings.zoom')}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {t('settings.zoom.hint')}
+                      </span>
+                    </div>
+
+                    <div className="flex gap-2">
+                      {ZOOM_LEVELS.map((option) => (
+                        <button
+                          key={option}
+                          onClick={() => setLevel(option)}
+                          aria-pressed={level === option}
+                          className={cn(
+                            'flex flex-1 cursor-pointer items-center justify-center rounded-lg border px-2 py-3 text-[13px] transition-colors',
+                            level === option
+                              ? 'border-accent bg-item-hover text-accent'
+                              : 'border-border text-muted-foreground hover:bg-item-hover hover:text-foreground',
+                          )}
+                        >
+                          {percentOf(option)}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </>
+                </div>
               ) : (
                 <p className="m-0 text-sm text-muted-foreground">{t('settings.about.line')}</p>
               )}
