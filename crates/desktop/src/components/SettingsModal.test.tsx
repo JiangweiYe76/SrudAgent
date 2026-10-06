@@ -89,7 +89,7 @@ describe('SettingsModal zoom', () => {
   });
 
   it('opens on the level that was saved, not on 100%', () => {
-    // A row that ignored the store would show 100% as chosen while the window sat
+    // Buttons that ignored the store would show 100% as chosen while the window sat
     // at 150%, and clicking 150% would then look like it did nothing.
     useZoomStore.setState({ level: 2 });
     render();

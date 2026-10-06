@@ -19,7 +19,11 @@ vi.mock('@tauri-apps/api/webview', () => ({
 
 beforeEach(() => {
   localStorage.clear();
-  mocks.setZoom.mockClear();
+  // Reset rather than clear the calls: a test that installs its own implementation
+  // with `mockImplementation` would otherwise leave it in place, and the next test's
+  // `applyZoom` would wait forever on a promise that test cannot release.
+  mocks.setZoom.mockReset();
+  mocks.setZoom.mockImplementation(async (_level: number) => {});
   vi.resetModules();
 });
 
@@ -49,8 +53,9 @@ describe('loading', () => {
 
 describe('setLevel', () => {
   it('keeps the level, writes it down, and scales the window', async () => {
-    // The three together, because the caller of `setLevel` — the settings row —
-    // has no reason to know a separate step is needed to make the change visible.
+    // The three together, because the caller of `setLevel` — a zoom button in the
+    // settings — has no reason to know a separate step is needed to make the change
+    // visible.
     await useZoomStore.getState().setLevel(2);
     expect(useZoomStore.getState().level).toBe(2);
     expect(localStorage.getItem('srud.zoom')).toBe('2');
@@ -58,10 +63,9 @@ describe('setLevel', () => {
   });
 
   it('does not record a level the window is not at yet', async () => {
-    // The webview call is the slow one, and it is the one that decides what the
-    // window looks like. Recording first would let the settings and the saved value
-    // claim a level that never got applied — which on a slow machine is a visible
-    // jump on the next start.
+    // The webview call decides what the window looks like, and it is the slow one.
+    // Recording first would let the button show as chosen, and the next start would
+    // come up at a level that was never applied to the window this time.
     let release: () => void = () => {};
     mocks.setZoom.mockImplementationOnce(
       () =>
@@ -83,6 +87,34 @@ describe('setLevel', () => {
     expect(useZoomStore.getState().level).toBe(1.5);
     expect(localStorage.getItem('srud.zoom')).toBe('1.5');
   });
+
+  it('records only the newest of two clicks that answer out of order', async () => {
+    // Two clicks in quick succession leave two webview calls in flight, and they do
+    // not promise to answer in order. If the older one answers last it used to
+    // overwrite the newer level, so the button claimed 150% while the window was at
+    // 200% — and the next start came up at the wrong size.
+    const gates: Array<() => void> = [];
+    mocks.setZoom.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          gates.push(resolve);
+        }),
+    );
+
+    const first = useZoomStore.getState().setLevel(1.5);
+    const second = useZoomStore.getState().setLevel(2);
+
+    // The newer call answers first, then the older one — the order that used to lose
+    // the newer level.
+    gates[1]();
+    await second;
+    expect(useZoomStore.getState().level).toBe(2);
+
+    gates[0]();
+    await first;
+    expect(useZoomStore.getState().level).toBe(2);
+    expect(localStorage.getItem('srud.zoom')).toBe('2');
+  });
 });
 
 describe('applyZoom', () => {
@@ -94,23 +126,23 @@ describe('applyZoom', () => {
   });
 
   it('leaves the document unscaled', async () => {
-    // The bug this replaced: `zoom` on `<html>` scaled Radix's fixed-position portal
-    // a second time, so a dropdown's `translate` came out doubled — measured at 80 px
-    // adrift at 125% and 520 px at 200%. jsdom has no layout, so the drift cannot be
-    // measured here; what can be is that the one thing that caused it is gone.
+    // The bug this replaced: `zoom` on `<html>` multiplied the offset of Radix's
+    // fixed-position portal, so a dropdown landed away from its trigger by 80 px at
+    // 125% and 520 px at 200%. jsdom has no layout, so the drift cannot be measured
+    // here; what can be is that the one thing that caused it is gone.
     await applyZoom(2);
     expect(document.documentElement.style.zoom).toBe('');
   });
 
   it('reports a refused zoom instead of throwing it at the caller', async () => {
-    // Both callers are places a throw is worse than a wrong-sized window: the first
-    // paint would have no app at all, and the settings row would lose the level the
-    // user just picked. `main.tsx` awaits this one before it renders.
+    // Both callers are worse off for a throw: the first paint would have no app at
+    // all, and the zoom buttons would lose the level the user just picked.
+    // `main.tsx` awaits this one before it renders.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mocks.setZoom.mockRejectedValueOnce(new Error('not supported'));
 
     await expect(applyZoom(1.5)).resolves.toBeUndefined();
-    // Reported rather than dropped, so a webview without zoom support shows up here
+    // Reported rather than dropped, so a webview that cannot zoom shows up here
     // instead of looking like a click that did nothing.
     expect(warn).toHaveBeenCalledOnce();
 
