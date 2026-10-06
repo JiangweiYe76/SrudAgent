@@ -24,6 +24,7 @@ pub mod session;
 pub mod session_event;
 pub mod session_log;
 pub mod session_store;
+pub mod skills;
 pub mod tools;
 pub mod turn;
 pub mod types;
