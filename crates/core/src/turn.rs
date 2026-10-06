@@ -256,7 +256,17 @@ pub async fn run_turn(
     // from one value. Built in both places they would agree only until one of them
     // was changed, and a log holding a different prefix from the one sent is worse
     // than no log at all.
-    let sections = prompt::default_sections();
+    //
+    // Skills join the instruction the same way the other blocks do: a pointer
+    // to each, never the body. Discovered where the session works, so a
+    // workspace's `.srud/skills` takes part from its first turn.
+    let mut sections = prompt::default_sections();
+    let catalog = crate::skills::render_catalog(&crate::skills::discover(&crate::skills::roots(
+        journal.session().cwd(),
+    )));
+    if !catalog.is_empty() {
+        sections.push(prompt::Section::new("Skills", catalog));
+    }
 
     // Written once, above every turn. Emptiness is the test for whether this is
     // the first: nothing is recorded before the turn's own opening, so an empty

@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use srud_core::tools::{
-    bash::BashTool, edit::EditTool, grep::GrepTool, read::ReadTool, write::WriteTool, ToolRegistry,
+    bash::BashTool, edit::EditTool, grep::GrepTool, read::ReadTool, skill::SkillTool,
+    write::WriteTool, ToolRegistry,
 };
 
 /// The tools every agent is built with.
@@ -33,6 +34,9 @@ pub fn standard_tools() -> Arc<ToolRegistry> {
     tools
         .register(Arc::new(GrepTool))
         .expect("the registry is fresh");
+    tools
+        .register(Arc::new(SkillTool))
+        .expect("the registry is fresh");
     Arc::new(tools)
 }
 
@@ -48,6 +52,7 @@ mod tests {
         assert!(tools.contains("write"), "the write tool is registered");
         assert!(tools.contains("bash"), "the bash tool is registered");
         assert!(tools.contains("grep"), "the grep tool is registered");
+        assert!(tools.contains("skill"), "the skill tool is registered");
     }
 
     #[test]
