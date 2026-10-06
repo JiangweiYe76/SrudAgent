@@ -27,3 +27,10 @@ async-trait = "0.1"
 async-openai = { version = "0.42", features = ["responses", "chat-completion", "byot"] }
 async-stream = "0.3"
 dotenvy = "0.15"
+# The search engine ripgrep itself uses, as a library. Spawning the `rg` binary
+# instead would leave the tool unusable on a machine that has not installed it,
+# and would make its behaviour depend on whichever version that machine carries.
+grep-searcher = "0.1"
+grep-matcher = "0.1"
+grep-regex = "0.1"
+ignore = "0.4"
