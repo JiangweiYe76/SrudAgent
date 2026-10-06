@@ -12,10 +12,21 @@ use srud_core::{
 };
 
 /// A directory to run in, emptied first so a rerun starts from the same place.
+///
+/// The label is reduced to characters a directory name can hold. These labels
+/// spell out the command under test — `/usr/bin/rm`, `a && rm` — and a path
+/// component cannot carry every character a command line can.
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("srud-bash-boundaries").join(name);
+    let label: String = name
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+    let dir = std::env::temp_dir()
+        .join("srud-bash-boundaries")
+        .join(label);
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch directory");
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|error| panic!("scratch directory for `{name}`: {error}"));
     std::fs::write(dir.join("note.txt"), "still here").expect("fixture file");
     dir
 }
@@ -87,6 +98,13 @@ async fn every_refused_program_leaves_its_file_alone() {
 /// where refusing would be wrong.
 #[tokio::test]
 async fn a_refused_program_in_text_is_not_a_refusal() {
+    // The escape character belongs to the dialect: a backslash in a POSIX shell,
+    // a backtick in PowerShell, where a backslash separates a path instead.
+    #[cfg(unix)]
+    let escaped = ("escaped separator inside", "echo a \\&\\& rm");
+    #[cfg(windows)]
+    let escaped = ("escaped separator inside", "Write-Host a`;rm");
+
     for (name, command) in [
         ("echoed", "echo rm"),
         ("in single quotes", "echo 'rm -rf /'"),
@@ -94,7 +112,7 @@ async fn a_refused_program_in_text_is_not_a_refusal() {
         ("as a grep argument", "grep -r rm ."),
         ("as a filename", "echo done > rm"),
         ("quoted separator inside", "echo 'a && rm'"),
-        ("escaped separator inside", "echo a \\&\\& rm"),
+        escaped,
     ] {
         let dir = scratch(name);
         assert!(
@@ -121,7 +139,7 @@ async fn what_the_boundary_does_not_cover() {
     ];
 
     for (name, command) in cases {
-        let dir = scratch(&name.replace(' ', "-"));
+        let dir = scratch(name);
         assert!(
             !refused(&dir, command).await,
             "`{command}` names no refused program, so it is not caught"
@@ -130,6 +148,10 @@ async fn what_the_boundary_does_not_cover() {
 }
 
 /// What the environment the command starts in looks like from inside.
+///
+/// Written for a POSIX shell; the PowerShell spelling of the same probe is in
+/// the tool's own tests.
+#[cfg(unix)]
 #[tokio::test]
 async fn the_command_sees_a_bare_environment() {
     let dir = scratch("environment");
