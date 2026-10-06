@@ -1,9 +1,19 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { SettingsModal } from './SettingsModal';
 import { useZoomStore } from '@/lib/zoom';
+
+// The window is scaled by the webview, so that is what the click has to reach.
+// Recorded rather than merely stubbed, so the test can say what was asked for.
+const mocks = vi.hoisted(() => ({
+  setZoom: vi.fn(async (_level: number) => {}),
+}));
+
+vi.mock('@tauri-apps/api/webview', () => ({
+  getCurrentWebview: () => ({ setZoom: mocks.setZoom }),
+}));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -39,7 +49,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   localStorage.clear();
-  document.documentElement.style.zoom = '';
+  mocks.setZoom.mockClear();
   useZoomStore.setState({ level: 1 });
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -73,13 +83,13 @@ describe('SettingsModal zoom', () => {
   it('scales the window when a level is picked', async () => {
     render();
     await choose('150%');
-    expect(document.documentElement.style.zoom).toBe('1.5');
+    expect(mocks.setZoom).toHaveBeenCalledWith(1.5);
     expect(useZoomStore.getState().level).toBe(1.5);
     expect(localStorage.getItem('srud.zoom')).toBe('1.5');
   });
 
   it('opens on the level that was saved, not on 100%', () => {
-    // A row that ignored the store would show 100% as chosen while the window sat
+    // Buttons that ignored the store would show 100% as chosen while the window sat
     // at 150%, and clicking 150% would then look like it did nothing.
     useZoomStore.setState({ level: 2 });
     render();
