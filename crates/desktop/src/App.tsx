@@ -37,7 +37,6 @@ function App() {
       <Sidebar
         sessions={sessions}
         activeId={activeId}
-        connected={sessions.length > 0 && !initError}
         onSelect={select}
         onNew={addSession}
         onRename={renameSession}

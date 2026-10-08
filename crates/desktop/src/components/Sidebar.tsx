@@ -18,8 +18,6 @@ import {
 interface SidebarProps {
   sessions: Session[];
   activeId: string;
-  // True once the ACP backend handshake succeeded.
-  connected: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
   onRename: (id: string, title: string) => void;
@@ -80,7 +78,6 @@ function SessionActions({
 export function Sidebar({
   sessions,
   activeId,
-  connected,
   onSelect,
   onNew,
   onRename,
@@ -136,10 +133,6 @@ export function Sidebar({
           </button>
         ))}
       </nav>
-      <div className="flex items-center gap-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
-        <span className={`h-2 w-2 rounded-full ${connected ? 'bg-success' : 'bg-warning'}`} />
-        <span>{t(connected ? 'sidebar.backendLive' : 'sidebar.backendMock')}</span>
-      </div>
 
       <RenameSessionModal
         open={renameTarget !== undefined}
