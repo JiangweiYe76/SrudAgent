@@ -2,8 +2,6 @@ export type Locale = 'en';
 
 const en = {
   'sidebar.newChat': 'New chat',
-  'sidebar.backendLive': 'backend: live',
-  'sidebar.backendMock': 'backend: mock',
   'sidebar.renameTitle': 'Rename session',
   'sidebar.renamePlaceholder': 'Session name',
   'sidebar.renameSave': 'Save',
