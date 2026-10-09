@@ -154,7 +154,11 @@ function unclaimedTurn(turns: Turn[]): number {
 }
 
 // Applies one `session/update` notification to the session it names.
-function applyUpdate(session: Session, params: Json): Session | null {
+//
+// `replaying` marks the updates a `session/load` hands over: they carry a
+// conversation from the past, so they must not restamp the session as though
+// it had just been active.
+function applyUpdate(session: Session, params: Json, replaying: boolean): Session | null {
   const update = params.update as Json | undefined;
   if (!update) return null;
   const kind = String(update.sessionUpdate ?? '');
@@ -163,7 +167,7 @@ function applyUpdate(session: Session, params: Json): Session | null {
   // not a turn is open — the first prompt names the session before any output.
   if (kind === 'session_info_update') {
     const title = typeof update.title === 'string' ? update.title : null;
-    return { ...session, title, updatedAt: Date.now() };
+    return { ...session, title, updatedAt: replaying ? session.updatedAt : Date.now() };
   }
 
   // Read before a turn is located, so a turn is never opened for an update that
@@ -264,7 +268,7 @@ function applyUpdate(session: Session, params: Json): Session | null {
   // only place the reason is: there is no `session/prompt` response to carry it.
   const end = endReasonOf(params);
   if (end) next[index] = { ...turn, endReason: end, endedAt: Date.now() };
-  return { ...session, turns: next, updatedAt: Date.now() };
+  return { ...session, turns: next, updatedAt: replaying ? session.updatedAt : Date.now() };
 }
 
 interface SessionState {
@@ -291,11 +295,18 @@ export function isReopening(state: Pick<SessionState, 'reopeningCount'>): boolea
   return state.reopeningCount > 0;
 }
 
-function beginReopen() {
+// The backend sessions whose `session/load` is still in flight. The updates they
+// hand over replay a conversation from the past, so they must not restamp the
+// session's `updatedAt` and make a stale row read as "just now".
+const replaying = new Set<string>();
+
+function beginReopen(backendId: string) {
+  replaying.add(backendId);
   useSessionStore.setState((s) => ({ reopeningCount: s.reopeningCount + 1 }));
 }
 
-function endReopen() {
+function endReopen(backendId: string) {
+  replaying.delete(backendId);
   // Floored, so a stray end cannot leave the prompt locked with nothing in flight.
   useSessionStore.setState((s) => ({ reopeningCount: Math.max(0, s.reopeningCount - 1) }));
 }
@@ -383,7 +394,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           let changed = false;
           const next = sessions.map((s) => {
             if (s.backendId !== target) return s;
-            const updated = applyUpdate(s, params);
+            const updated = applyUpdate(s, params, replaying.has(target));
             if (updated) {
               changed = true;
               return updated;
@@ -426,14 +437,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // sessions are left alone: loading one again would replay it on top of itself.
     const session = get().sessions.find((s) => s.id === id);
     if (!session?.backendId || session.loaded) return;
+    const backendId = session.backendId;
     // Marked before the request rather than after it answers: a second click while
     // the first load is still in flight must not ask for the same conversation
     // again, and waiting for the reply would leave that window open.
     useSessionStore.setState((s) => ({
       sessions: s.sessions.map((sess) => (sess.id === id ? { ...sess, loaded: true } : sess)),
     }));
-    beginReopen();
-    void loadSession(session.backendId, session.cwd)
+    beginReopen(backendId);
+    void loadSession(backendId, session.cwd)
       .catch((err: unknown) => {
         // A session the agent will not name is one this app cannot show, and
         // showing it as an empty conversation would be a lie. It goes, and the
@@ -445,7 +457,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         removeSession(id);
       })
-      .finally(endReopen);
+      .finally(() => endReopen(backendId));
   },
 
   addSession: () => {

@@ -732,6 +732,44 @@ describe('sessionStore listing path', () => {
     expect(older?.turns).toEqual([]);
   });
 
+  it('keeps the listed timestamp while the conversation replays', async () => {
+    // A replayed update carries a conversation from the past. Restamping the
+    // session as of now would make the sidebar read a two-hour-old session as
+    // "just now" the moment it is clicked.
+    const { fire, active, load } = await boot({ listed: [LISTED] });
+    const listed = Date.parse(LISTED.updatedAt);
+    expect(active().updatedAt).toBe(listed);
+
+    fire(
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'the question' } },
+      { turnId: 'T1' },
+    );
+    fire(
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'the answer' } },
+      { turnId: 'T1', turnEndReason: 'completed' },
+    );
+    expect(active().turns).toHaveLength(1);
+    expect(active().updatedAt).toBe(listed);
+
+    load.resolve(null);
+  });
+
+  it('stamps a live update once the replayed conversation has arrived', async () => {
+    // Past the load, updates are the session being active now, so the row should
+    // read as recent.
+    const { useSessionStore, fire, active, load } = await boot({ listed: [LISTED] });
+    load.resolve(null);
+    await vi.waitFor(() => {
+      expect(isReopening(useSessionStore.getState())).toBe(false);
+    });
+
+    fire(
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'live' } },
+      { turnId: 'T1' },
+    );
+    expect(active().updatedAt).toBeGreaterThan(Date.now() - 60_000);
+  });
+
   it('loads the conversation of another listed session when it is picked', async () => {
     const { useSessionStore, calls, requested, load } = await boot({
       listed: [LISTED, OLDER],
