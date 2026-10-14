@@ -14,7 +14,7 @@ import { JsonBlock } from './JsonBlock';
 let container: HTMLDivElement;
 let root: Root;
 
-/** A succeeded `bash` call, as the backend serialises it. */
+/** A succeeded `shell` call, as the backend serialises it. */
 const SUCCEEDED = JSON.stringify({
   stdout: '',
   stderr: "ls: cannot access '/nope': No such file or directory\n",

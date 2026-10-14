@@ -5,10 +5,10 @@
 //! failed returns [`ToolOutcome::failure`]; an `Err` means the runtime itself
 //! could not proceed.
 
-pub mod bash;
 pub mod edit;
 pub mod grep;
 pub mod read;
+pub mod shell;
 pub mod skill;
 pub mod write;
 

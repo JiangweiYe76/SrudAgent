@@ -48,7 +48,7 @@ describe('readJson', () => {
   });
 
   it.each([
-    ['a refusal', 'bash is not available through this tool.'],
+    ['a refusal', 'shell is not available through this tool.'],
     ['the no-result placeholder', '(no result)'],
     ['an empty string', ''],
   ])('leaves %s alone', (_name, raw) => {

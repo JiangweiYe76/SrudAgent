@@ -101,7 +101,7 @@ afterEach(() => {
 
 describe('an opened tool call', () => {
   it('colours the arguments it was given', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls -la"}', pending: false });
+    render({ id: 'tc1', name: 'shell', args: '{"command":"ls -la"}', pending: false });
     openToolCall();
 
     expect(highlightedClasses()).toContain('hljs-attr');
@@ -111,7 +111,7 @@ describe('an opened tool call', () => {
   it('colours the result it got back', () => {
     render({
       id: 'tc1',
-      name: 'bash',
+      name: 'shell',
       args: '{"command":"ls -la"}', pending: false,
       result: '{"stdout":"total 8\\n","exit_code":0}',
     });
@@ -123,7 +123,7 @@ describe('an opened tool call', () => {
   });
 
   it('shows both sides under a label each', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}', pending: false, result: '{"exit_code":0}' });
+    render({ id: 'tc1', name: 'shell', args: '{"command":"ls"}', pending: false, result: '{"exit_code":0}' });
     openToolCall();
 
     const labels = [...container.querySelectorAll('span')].map((s) => s.textContent);
@@ -132,7 +132,7 @@ describe('an opened tool call', () => {
   });
 
   it('puts the arguments on their own lines', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}', pending: false });
+    render({ id: 'tc1', name: 'shell', args: '{"command":"ls"}', pending: false });
     openToolCall();
 
     // The payload arrives as one line. A block that stayed on one line would be
@@ -145,7 +145,7 @@ describe('an opened tool call', () => {
     // mark up its punctuation as structure that is not there.
     render({
       id: 'tc1',
-      name: 'bash',
+      name: 'shell',
       args: '{"command":"rm -rf x"}', pending: false,
       result: 'rm is not available through this tool.',
     });
@@ -162,7 +162,7 @@ describe('an opened tool call', () => {
   });
 
   it('says so when there is no result yet', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}', pending: false });
+    render({ id: 'tc1', name: 'shell', args: '{"command":"ls"}', pending: false });
     openToolCall();
 
     expect(container.textContent).toContain('(no result)');
@@ -191,7 +191,7 @@ describe('an opened tool call', () => {
   });
 
   it('offers no copy button for a side that has nothing to copy', () => {
-    render({ id: 'tc1', name: 'bash', args: '{"command":"ls"}', pending: false });
+    render({ id: 'tc1', name: 'shell', args: '{"command":"ls"}', pending: false });
     openToolCall();
 
     // Counted by the copy button's own title, not by `button[title]`: that would
