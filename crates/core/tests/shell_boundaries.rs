@@ -1,4 +1,4 @@
-//! What the `bash` tool's own boundary does and does not catch.
+//! What the `shell` tool's own boundary does and does not catch.
 //!
 //! Each refused case has a file behind it that survives. Each allowed case is one
 //! where refusing would be a false positive, and a tool that refuses those stops
@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use srud_core::{
-    tools::{bash::BashTool, ToolContext},
+    tools::{shell::ShellTool, ToolContext},
     Tool,
 };
 
@@ -22,7 +22,7 @@ fn scratch(name: &str) -> PathBuf {
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect();
     let dir = std::env::temp_dir()
-        .join("srud-bash-boundaries")
+        .join("srud-shell-boundaries")
         .join(label);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)
@@ -39,7 +39,7 @@ fn ctx(dir: &Path) -> ToolContext {
 
 /// Runs `command` and reports whether the tool refused it.
 async fn refused(dir: &Path, command: &str) -> bool {
-    let outcome = BashTool::default()
+    let outcome = ShellTool::default()
         .call(&ctx(dir), serde_json::json!({ "command": command }))
         .await
         .expect("the arguments match the schema");
@@ -156,7 +156,7 @@ async fn what_the_boundary_does_not_cover() {
 async fn the_command_sees_a_bare_environment() {
     let dir = scratch("environment");
     std::env::set_var("SRUD_BOUNDARY_PROBE", "leaked");
-    let outcome = BashTool::default()
+    let outcome = ShellTool::default()
         .call(
             &ctx(&dir),
             serde_json::json!({ "command": "echo \"[${SRUD_BOUNDARY_PROBE}]\"; echo \"[$(env | grep -c SRUD_BOUNDARY_PROBE)]\"" }),

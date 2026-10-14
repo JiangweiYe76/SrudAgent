@@ -27,7 +27,7 @@ working directory. `include` narrows the search to files matching one glob, \
 such as `*.rs`. Returns up to 250 matches, each on its own line as \
 `path:line: text` with the 1-indexed line number. The reply is JSON: the \
 `content`, how many files and matches it covers, and `truncated` when matches \
-were left out. Use this rather than running grep or rg through `bash` — the \
+were left out. Use this rather than running grep or rg through `shell` — the \
 search is bounded and its paths are reported relative to the working directory. \
 A line is returned whole or shortened at 500 characters, marked with `…`; to \
 read a match in full, read that file at the line given.";

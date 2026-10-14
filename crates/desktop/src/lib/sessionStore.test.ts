@@ -464,7 +464,7 @@ describe('sessionStore live path', () => {
     await waitForBackend();
 
     fire({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'first' } });
-    fire({ sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'bash', rawInput: { command: 'ls' } });
+    fire({ sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'shell', rawInput: { command: 'ls' } });
     fire({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'second' } });
 
     const steps = active().turns[0].steps;
@@ -489,7 +489,7 @@ describe('sessionStore live path', () => {
     fire({
       sessionUpdate: 'tool_call',
       toolCallId: 'tc1',
-      title: 'bash',
+      title: 'shell',
       rawInput: { command: 'ls' },
     });
     fire({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done.' } });
@@ -497,7 +497,7 @@ describe('sessionStore live path', () => {
     const steps = active().turns[0].steps;
     expect(steps).toHaveLength(2);
     expect(steps[0].assistantText).toBe('Let me check. ');
-    expect(steps[0].toolCalls[0].name).toBe('bash');
+    expect(steps[0].toolCalls[0].name).toBe('shell');
     expect(steps[0].toolCalls[0].id).toBe('tc1');
     expect(steps[1].assistantText).toBe('Done.');
     expect(steps[1].toolCalls).toEqual([]);

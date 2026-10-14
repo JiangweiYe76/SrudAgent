@@ -422,7 +422,7 @@ fn preview(planned: &[Planned<'_>]) -> String {
 ///
 /// A rewrite needs the whole file, so this is not a budget on what the model
 /// sees — it is a bound on what one model-authored path can cost. A source file
-/// is orders of magnitude below it; a file above it is one `bash` can reach.
+/// is orders of magnitude below it; a file above it is one `shell` can reach.
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Reads the file, refusing the paths that would not end.
@@ -468,7 +468,7 @@ async fn read_source(path: &Path) -> Result<String, String> {
             ),
             Some(
                 "A file this size is not something to rewrite through a string. \
-                  `bash` can reach it.",
+                  `shell` can reach it.",
             ),
         ));
     }
@@ -588,7 +588,7 @@ fn open_failure(path: &std::path::Path, err: &std::io::Error) -> String {
         // coding agent means an image, a binary, or a file in another encoding.
         std::io::ErrorKind::InvalidData => {
             "The bytes are not UTF-8 text, so there is no way to say what to replace. The file \
-             may be binary, or in another encoding; `bash` is what reaches those."
+             may be binary, or in another encoding; `shell` is what reaches those."
         }
         _ => "The path could not be read, and the reason above is the only detail available.",
     };
@@ -1102,7 +1102,7 @@ mod tests {
 
         assert!(refusal.contains("not UTF-8"), "{refusal}");
         assert!(
-            refusal.contains("bash"),
+            refusal.contains("shell"),
             "and names the tool that does reach such a file: {refusal}"
         );
     }

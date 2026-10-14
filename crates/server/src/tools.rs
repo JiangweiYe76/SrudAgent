@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use srud_core::tools::{
-    bash::BashTool, edit::EditTool, grep::GrepTool, read::ReadTool, skill::SkillTool,
+    edit::EditTool, grep::GrepTool, read::ReadTool, shell::ShellTool, skill::SkillTool,
     write::WriteTool, ToolRegistry,
 };
 
@@ -29,7 +29,7 @@ pub fn standard_tools() -> Arc<ToolRegistry> {
         .register(Arc::new(WriteTool))
         .expect("the registry is fresh");
     tools
-        .register(Arc::new(BashTool::default()))
+        .register(Arc::new(ShellTool::default()))
         .expect("the registry is fresh");
     tools
         .register(Arc::new(GrepTool))
@@ -50,7 +50,7 @@ mod tests {
         assert!(tools.contains("read"), "the read tool is registered");
         assert!(tools.contains("edit"), "the edit tool is registered");
         assert!(tools.contains("write"), "the write tool is registered");
-        assert!(tools.contains("bash"), "the bash tool is registered");
+        assert!(tools.contains("shell"), "the shell tool is registered");
         assert!(tools.contains("grep"), "the grep tool is registered");
         assert!(tools.contains("skill"), "the skill tool is registered");
     }

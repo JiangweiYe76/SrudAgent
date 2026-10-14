@@ -17,7 +17,7 @@
 //!   `session/resume`, and the `_srud/unstable/*` extensions answer
 //!   `METHOD_NOT_FOUND` and are not advertised in the capabilities.
 //! - No approval flow — `session/request_permission` is not implemented; a tool
-//!   call runs unless the tool itself refuses it. `bash` refuses a list of
+//!   call runs unless the tool itself refuses it. `shell` refuses a list of
 //!   commands by name, which is not a boundary: a command that deletes a file
 //!   without naming a deleted program goes through.
 //! - Text-only prompts — non-text content blocks are rejected with
