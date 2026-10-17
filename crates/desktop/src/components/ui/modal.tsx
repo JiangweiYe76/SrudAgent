@@ -10,13 +10,19 @@ export const ModalClose = DialogPrimitive.Close;
 
 export function ModalContent({
   className,
+  overlayClassName,
   children,
   title,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & { title: string }) {
+}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  title: string;
+  // Scrim behind this dialog. A dialog opened from another one sits on that
+  // one's scrim already, so the layers would otherwise stack into black.
+  overlayClassName?: string;
+}) {
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40" />
+      <DialogPrimitive.Overlay className={cn('fixed inset-0 z-50 bg-black/40', overlayClassName)} />
       <DialogPrimitive.Content
         aria-describedby={undefined}
         className={cn(
