@@ -2,71 +2,91 @@
 //! over the command/event protocol defined by `srud_protocol::transport::tauri`.
 //!
 //! The webview sends JSON-RPC requests through `rpc_request`; every agent
-//! notification is forwarded on the `rpc_notify` event. The model client is
-//! configured from the environment, seeded by a dotenv file: `SRUD_ENV_FILE`
-//! names it explicitly, otherwise `.env.test` in the workspace root is used
-//! when present. Without an API key the agent stays unconfigured and requests
-//! answer with a JSON-RPC error instead of crashing the app.
+//! notification is forwarded on the `rpc_notify` event.
+//!
+//! # Where the model comes from
+//!
+//! One source: the provider file — `providers.json`, under the configuration
+//! directory. It is the one the settings panel writes, and an agent built over
+//! it lets each session choose the model it runs on.
+//!
+//! A provider file that cannot be read is reported, and the app starts from an
+//! empty store: the file itself is left untouched until the next edit writes
+//! it. The one store is shared between the settings panel and the agent, so a
+//! provider added at runtime takes effect without a restart.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::Value;
-use srud_client::openai::ChatClient;
-use srud_core::client::ModelClient;
+use srud_client::openai::{ChatClient, ClientConfig};
+use srud_core::client::{ModelClient, ModelError};
 use srud_protocol::acp::{AcpError, JsonRpcMessage, Notification, Response, SessionNotification};
 use srud_protocol::error::INTERNAL_ERROR;
 use srud_protocol::transport::tauri::{NotifyBody, RpcNotify, RpcRequest, RPC_NOTIFY_EVENT};
-use srud_server::{config, standard_tools, Agent, RpcReply};
+use srud_server::{
+    config, standard_tools, Agent, ModelFactory, ModelProviders, Provider, ProviderStore, RpcReply,
+};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// Environment variable naming the dotenv file to load before building the
-/// model client.
-const ENV_FILE_VAR: &str = "SRUD_ENV_FILE";
-/// File loaded when `SRUD_ENV_FILE` is unset and the file exists.
-const DEFAULT_ENV_FILE: &str = ".env.test";
+/// Shared state: the agent the webview's requests go to.
+struct AgentState(Arc<Agent>);
 
-/// Shared state: the agent, or `None` when the model client could not be
-/// configured from the environment.
-struct AgentState(Option<Arc<Agent>>);
+/// Shared state: the provider store the panel writes through. The agent
+/// resolves its sessions against the same store, so an edit there is visible
+/// here without a rebuild.
+struct ProviderState(Arc<ProviderStore>);
 
-/// Loads the dotenv file that provides the model configuration.
+/// Builds a client that talks to a configured provider.
 ///
-/// `SRUD_ENV_FILE` wins when set; otherwise `.env.test` is searched from the
-/// manifest directory up to the workspace root. `dotenvy` does not overwrite
-/// variables already present in the real environment, so explicit exports
-/// take precedence.
-fn load_env_file() {
-    if let Ok(explicit) = std::env::var(ENV_FILE_VAR) {
-        if let Err(err) = dotenvy::from_path(&explicit) {
-            eprintln!("failed to load {explicit}: {err}");
-        }
-        return;
-    }
-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    loop {
-        let candidate = dir.join(DEFAULT_ENV_FILE);
-        if candidate.exists() {
-            if let Err(err) = dotenvy::from_path(&candidate) {
-                eprintln!("failed to load {}: {err}", candidate.display());
-            }
-            return;
-        }
-        if !dir.pop() {
-            return;
-        }
+/// This is the one place the two halves of a provider — the endpoint and the
+/// credential — are put together. The store never does it, so the credentials
+/// stay inside the shell; and the server never does it, so it needs no dependency
+/// on the OpenAI adapter.
+struct ChatFactory;
+
+impl ModelFactory for ChatFactory {
+    fn build(&self, provider: &Provider, model: &str) -> Result<Arc<dyn ModelClient>, ModelError> {
+        let settings = ClientConfig::new(provider.api_key.clone(), model.to_owned())
+            .with_base_url(provider.base_url.clone());
+        Ok(Arc::new(ChatClient::new(settings)))
     }
 }
 
-/// Builds the agent from the environment.
+/// The client a session runs on when its log names no model.
 ///
-/// The model client is the one thing this shell decides: which provider to talk
-/// to is a property of the machine the app runs on. The tool set is not — it
-/// comes from the agent, which is what executes tool calls.
-fn build_agent() -> Option<Arc<Agent>> {
-    let model = ChatClient::from_env().ok()?;
-    let model: Arc<dyn ModelClient> = Arc::new(model);
-    Some(Arc::new(Agent::new(model, standard_tools())))
+/// The model new sessions start from, so a session that predates the provider
+/// file runs on what its own selector already shows rather than on something
+/// the panel does not name. `None` when no default has been chosen, which is a
+/// state the app is expected to be in: the session is told to pick a model
+/// instead of being handed one.
+fn starting_client(
+    store: &ProviderStore,
+    factory: &dyn ModelFactory,
+) -> Option<Arc<dyn ModelClient>> {
+    let reference = store.start_reference()?;
+    let (provider, model) = store.resolve(&reference).ok()?;
+    factory.build(&provider, &model.id).ok()
+}
+
+/// Builds the agent over the shared provider store.
+///
+/// The store is the one the settings panel writes through, so providers added
+/// at runtime are visible to the agent without a rebuild. An empty store is a
+/// state the app is expected to start in: the agent still answers, and a
+/// session with no model is told to pick one rather than being handed one.
+fn build_agent(store: Arc<ProviderStore>) -> Arc<Agent> {
+    let tools = standard_tools();
+    let factory: Arc<dyn ModelFactory> = Arc::new(ChatFactory);
+
+    // The fallback client is what a session that names no model runs on: the
+    // default the store points at, when it points at anything. Having none is
+    // not fatal — the store can be filled later through the panel.
+    let model: Option<Arc<dyn ModelClient>> = starting_client(&store, factory.as_ref());
+    Arc::new(Agent::with_providers(
+        model,
+        tools,
+        ModelProviders::new(store, factory),
+    ))
 }
 
 /// Builds the `rpc_notify` payload for one agent notification.
@@ -110,6 +130,92 @@ fn spawn_notify_pump(app: AppHandle, agent: &Agent) {
     });
 }
 
+/// Handles a provider management command directly through the store.
+///
+/// Provider commands are answered from the store rather than routed through
+/// the agent's dispatch: it is the same store the agent resolves sessions
+/// against, so an edit here reaches the next turn through one shared lock.
+async fn handle_provider_command(
+    store: &ProviderStore,
+    payload: &RpcRequest,
+) -> Result<RpcReply, String> {
+    use srud_protocol::srud::methods::{
+        DeleteProviderRequest, ListProvidersRequest, SetDefaultProviderRequest, SetProviderRequest,
+    };
+    use srud_server::providers::{Model as ServerModel, ProviderInput as ServerProviderInput};
+
+    let id = payload.inner().id.clone();
+    let method: &str = &payload.inner().method;
+    let params = payload.inner().params.as_ref();
+
+    let catalog = match method {
+        "_srud/unstable/provider/list" => {
+            let _request: ListProvidersRequest = parse_params(params).map_err(|e| e.to_string())?;
+            store.snapshot()
+        }
+        "_srud/unstable/provider/set" => {
+            let request: SetProviderRequest = parse_params(params).map_err(|e| e.to_string())?;
+            let input = ServerProviderInput {
+                id: request.provider.id,
+                name: request.provider.name,
+                base_url: request.provider.base_url,
+                api_key: request.provider.api_key,
+                models: request
+                    .provider
+                    .models
+                    .into_iter()
+                    .map(|m| ServerModel {
+                        id: m.id,
+                        name: m.name,
+                        modalities: m.modalities,
+                    })
+                    .collect(),
+            };
+            store.upsert(input).map_err(|e| e.to_string())?
+        }
+        "_srud/unstable/provider/delete" => {
+            let request: DeleteProviderRequest = parse_params(params).map_err(|e| e.to_string())?;
+            store
+                .delete(&request.provider_id)
+                .map_err(|e| e.to_string())?
+        }
+        "_srud/unstable/provider/set_default" => {
+            let request: SetDefaultProviderRequest =
+                parse_params(params).map_err(|e| e.to_string())?;
+            store
+                .set_default(&request.model)
+                .map_err(|e| e.to_string())?
+        }
+        _ => {
+            return Ok(JsonRpcMessage::wrap(Response::new(
+                id,
+                Err::<Value, AcpError>(AcpError::new(
+                    INTERNAL_ERROR,
+                    format!("unknown provider method: {method}"),
+                )),
+            )));
+        }
+    };
+
+    let view = serde_json::json!({
+        "providers": store.views(),
+        "default": catalog.default,
+    });
+
+    Ok(JsonRpcMessage::wrap(Response::new(
+        id,
+        Ok::<_, AcpError>(view),
+    )))
+}
+
+/// Parses the params of a request, leaving the caller to encode a failure.
+fn parse_params<T: serde::de::DeserializeOwned>(
+    params: Option<&Value>,
+) -> Result<T, serde_json::Error> {
+    let value = params.cloned().unwrap_or(Value::Null);
+    serde_json::from_value(value)
+}
+
 /// Handles one JSON-RPC request from the webview and returns its reply.
 ///
 /// `session/prompt` resolves when the turn ends; its streaming updates reach
@@ -119,23 +225,22 @@ fn spawn_notify_pump(app: AppHandle, agent: &Agent) {
 #[tauri::command]
 async fn rpc_request(
     state: State<'_, AgentState>,
+    providers: State<'_, ProviderState>,
     payload: RpcRequest,
 ) -> Result<RpcReply, String> {
-    let Some(agent) = state.0.clone() else {
-        let id = payload.inner().id.clone();
-        return Ok(JsonRpcMessage::wrap(Response::new(
-            id,
-            Err::<Value, AcpError>(AcpError::new(
-                INTERNAL_ERROR,
-                "agent is not configured: set SRUD_API_KEY (optionally SRUD_BASE_URL, SRUD_MODEL)",
-            )),
-        )));
-    };
-    Ok(agent.handle(payload).await)
+    // Provider management commands are answered straight from the shared
+    // store, without going through the agent.
+    let method = &payload.inner().method;
+    if method.starts_with("_srud/unstable/provider/") {
+        return handle_provider_command(&providers.0, &payload).await;
+    }
+
+    Ok(state.0.handle(payload).await)
 }
 
 /// The working directory new sessions are created with: the directory the
-/// app was launched from, falling back to the user's home directory.
+/// app was launched from, falling back to the user's home directory, and to
+/// `.` when neither can be found.
 #[tauri::command]
 fn default_cwd() -> String {
     std::env::current_dir()
@@ -147,7 +252,6 @@ fn default_cwd() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    load_env_file();
     // Reported, not fatal: the app still runs without it, and the first session
     // that needs a workspace will say so itself.
     if let Err(error) = config::ensure() {
@@ -163,12 +267,24 @@ pub fn run() {
         // which matters because the text being rendered is model output.
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let agent = build_agent();
-            if let Some(agent) = &agent {
-                spawn_notify_pump(app.handle().clone(), agent);
-            } else {
-                eprintln!("SRUD_API_KEY not set; rpc_request will answer with a config error");
-            }
+            // One store shared by the panel commands and the agent: an edit
+            // lands in the same lock the next session resolves against, so a
+            // provider added at runtime takes effect without a restart.
+            let store = match ProviderStore::load() {
+                Ok(store) => Arc::new(store),
+                Err(err) => {
+                    eprintln!(
+                        "providers.json could not be read ({err}); starting from an empty store"
+                    );
+                    let path = config::providers_path()
+                        .unwrap_or_else(|_| std::env::temp_dir().join(config::PROVIDERS_FILE));
+                    Arc::new(ProviderStore::empty(path))
+                }
+            };
+            app.manage(ProviderState(Arc::clone(&store)));
+
+            let agent = build_agent(store);
+            spawn_notify_pump(app.handle().clone(), &agent);
             app.manage(AgentState(agent));
             Ok(())
         })
@@ -185,7 +301,62 @@ mod tests {
     use srud_core::client::{ModelEvent, ModelRequest, ModelStream};
     use srud_core::tools::ToolRegistry;
     use srud_protocol::acp::{Request, RequestId};
+    use srud_server::Model;
     use tokio_util::sync::CancellationToken;
+
+    /// Holds the process environment for one test, restoring it afterwards.
+    ///
+    /// The configuration directory is read from `SRUD_HOME`, a process-wide
+    /// variable shared by every test in the binary, so a test that changes it
+    /// takes this first.
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn take(names: &[&'static str]) -> Self {
+            static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+            let lock = LOCK
+                .get_or_init(|| std::sync::Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let saved = names
+                .iter()
+                .map(|name| (*name, std::env::var(name).ok()))
+                .collect();
+            Self { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.saved.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    /// Takes the environment and points the configuration directory at a
+    /// temporary place of this test's own.
+    ///
+    /// The agent settles a session's workspace from the configuration directory,
+    /// so a test must not let it write into the developer's home. `extra` names
+    /// further variables to hold for the length of the test.
+    fn home(prefix: &str, extra: &[&'static str]) -> (EnvGuard, std::path::PathBuf) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let mut names = vec![config::HOME_VAR];
+        names.extend_from_slice(extra);
+        let guard = EnvGuard::take(&names);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("srud-desktop-{prefix}-{unique}"));
+        std::fs::create_dir_all(&dir).expect("a temporary configuration directory");
+        std::env::set_var(config::HOME_VAR, &dir);
+        (guard, dir)
+    }
 
     /// A model that replays a fixed event list, so the transport can be tested
     /// without a network call.
@@ -237,15 +408,9 @@ mod tests {
 
     /// Opens a session on a configured agent, returning its id.
     ///
-    /// The agent settles the session's workspace from the configuration
-    /// directory, so `SRUD_HOME` is pointed at a directory of this binary's own:
-    /// a test must not write into the developer's home.
+    /// The caller must already hold the configuration directory — see [`home`] —
+    /// because the agent settles the session's workspace from it.
     async fn open_session(agent: &Agent) -> String {
-        static CONFIG_HOME: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-        CONFIG_HOME.get_or_init(|| {
-            let path = std::env::temp_dir().join(format!("srud-desktop-{}", std::process::id()));
-            std::env::set_var(config::HOME_VAR, path);
-        });
         agent
             .handle(req(
                 "initialize",
@@ -266,6 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_streamed_turn_reaches_the_webview_as_rpc_notify() {
+        let (_env, _dir) = home("notify", &[]);
         let agent = Agent::new(
             Arc::new(Scripted {
                 events: vec![
@@ -296,30 +462,99 @@ mod tests {
     }
 
     #[test]
-    fn an_unconfigured_request_answers_with_a_jsonrpc_error() {
-        // The error branch of `rpc_request` (no API key) is exercised through
-        // the same envelope the command returns; the Tauri `State` is not
-        // needed to assert the shape the webview parses.
-        let reply = JsonRpcMessage::wrap(Response::new(
-            RequestId::Number(1),
-            Err::<Value, AcpError>(AcpError::new(INTERNAL_ERROR, "agent is not configured")),
-        ));
-        let value = serde_json::to_value(&reply).unwrap();
-        assert_eq!(value["id"], json!(1));
-        assert_eq!(value["error"]["code"], json!(INTERNAL_ERROR));
+    fn a_provider_becomes_a_client_aimed_at_its_own_endpoint() {
+        let provider = Provider {
+            id: "openai".into(),
+            name: "OpenAI".into(),
+            base_url: "https://api.example/v1".into(),
+            api_key: "sk-test-1234".into(),
+            models: vec![Model {
+                id: "gpt-4o".into(),
+                name: None,
+                modalities: vec![],
+            }],
+        };
+        // No network call: building the client is all this shell decides.
+        assert!(ChatFactory.build(&provider, "gpt-4o").is_ok());
     }
 
-    /// The real end-to-end path with live model credentials from `.env.test`:
-    /// webview request → agent → core → provider → streamed `rpc_notify`
-    /// payloads. Run explicitly:
+    #[tokio::test]
+    async fn a_provider_file_makes_the_agent_configurable() {
+        let (_env, dir) = home("providers", &[]);
+        std::fs::write(
+            dir.join("providers.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "providers": [{
+                    "id": "openai",
+                    "name": "OpenAI",
+                    "baseUrl": "https://api.example/v1",
+                    "apiKey": "sk-test-1234",
+                    "models": [{ "id": "gpt-4o", "name": "GPT-4o" }],
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let store = Arc::new(ProviderStore::load().expect("provider store"));
+        let agent = build_agent(store);
+        agent
+            .handle(req(
+                "initialize",
+                json!({ "protocolVersion": 1, "clientCapabilities": {} }),
+            ))
+            .await;
+        let reply = agent
+            .handle(req("_srud/unstable/provider/list", json!({})))
+            .await;
+
+        let Response::Result { result, .. } = reply.into_inner() else {
+            panic!("provider/list failed");
+        };
+        assert_eq!(result["providers"][0]["id"], json!("openai"));
+        // The key travels back masked, never whole.
+        assert_eq!(result["providers"][0]["apiKey"], json!("sk-…1234"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_store_still_answers_and_asks_for_a_model() {
+        let (_env, _dir) = home("empty", &[]);
+        let store = Arc::new(ProviderStore::load().expect("provider store"));
+        let agent = build_agent(store);
+
+        let session_id = open_session(&agent).await;
+        let reply = agent
+            .handle(req(
+                "session/prompt",
+                json!({
+                    "sessionId": session_id,
+                    "prompt": [{ "type": "text", "text": "hi" }],
+                }),
+            ))
+            .await;
+
+        let Response::Error { error, .. } = reply.into_inner() else {
+            panic!("a prompt with no model configured must fail");
+        };
+        assert_eq!(
+            i32::from(error.code),
+            srud_protocol::error::INVALID_PARAMS,
+            "the session is told to choose a model, not left without an answer"
+        );
+    }
+
+    /// The real end-to-end path with live model credentials from the
+    /// environment (`SRUD_API_KEY` and friends): webview request → agent →
+    /// core → provider → streamed `rpc_notify` payloads. Run explicitly:
     ///
     /// ```sh
     /// cargo test -p desktop -- --ignored --nocapture
     /// ```
     #[tokio::test]
-    #[ignore = "requires live model credentials from .env.test"]
+    #[ignore = "requires live model credentials in the environment"]
     async fn a_prompt_round_trip_streams_live_text_to_the_webview() {
-        load_env_file();
+        let (_env, _dir) = home("live", &[]);
         let Ok(model) = ChatClient::from_env() else {
             eprintln!("SRUD_API_KEY not set; skipping live test");
             return;

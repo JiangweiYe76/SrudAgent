@@ -54,6 +54,10 @@ async function boot(
     loadFails?: { code: number; message: string };
     loadFailsFirst?: { code: number; message: string };
     listed?: Array<Record<string, unknown>>;
+    // The `configOptions` the agent hangs on each reply, as the wire spells them.
+    newModel?: unknown;
+    loadModel?: unknown;
+    switched?: unknown;
   } = {},
 ) {
   vi.resetModules();
@@ -76,7 +80,10 @@ async function boot(
         case 'session/new':
           // Distinct ids so a test can tell a fallback session from the first.
           created += 1;
-          return reply(payload.id, { sessionId: `S${created}` });
+          return reply(payload.id, {
+            sessionId: `S${created}`,
+            ...(options.newModel === undefined ? {} : { configOptions: options.newModel }),
+          });
         case 'session/prompt':
           return prompt.promise.then((r) => reply(payload.id, r));
         case 'session/list':
@@ -94,8 +101,16 @@ async function boot(
             const { RpcFailure } = await import('./acp');
             throw new RpcFailure(refusal.code, refusal.message);
           }
-          return load.promise.then(() => reply(payload.id, {}));
+          return load.promise.then(() =>
+            reply(payload.id, {
+              ...(options.loadModel === undefined ? {} : { configOptions: options.loadModel }),
+            }),
+          );
         }
+        case 'session/set_config_option':
+          return reply(payload.id, {
+            ...(options.switched === undefined ? {} : { configOptions: options.switched }),
+          });
         case 'session/cancel':
           return reply(payload.id, {});
         case '_srud/unstable/session/set_title':
@@ -564,12 +579,12 @@ describe('sessionStore live path', () => {
   it('surfaces handshake failure as initError without a session', async () => {
     vi.resetModules();
     mocks.invoke = async () => {
-      throw new Error('-32603: agent is not configured');
+      throw new Error('-32603: initialize refused');
     };
     const { useSessionStore } = await import('./sessionStore');
     await useSessionStore.getState().init();
     expect(useSessionStore.getState().sessions).toEqual([]);
-    expect(useSessionStore.getState().initError).toContain('not configured');
+    expect(useSessionStore.getState().initError).toContain('initialize refused');
   });
 
   it('takes the turn id the agent names, so a turn is found by its updates', async () => {
@@ -924,5 +939,128 @@ describe('sessionStore listing path', () => {
     expect(useSessionStore.getState().activeId).toBe(
       useSessionStore.getState().sessions[0].id,
     );
+  });
+});
+
+// The `configOptions` of a reply, as the agent serializes them: one `model`
+// option, grouped by provider.
+function modelOptions(currentValue: string) {
+  return [
+    {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      type: 'select',
+      currentValue,
+      options: [
+        {
+          group: 'openai',
+          name: 'OpenAI',
+          options: [
+            { value: 'openai/gpt-4o', name: 'GPT-4o' },
+            { value: 'openai/gpt-4o-mini', name: 'GPT-4o mini' },
+          ],
+        },
+        {
+          group: 'deepseek',
+          name: 'DeepSeek',
+          options: [{ value: 'deepseek/chat', name: 'DeepSeek Chat' }],
+        },
+      ],
+    },
+  ];
+}
+
+describe('sessionStore model selection', () => {
+  it('takes the model a new session was created with', async () => {
+    // A draft has no selector until it materializes: there is no session for the
+    // agent to have chosen a model for yet.
+    const { useSessionStore, active, waitForBackend } = await boot({
+      newModel: modelOptions('openai/gpt-4o'),
+    });
+    expect(active().model).toBeNull();
+
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    expect(active().model?.currentValue).toBe('openai/gpt-4o');
+    expect(active().model?.groups.map((g) => g.name)).toEqual(['OpenAI', 'DeepSeek']);
+  });
+
+  it('leaves the picker absent when the agent offers none', async () => {
+    const { useSessionStore, active, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    expect(active().model).toBeNull();
+  });
+
+  it('switches the model and takes the whole selector back', async () => {
+    const { useSessionStore, active, requested, waitForBackend } = await boot({
+      newModel: modelOptions('openai/gpt-4o'),
+      switched: modelOptions('deepseek/chat'),
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useSessionStore.getState().setModel('deepseek/chat');
+
+    await vi.waitFor(() => {
+      expect(active().model?.currentValue).toBe('deepseek/chat');
+    });
+    const req = requested.find((r) => r.method === 'session/set_config_option');
+    expect(req?.params).toEqual({
+      sessionId: 'S1',
+      configId: 'model',
+      value: 'deepseek/chat',
+    });
+  });
+
+  it('follows a model another client switched to', async () => {
+    const { useSessionStore, active, fire, waitForBackend } = await boot({
+      newModel: modelOptions('openai/gpt-4o'),
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    // The agent broadcasts the whole selector, so the list comes with it.
+    fire({ sessionUpdate: 'config_option_update', configOptions: modelOptions('deepseek/chat') });
+
+    expect(active().model?.currentValue).toBe('deepseek/chat');
+    // Session-level, like a rename: it lands whether or not a turn is open.
+    expect(active().turns).toHaveLength(1);
+  });
+
+  it('takes the model a reopened session was left on, not its session-wide default', async () => {
+    const listed = {
+      sessionId: 'S-previous',
+      cwd: '/work',
+      title: 'Why the build fails',
+      updatedAt: new Date().toISOString(),
+    };
+    const { load, active } = await boot({
+      listed: [listed],
+      loadModel: modelOptions('deepseek/chat'),
+    });
+    load.resolve(null);
+
+    // The conversation is two things: its turns, and the model it was left on.
+    // The reply carries the second, and only after `session/load` answers.
+    await vi.waitFor(() => {
+      expect(active().model?.currentValue).toBe('deepseek/chat');
+    });
+    expect(active().loaded).toBe(true);
+  });
+
+  it('does nothing on a session the agent gave no selector', async () => {
+    const { useSessionStore, active, calls, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useSessionStore.getState().setModel('deepseek/chat');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(calls).not.toContain('session/set_config_option');
+    expect(active().model).toBeNull();
   });
 });

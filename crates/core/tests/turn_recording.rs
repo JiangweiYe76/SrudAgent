@@ -133,6 +133,7 @@ fn describe(entry: &SessionEvent) -> String {
         SessionEvent::Session { .. } => "session".into(),
         SessionEvent::System { .. } => "system".into(),
         SessionEvent::Title { .. } => "title".into(),
+        SessionEvent::Model { .. } => "model".into(),
         SessionEvent::TurnStarted { .. } => "turn_started".into(),
         SessionEvent::TurnEnded { .. } => "turn_ended".into(),
         SessionEvent::Item { item, .. } => match item {

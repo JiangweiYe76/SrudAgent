@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Session, Step, ToolCall, Turn, TurnEndReason } from './types';
+import type { ModelOptions, Session, Step, ToolCall, Turn, TurnEndReason } from './types';
 import { t } from './i18n';
 import {
   cancelTurn,
@@ -9,6 +9,8 @@ import {
   loadSession,
   newSession,
   onNotify,
+  parseModelOptions,
+  setSessionModel,
   type ListedSession,
   RpcFailure,
   sendPrompt,
@@ -123,8 +125,7 @@ function locateTurn(turns: Turn[], turnId: string | null): { turns: Turn[]; inde
   if (named >= 0) return { turns, index: named };
 
   // The turn this client opened, before the agent has named it. An update that
-  // names no turn at all lands there too, which is where such an update went
-  // before turns were named on the wire.
+  // names no turn at all lands there too.
   const unclaimed = unclaimedTurn(turns);
   if (unclaimed >= 0) {
     const next = [...turns];
@@ -168,6 +169,15 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
   if (kind === 'session_info_update') {
     const title = typeof update.title === 'string' ? update.title : null;
     return { ...session, title, updatedAt: replaying ? session.updatedAt : Date.now() };
+  }
+
+  // So is a model change: it was already recorded when this arrived, since the
+  // notification is how another client's switch reaches this one. The whole
+  // selector comes with it, so the list and the selection cannot disagree.
+  if (kind === 'config_option_update') {
+    const model = parseModelOptions(update.configOptions);
+    if (!model) return null;
+    return { ...session, model, updatedAt: replaying ? session.updatedAt : Date.now() };
   }
 
   // Read before a turn is located, so a turn is never opened for an update that
@@ -286,6 +296,7 @@ interface SessionState {
   addSession: () => void;
   sendTurn: (userInput: string) => void;
   stopTurn: () => void;
+  setModel: (model: string) => void;
   renameSession: (id: string, title: string) => void;
   deleteSession: (id: string) => void;
 }
@@ -330,6 +341,7 @@ function freshSession(): Session {
     cwd: '',
     loaded: true,
     title: null,
+    model: null,
     turns: [],
     createdAt: now,
     updatedAt: now,
@@ -348,6 +360,8 @@ function listedSession(info: ListedSession, now: number): Session {
     cwd: info.cwd,
     loaded: false,
     title: info.title,
+    // Known once the conversation is loaded: the model comes back with it.
+    model: null,
     turns: [],
     createdAt: now,
     updatedAt: info.updatedAt ?? now,
@@ -446,6 +460,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
     beginReopen(backendId);
     void loadSession(backendId, session.cwd)
+      .then((model) => {
+        // The reply says which model the replayed conversation was left on.
+        // Written before the updates stop arriving, so the picker is right from
+        // the moment the conversation appears.
+        if (model) setModelOf(id, model);
+      })
       .catch((err: unknown) => {
         // A session the agent will not name is one this app cannot show, and
         // showing it as an empty conversation would be a lie. It goes, and the
@@ -485,19 +505,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       let backendId = get().sessions.find((s) => s.id === sessionId)?.backendId ?? null;
       if (!backendId) {
         try {
-          // No working directory chosen yet: the app has no directory picker, so the
-          // agent gives the session a workspace of its own. That is also what it
-          // did when this passed the launch directory, because the agent only
-          // uses a directory that exists — so nothing changes until a picker
-          // exists and a user picks somewhere.
+          // No working directory chosen yet: the app has no directory picker,
+          // so the session is created with an empty one and the agent gives it
+          // a workspace of its own under the configuration directory.
           const created = await newSession('');
           const draftTitle = get().sessions.find((s) => s.id === sessionId)?.title?.trim() || '';
           useSessionStore.setState((s) => ({
             sessions: s.sessions.map((sess) =>
-              sess.id === sessionId ? { ...sess, backendId: created } : sess,
+              sess.id === sessionId
+                ? { ...sess, backendId: created.sessionId, model: created.model }
+                : sess,
             ),
           }));
-          backendId = created;
+          backendId = created.sessionId;
           if (draftTitle) {
             try {
               await setSessionTitle(backendId, draftTitle);
@@ -526,6 +546,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // The turn is not closed here: `session/cancel` only signals the token, and
     // the open `session/prompt` is what resolves it, as `interrupted`.
     void cancelTurn(session.backendId).catch((err) => set({ initError: String(err) }));
+  },
+
+  setModel: (model) => {
+    const session = get().sessions.find((s) => s.id === get().activeId);
+    // A draft has no agent to switch, and a session with no selector — a host
+    // that configured no provider — has nothing to switch between. Both are
+    // where the picker is absent anyway, so this is belt and braces.
+    if (!session?.backendId || !session.model) return;
+    const localId = session.id;
+    // The agent echoes the accepted selection back over `session/update`, but
+    // the reply already carries it: the picker settles from the reply rather
+    // than waiting on the broadcast echo.
+    void setSessionModel(session.backendId, model)
+      .then((next) => {
+        if (next) setModelOf(localId, next);
+      })
+      .catch((err) => set({ initError: String(err) }));
   },
 
   renameSession: (id, title) => {
@@ -591,6 +628,17 @@ function removeSession(id: string) {
   // a click asks. Pointing the view at it alone would show it as one that nothing
   // was ever said in.
   useSessionStore.getState().select(movedTo);
+}
+
+// Writes a session's model selector, by this client's own id.
+//
+// A switch can be in flight while the view moves to another session, so the row
+// is matched on the id it was read with rather than on whichever is active when
+// the reply lands.
+function setModelOf(localId: string, model: ModelOptions) {
+  useSessionStore.setState((s) => ({
+    sessions: s.sessions.map((sess) => (sess.id === localId ? { ...sess, model } : sess)),
+  }));
 }
 
 function closeTurn(sessionId: string, turnId: string, endReason: TurnEndReason, error?: string) {

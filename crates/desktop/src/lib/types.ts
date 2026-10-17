@@ -2,6 +2,33 @@
 
 export type TurnEndReason = 'completed' | 'interrupted' | 'blocked' | 'error';
 
+// One model a session may run on, as the agent offers it.
+//
+// `value` is the agent's own identifier for it — a `providerId/modelId`
+// reference — and is what a switch sends back. `name` is only what to show.
+export interface ModelChoice {
+  value: string;
+  name: string;
+}
+
+// The models one provider offers, under that provider's heading.
+export interface ModelGroup {
+  id: string;
+  name: string;
+  choices: ModelChoice[];
+}
+
+// The model selector a session was handed.
+//
+// `currentValue` is the reference the session runs on. It can name something no
+// group offers — a provider deleted since the session chose it — and is reported
+// as it is rather than replaced, so a session whose model has gone reads as
+// exactly that instead of as some other model.
+export interface ModelOptions {
+  currentValue: string;
+  groups: ModelGroup[];
+}
+
 // One tool invocation issued by a step's model response.
 export interface ToolCall {
   id: string;
@@ -67,6 +94,10 @@ export interface Session {
   // The agent's title, from the first message or a user rename. Absent until
   // the agent announces one.
   title: string | null;
+  // Which model this conversation runs on. Null for a session the agent offers
+  // no choice for — a host that configured no provider — and for one created
+  // before the agent listed anything.
+  model: ModelOptions | null;
   turns: Turn[];
   createdAt: number;
   updatedAt: number;

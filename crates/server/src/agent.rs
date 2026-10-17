@@ -18,11 +18,29 @@
 //! | `session/list`    | snapshot live sessions                               |
 //! | `session/close`   | interrupt + deregister                               |
 //! | `session/delete`  | deregister                                           |
+//! | `session/set_config_option` | choose the model a session runs on          |
 //! | `_srud/unstable/session/set_title` | rename a session               |
+//! | `_srud/unstable/provider/list` | list providers, with keys masked      |
+//! | `_srud/unstable/provider/set` | add or replace a provider             |
+//! | `_srud/unstable/provider/delete` | remove a provider                   |
+//! | `_srud/unstable/provider/set_default` | choose new sessions' model     |
 //!
-//! Everything else — config/mode setters, `authenticate`, and the remaining
+//! Everything else — `session/set_mode`, `authenticate`, and the remaining
 //! `_srud/unstable/*` extensions — answers `METHOD_NOT_FOUND`, matching what the
 //! advertised capabilities promise.
+//!
+//! # Where a model client comes from
+//!
+//! A session names the model it runs on as a `providerId/modelId` reference, and
+//! the agent resolves it per turn rather than holding one client for its whole
+//! life. The reference travels to a client over ACP's own `configOptions`, so a
+//! third-party client renders the same selector this one does; the credentials
+//! behind it never leave this machine.
+//!
+//! An agent without a [`ProviderStore`] is one whose client was fixed at
+//! construction: [`Agent::new`] takes one, which is what a test and an
+//! environment-configured host both want. [`Agent::with_providers`] adds the
+//! resolvable path on top.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -33,26 +51,33 @@ use srud_core::session::Session;
 use srud_core::tools::ToolRegistry;
 use srud_protocol::acp::methods::{
     INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_LOAD,
-    SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SRUD_SESSION_SET_TITLE,
+    SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SRUD_PROVIDER_DELETE,
+    SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT, SRUD_SESSION_SET_TITLE,
 };
 use srud_protocol::acp::{
-    AcpError, CancelNotification, CloseSessionRequest, CloseSessionResponse, ContentBlock,
-    DeleteSessionRequest, DeleteSessionResponse, Implementation, InitializeRequest,
+    AcpError, CancelNotification, CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate,
+    ContentBlock, DeleteSessionRequest, DeleteSessionResponse, Implementation, InitializeRequest,
     InitializeResponse, JsonRpcMessage, ListSessionsResponse, LoadSessionRequest,
     LoadSessionResponse, MaybeUndefined, NewSessionRequest, NewSessionResponse, Notification,
     PromptRequest, PromptResponse, ProtocolVersion, Request, RequestId, Response,
-    ResumeSessionRequest, ResumeSessionResponse, SessionId, SessionInfoUpdate, SessionNotification,
-    SessionUpdate, CLIENT_METHOD_NAMES,
+    ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionId, SessionInfoUpdate,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, CLIENT_METHOD_NAMES,
 };
 use srud_protocol::error::{
     INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_BUSY,
     SESSION_NOT_FOUND,
 };
-use srud_protocol::srud::methods::{SetSessionTitleRequest, SetSessionTitleResponse};
+use srud_protocol::srud::methods::{
+    DeleteProviderRequest, DeleteProviderResponse, ListProvidersRequest, ListProvidersResponse,
+    ProviderCatalog, SetDefaultProviderRequest, SetDefaultProviderResponse, SetProviderRequest,
+    SetProviderResponse, SetSessionTitleRequest, SetSessionTitleResponse,
+};
 use srud_protocol::srud::turn_end::TurnEndWire;
 
 use crate::convert::{prompt_outcome, prompt_text, replay_notification};
 use crate::events::EventHub;
+use crate::providers::{self, ModelFactory, ProviderError, ProviderStore};
 use crate::sessions::{RestoreError, SessionManager};
 
 /// The JSON-RPC reply to one `rpc_request` envelope.
@@ -70,9 +95,36 @@ pub fn reply_err(id: RequestId, error: AcpError) -> RpcReply {
     JsonRpcMessage::wrap(Response::new(id, Err(error)))
 }
 
+/// The provider configuration an agent resolves a session's model against.
+///
+/// The two halves belong together: the store says which providers exist and what
+/// they offer, and the factory builds a client for one of them. Neither is much
+/// use alone, and an agent has both or neither.
+pub struct ModelProviders {
+    /// The configured providers, and the credentials behind them.
+    pub store: Arc<ProviderStore>,
+    /// Builds a model client for a provider the store names.
+    pub factory: Arc<dyn ModelFactory>,
+}
+
+impl ModelProviders {
+    /// Pairs a provider store with the factory that builds its clients.
+    #[must_use]
+    pub fn new(store: Arc<ProviderStore>, factory: Arc<dyn ModelFactory>) -> Self {
+        Self { store, factory }
+    }
+}
+
 /// An ACP v1 agent backed by the core runtime.
 pub struct Agent {
-    model: Arc<dyn ModelClient>,
+    /// The client used when a session names no model: one older than the
+    /// provider file, which ran on whatever the host had fixed. `None` when the
+    /// host fixed nothing, which is only possible alongside providers — there,
+    /// every session that can run names its own model. Also the whole answer for
+    /// an agent built without providers.
+    model: Option<Arc<dyn ModelClient>>,
+    /// The configurable providers, when the host supplied them.
+    providers: Option<ModelProviders>,
     tools: Arc<ToolRegistry>,
     sessions: Arc<SessionManager>,
     hub: EventHub,
@@ -81,10 +133,38 @@ pub struct Agent {
 
 impl Agent {
     /// Creates an agent over a model client and a tool registry.
+    ///
+    /// Every session runs on the given client: there is nothing to choose
+    /// between, so `session/new` advertises no model selector and
+    /// `session/set_config_option` answers `METHOD_NOT_FOUND`.
     #[must_use]
     pub fn new(model: Arc<dyn ModelClient>, tools: Arc<ToolRegistry>) -> Self {
         Self {
+            model: Some(model),
+            providers: None,
+            tools,
+            sessions: Arc::new(SessionManager::new()),
+            hub: EventHub::new(),
+            initialized: AtomicBool::new(false),
+        }
+    }
+
+    /// Creates an agent that resolves each session's model from a provider file.
+    ///
+    /// `model` is the fallback for a session that names no model — one created
+    /// before any provider was configured, or restored from a log written then.
+    /// `None` says the host has nothing to fall back to, which a host with
+    /// providers genuinely can: a session that has no model to run on is told to
+    /// choose one, rather than run on a model nobody picked.
+    #[must_use]
+    pub fn with_providers(
+        model: Option<Arc<dyn ModelClient>>,
+        tools: Arc<ToolRegistry>,
+        providers: ModelProviders,
+    ) -> Self {
+        Self {
             model,
+            providers: Some(providers),
             tools,
             sessions: Arc::new(SessionManager::new()),
             hub: EventHub::new(),
@@ -138,7 +218,12 @@ impl Agent {
                 .handle_delete(params)
                 .await
                 .map(|()| serialize(DeleteSessionResponse::new())),
+            SESSION_SET_CONFIG_OPTION => self.handle_set_config_option(params).await.map(serialize),
             SRUD_SESSION_SET_TITLE => self.handle_set_title(params).await.map(serialize),
+            SRUD_PROVIDER_LIST => self.handle_provider_list(params),
+            SRUD_PROVIDER_SET => self.handle_provider_set(params),
+            SRUD_PROVIDER_DELETE => self.handle_provider_delete(params),
+            SRUD_PROVIDER_SET_DEFAULT => self.handle_provider_set_default(params),
             // Known-but-unimplemented methods get the same treatment as
             // unknown ones: the capabilities never advertised them.
             _ => Err(AcpError::new(
@@ -173,9 +258,18 @@ impl Agent {
 
     async fn handle_new_session(&self, params: Value) -> Result<NewSessionResponse, AcpError> {
         let request: NewSessionRequest = parse_params(params)?;
+        // Seeded from the configured default so the session and its log agree
+        // from the first record, and nothing later has to guess what it was
+        // running on before anyone chose. Nothing is seeded when no default is
+        // set — the session opens with the picker waiting rather than with a
+        // model its user never named.
+        let start = self
+            .providers
+            .as_ref()
+            .and_then(|providers| providers.store.start_reference());
         let session_id = self
             .sessions
-            .create(Some(request.cwd))
+            .create(Some(request.cwd), start)
             .await
             .map_err(|err| {
                 AcpError::new(
@@ -183,7 +277,14 @@ impl Agent {
                     format!("could not create the session workspace: {err}"),
                 )
             })?;
-        Ok(NewSessionResponse::new(session_id))
+        let mut response = NewSessionResponse::new(session_id.clone());
+        // Offered to a client that may render it, and ignored by one that does
+        // not know the category — which is the whole reason it travels here
+        // rather than through a method of SrudAgent's own.
+        if let Some(options) = self.config_options(&session_id) {
+            response = response.config_options(options);
+        }
+        Ok(response)
     }
 
     async fn handle_prompt(&self, params: Value) -> Result<PromptResponse, AcpError> {
@@ -197,6 +298,11 @@ impl Agent {
             .with_log(&request.session_id)
             .ok_or_else(|| session_not_found(&request.session_id))?;
 
+        // Resolved before anything is named or recorded: a prompt with no model
+        // to run on is not a turn, and a session named by one would be named
+        // after a message that never ran.
+        let client = self.client_for(&request.session_id)?;
+
         let text = prompt_with_validation(&request.prompt)?;
         self.name_from_first_prompt(&request.session_id, &text)
             .await;
@@ -205,7 +311,7 @@ impl Agent {
         let result = srud_core::turn::run_turn(
             &session,
             srud_core::types::TurnInput { text },
-            self.model.as_ref(),
+            client.as_ref(),
             self.tools.as_ref(),
             log.as_ref(),
             &sink,
@@ -268,7 +374,11 @@ impl Agent {
         // No replay: a client asking to resume is saying it already has the
         // conversation.
         self.broadcast_title(&request.session_id, loaded.title.clone());
-        Ok(ResumeSessionResponse::new())
+        let mut response = ResumeSessionResponse::new();
+        if let Some(options) = self.config_options(&request.session_id) {
+            response = response.config_options(options);
+        }
+        Ok(response)
     }
 
     async fn handle_load(&self, params: Value) -> Result<LoadSessionResponse, AcpError> {
@@ -298,7 +408,13 @@ impl Agent {
             }
         }
         self.broadcast_title(&request.session_id, loaded.title.clone());
-        Ok(LoadSessionResponse::new())
+        let mut response = LoadSessionResponse::new();
+        // ACP has this response carry the options, so a client being shown a
+        // session is told which model it ran on without asking.
+        if let Some(options) = self.config_options(&request.session_id) {
+            response = response.config_options(options);
+        }
+        Ok(response)
     }
 
     /// Brings a session back, or says why it could not be.
@@ -352,6 +468,226 @@ impl Agent {
         Ok(SetSessionTitleResponse { title, meta: None })
     }
 
+    /// The model client a session runs on.
+    ///
+    /// Resolved per turn rather than held for the agent's life: the selection can
+    /// change between two turns of one session, and a turn has to run on
+    /// whichever model was chosen when it started.
+    fn client_for(&self, id: &SessionId) -> Result<Arc<dyn ModelClient>, AcpError> {
+        let Some(providers) = &self.providers else {
+            return self.fixed_client();
+        };
+        // A session that names no model is one created before any provider was
+        // configured, or restored from a log written then. It runs on the client
+        // the host supplied, which is what it ran on before — and when the host
+        // supplied none, nothing is picked on the user's behalf. This is the
+        // path a session takes when nobody has chosen its model yet, or when the
+        // configured default names something that is no longer there. Saying so
+        // is more use than running on a model nobody asked for.
+        let Some(reference) = self.sessions.model(id) else {
+            return self.fixed_client().map_err(|_| {
+                AcpError::new(
+                    INVALID_PARAMS,
+                    "this session has no model yet; choose one from the model picker",
+                )
+            });
+        };
+
+        let (provider, model) = providers.store.resolve(&reference).map_err(|err| {
+            // The session names a model that is no longer configured. Refused
+            // rather than quietly run on something else: a turn recorded under
+            // one model while another answered would make the log a lie about
+            // what produced it.
+            AcpError::new(
+                INVALID_PARAMS,
+                format!("this session's model is no longer configured: {err}"),
+            )
+        })?;
+        providers
+            .factory
+            .build(&provider, &model.id)
+            .map_err(|err| {
+                AcpError::new(
+                    INTERNAL_ERROR,
+                    format!("cannot build a client for `{reference}`: {err}"),
+                )
+            })
+    }
+
+    /// The client the host fixed at construction, when it fixed one.
+    fn fixed_client(&self) -> Result<Arc<dyn ModelClient>, AcpError> {
+        self.model.clone().ok_or_else(|| {
+            AcpError::new(
+                INTERNAL_ERROR,
+                "the host supplied no model client and this session names no model",
+            )
+        })
+    }
+
+    /// The model selector, as this session should be offered it.
+    ///
+    /// `None` when the host configured no providers: an agent with one fixed
+    /// client has nothing to choose between, and offering an empty selector
+    /// would claim it had.
+    fn config_options(&self, id: &SessionId) -> Option<Vec<SessionConfigOption>> {
+        let providers = self.providers.as_ref()?;
+        providers
+            .store
+            .session_config_options(self.sessions.model(id).as_deref())
+    }
+
+    /// Chooses the model a session runs on.
+    ///
+    /// ACP's own method, not an extension: a client that knows nothing about
+    /// SrudAgent still renders the selector and can still switch. That is also
+    /// why the *global* default is not changed here — this request has a session
+    /// id, and there is no way to say "and every other session too" in it.
+    async fn handle_set_config_option(
+        &self,
+        params: Value,
+    ) -> Result<SetSessionConfigOptionResponse, AcpError> {
+        let request: SetSessionConfigOptionRequest = parse_params(params)?;
+        let Some(providers) = &self.providers else {
+            return Err(AcpError::new(
+                METHOD_NOT_FOUND,
+                "this agent's model is not configurable",
+            ));
+        };
+        if request.config_id.0.as_ref() != providers::MODEL_OPTION_ID {
+            return Err(AcpError::new(
+                INVALID_PARAMS,
+                format!("no configuration option `{}`", request.config_id.0),
+            ));
+        }
+        let reference = request
+            .value
+            .as_value_id()
+            .ok_or_else(|| AcpError::new(INVALID_PARAMS, "the model option takes a string value"))?
+            .0
+            .to_string();
+
+        // Resolved before it is recorded. A reference nothing resolves to would
+        // leave the session unable to take a turn, while its log claimed the
+        // choice was deliberate.
+        providers
+            .store
+            .resolve(&reference)
+            .map_err(|err| AcpError::new(INVALID_PARAMS, err.to_string()))?;
+
+        match self
+            .sessions
+            .set_model(&request.session_id, Some(reference))
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return Err(session_not_found(&request.session_id)),
+            Err(err) => {
+                return Err(AcpError::new(
+                    INTERNAL_ERROR,
+                    format!("cannot record the model: {err}"),
+                ));
+            }
+        }
+
+        // The response carries the whole set rather than an acknowledgement, so
+        // a client renders the result of its own change without asking again.
+        match self.config_options(&request.session_id) {
+            Some(options) => {
+                self.broadcast_config_options(&request.session_id, options.clone());
+                Ok(SetSessionConfigOptionResponse::new(options))
+            }
+            None => Ok(SetSessionConfigOptionResponse::new(Vec::new())),
+        }
+    }
+
+    /// The provider configuration, when the host supplied one.
+    fn provider_store(&self) -> Result<&Arc<ProviderStore>, AcpError> {
+        self.providers
+            .as_ref()
+            .map(|providers| &providers.store)
+            .ok_or_else(|| {
+                AcpError::new(
+                    METHOD_NOT_FOUND,
+                    "this agent was not given a provider configuration",
+                )
+            })
+    }
+
+    fn handle_provider_list(&self, params: Value) -> Result<Value, AcpError> {
+        let _: ListProvidersRequest = parse_params(params)?;
+        let store = self.provider_store()?;
+        Ok(serialize(ListProvidersResponse {
+            catalog: catalog(store),
+            meta: None,
+        }))
+    }
+
+    fn handle_provider_set(&self, params: Value) -> Result<Value, AcpError> {
+        let request: SetProviderRequest = parse_params(params)?;
+        let store = self.provider_store()?;
+        store
+            .upsert(providers::ProviderInput {
+                id: request.provider.id,
+                name: request.provider.name,
+                base_url: request.provider.base_url,
+                api_key: request.provider.api_key,
+                models: request
+                    .provider
+                    .models
+                    .into_iter()
+                    .map(|model| providers::Model {
+                        id: model.id,
+                        name: model.name,
+                        modalities: model.modalities,
+                    })
+                    .collect(),
+            })
+            .map_err(provider_rejected)?;
+        Ok(serialize(SetProviderResponse {
+            catalog: catalog(store),
+            meta: None,
+        }))
+    }
+
+    fn handle_provider_delete(&self, params: Value) -> Result<Value, AcpError> {
+        let request: DeleteProviderRequest = parse_params(params)?;
+        let store = self.provider_store()?;
+        store
+            .delete(&request.provider_id)
+            .map_err(provider_rejected)?;
+        Ok(serialize(DeleteProviderResponse {
+            catalog: catalog(store),
+            meta: None,
+        }))
+    }
+
+    fn handle_provider_set_default(&self, params: Value) -> Result<Value, AcpError> {
+        let request: SetDefaultProviderRequest = parse_params(params)?;
+        let store = self.provider_store()?;
+        store
+            .set_default(&request.model)
+            .map_err(provider_rejected)?;
+        Ok(serialize(SetDefaultProviderResponse {
+            catalog: catalog(store),
+            meta: None,
+        }))
+    }
+
+    /// Publishes a configuration change on the `session/update` stream.
+    ///
+    /// The same channel `session_info_update` travels on, so a client already
+    /// following `session/update` sees a model switched by another client
+    /// without having asked.
+    fn broadcast_config_options(&self, session_id: &SessionId, options: Vec<SessionConfigOption>) {
+        self.hub.send(Notification {
+            method: CLIENT_METHOD_NAMES.session_update.into(),
+            params: Some(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(options)),
+            )),
+        });
+    }
+
     /// Publishes a title change on the `session/update` stream.
     ///
     /// ACP routes this through the standard progress channel as a
@@ -377,6 +713,32 @@ impl Agent {
     fn require_session(&self, id: &SessionId) -> Result<Arc<Session>, AcpError> {
         self.sessions.get(id).ok_or_else(|| session_not_found(id))
     }
+}
+
+/// The provider catalog as the wire reports it.
+fn catalog(store: &ProviderStore) -> ProviderCatalog {
+    ProviderCatalog {
+        providers: store.views(),
+        default_model: store.default_reference(),
+    }
+}
+
+/// What a client is told when a provider change was refused.
+///
+/// A fault in the request is told apart from a fault in the machine: an id or a
+/// URL the caller got wrong is theirs to fix, while a file that cannot be written
+/// is not something they can do anything about.
+fn provider_rejected(err: ProviderError) -> AcpError {
+    let code = match &err {
+        ProviderError::Invalid(_)
+        | ProviderError::BadReference(_)
+        | ProviderError::UnknownProvider(_)
+        | ProviderError::UnknownModel(_) => INVALID_PARAMS,
+        ProviderError::Config(_) | ProviderError::Io { .. } | ProviderError::Parse { .. } => {
+            INTERNAL_ERROR
+        }
+    };
+    AcpError::new(code, err.to_string())
 }
 
 /// Derives a session title from the message that opened it.
@@ -470,6 +832,9 @@ pub fn prompt_with_validation(blocks: &[ContentBlock]) -> Result<String, AcpErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
+    use crate::providers::{Model, Provider, ProviderInput};
+    use crate::test_env::{self, Guard};
     use futures::{stream, StreamExt};
     use serde_json::json;
     use srud_core::client::{ModelEvent, ModelRequest, ModelStream};
@@ -486,7 +851,6 @@ mod tests {
     /// the coverage boundary.
     const UNIMPLEMENTED_METHODS: &[&str] = &[
         AGENT_METHOD_NAMES.session_set_mode,
-        AGENT_METHOD_NAMES.session_set_config_option,
         AGENT_METHOD_NAMES.authenticate,
         SRUD_SESSION_FORK,
         SRUD_SESSION_STEER,
@@ -1513,5 +1877,523 @@ mod tests {
         );
         let value = serde_json::to_value(&err).unwrap();
         assert_eq!(value["error"]["code"], json!(INTERNAL_ERROR));
+    }
+
+    // ---- the configurable-model path --------------------------------------
+
+    /// A factory that records the references it was asked to build and answers
+    /// every one of them with the same scripted client.
+    struct RecordingFactory {
+        events: Vec<ModelEvent>,
+        built: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingFactory {
+        fn new(events: Vec<ModelEvent>) -> Arc<Self> {
+            Arc::new(Self {
+                events,
+                built: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        /// The references built so far, in order.
+        fn built(&self) -> Vec<String> {
+            self.built.lock().expect("factory lock poisoned").clone()
+        }
+    }
+
+    impl ModelFactory for RecordingFactory {
+        fn build(
+            &self,
+            provider: &Provider,
+            model: &str,
+        ) -> Result<Arc<dyn ModelClient>, srud_core::client::ModelError> {
+            self.built
+                .lock()
+                .expect("factory lock poisoned")
+                .push(format!("{}/{}", provider.id, model));
+            Ok(Arc::new(Scripted {
+                events: self.events.clone(),
+                stall_until_cancel: false,
+            }))
+        }
+    }
+
+    fn sample_provider(id: &str, models: &[&str]) -> ProviderInput {
+        ProviderInput {
+            id: id.to_owned(),
+            name: format!("Provider {id}"),
+            base_url: format!("https://{id}.example/v1"),
+            api_key: Some(format!("sk-{id}-secret-key")),
+            models: models
+                .iter()
+                .map(|model| Model {
+                    id: (*model).to_owned(),
+                    name: None,
+                    modalities: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    /// An agent over a two-provider store, and the factory it resolves with.
+    ///
+    /// The configuration directory is handed back before this returns: the store
+    /// has already read the file, and holding the environment across the caller's
+    /// own session setup would deadlock two guards against each other.
+    fn providers_agent(events: Vec<ModelEvent>) -> (Agent, Arc<RecordingFactory>) {
+        providers_agent_with(events, true)
+    }
+
+    /// As [`providers_agent`], but `fixed` decides whether the host also left a
+    /// client behind for sessions that name no model. A host with nothing but a
+    /// provider file leaves none.
+    fn providers_agent_with(
+        events: Vec<ModelEvent>,
+        fixed: bool,
+    ) -> (Agent, Arc<RecordingFactory>) {
+        let (store, factory) = {
+            let _env = Guard::take(&[config::HOME_VAR]);
+            std::env::set_var(
+                config::HOME_VAR,
+                test_env::unique_dir("srud-agent-providers"),
+            );
+            let store = ProviderStore::load().expect("an empty store");
+            store
+                .upsert(sample_provider("openai", &["small", "large"]))
+                .expect("a valid provider");
+            store
+                .upsert(sample_provider("anthropic", &["opus"]))
+                .expect("a valid provider");
+            (store, RecordingFactory::new(events))
+        };
+        let model = if fixed {
+            Some(scripted(Vec::new()) as Arc<dyn ModelClient>)
+        } else {
+            None
+        };
+        let agent = Agent::with_providers(
+            model,
+            Arc::new(ToolRegistry::new()),
+            ModelProviders::new(Arc::new(store), factory.clone()),
+        );
+        (agent, factory)
+    }
+
+    /// Points the configuration directory at one of this test's own, so a session
+    /// is created under the system temp directory rather than the developer's
+    /// home. Kept alive for the length of the test.
+    fn home() -> Guard {
+        let guard = Guard::take(&[config::HOME_VAR]);
+        std::env::set_var(config::HOME_VAR, test_env::unique_dir("srud-agent-home"));
+        guard
+    }
+
+    async fn prompt_once(agent: &Agent, session_id: &SessionId) {
+        result_of(
+            agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "hello" }],
+                    }),
+                ))
+                .await,
+        );
+    }
+
+    async fn choose(agent: &Agent, session_id: &SessionId, reference: &str) -> Value {
+        result_of(
+            agent
+                .handle(request(
+                    SESSION_SET_CONFIG_OPTION,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "configId": "model",
+                        "value": reference,
+                    }),
+                ))
+                .await,
+        )
+    }
+
+    async fn new_session_result(agent: &Agent) -> Value {
+        result_of(
+            agent
+                .handle(request(SESSION_NEW, json!({ "cwd": "", "mcpServers": [] })))
+                .await,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_new_session_offers_the_configured_models() {
+        let (agent, _factory) = providers_agent(vec![]);
+        initialize(&agent).await;
+        let _home = home();
+
+        let result = new_session_result(&agent).await;
+        let options = result["configOptions"]
+            .as_array()
+            .expect("a model selector");
+        assert_eq!(options.len(), 1, "the model option is the only one offered");
+        let option = &options[0];
+        assert_eq!(option["id"], json!("model"));
+        assert_eq!(option["category"], json!("model"));
+        assert_eq!(option["type"], json!("select"));
+        // Nobody has chosen a default, so nothing is chosen for the session
+        // either. The empty value is what the picker renders as "choose one".
+        assert_eq!(option["currentValue"], json!(""));
+
+        let groups = option["options"].as_array().expect("grouped by provider");
+        let named: Vec<&str> = groups
+            .iter()
+            .map(|group| group["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(named, ["Provider openai", "Provider anthropic"]);
+        assert_eq!(groups[0]["group"], json!("openai"));
+        let values: Vec<&str> = groups[0]["options"]
+            .as_array()
+            .expect("a group's options")
+            .iter()
+            .map(|value| value["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(values, ["openai/small", "openai/large"]);
+    }
+
+    #[tokio::test]
+    async fn a_new_session_starts_on_the_chosen_default() {
+        let (agent, factory) = providers_agent(vec![]);
+        initialize(&agent).await;
+        let _home = home();
+        // Chosen through the panel's own method, which is the only writer of it.
+        result_of(
+            agent
+                .handle(request(
+                    SRUD_PROVIDER_SET_DEFAULT,
+                    json!({ "model": "anthropic/opus" }),
+                ))
+                .await,
+        );
+
+        let result = new_session_result(&agent).await;
+        assert_eq!(
+            result["configOptions"][0]["currentValue"],
+            json!("anthropic/opus")
+        );
+
+        let session_id = SessionId::new(result["sessionId"].as_str().unwrap());
+        prompt_once(&agent, &session_id).await;
+        assert_eq!(factory.built(), vec!["anthropic/opus"]);
+    }
+
+    #[tokio::test]
+    async fn a_session_with_no_model_and_no_fallback_is_told_to_choose_one() {
+        let (agent, factory) = providers_agent_with(vec![], false);
+        initialize(&agent).await;
+        let _home = home();
+        let session_id = new_session_in(&agent, "").await;
+
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "hello" }],
+                    }),
+                ))
+                .await,
+        );
+
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
+        assert!(
+            error.message.contains("choose one"),
+            "the message says what to do: {}",
+            error.message
+        );
+        assert!(factory.built().is_empty(), "nothing ran");
+    }
+
+    #[tokio::test]
+    async fn a_session_with_no_model_runs_on_the_client_the_host_fixed() {
+        // A log written before the provider file existed names no model. It runs
+        // on what it ran on then rather than on a model chosen since.
+        let (agent, factory) =
+            providers_agent_with(vec![ModelEvent::TextDelta { delta: "ok".into() }], true);
+        initialize(&agent).await;
+        let _home = home();
+        let session_id = new_session_in(&agent, "").await;
+
+        prompt_once(&agent, &session_id).await;
+        assert!(factory.built().is_empty(), "no provider was asked for one");
+    }
+
+    #[tokio::test]
+    async fn a_chosen_model_runs_the_turn_and_is_broadcast() {
+        let (agent, factory) = providers_agent(vec![ModelEvent::TextDelta { delta: "ok".into() }]);
+        initialize(&agent).await;
+        let _home = home();
+        let session_id = new_session_in(&agent, "").await;
+
+        let mut rx = agent.subscribe();
+        let result = choose(&agent, &session_id, "anthropic/opus").await;
+        // The reply carries the whole set, so the client renders its own change.
+        assert_eq!(
+            result["configOptions"][0]["currentValue"],
+            json!("anthropic/opus")
+        );
+
+        let update = serde_json::to_value(rx.try_recv().expect("the change is announced")).unwrap();
+        assert_eq!(
+            update["params"]["update"]["sessionUpdate"],
+            json!("config_option_update")
+        );
+        assert_eq!(
+            update["params"]["update"]["configOptions"][0]["currentValue"],
+            json!("anthropic/opus")
+        );
+        assert_eq!(update["params"]["sessionId"], json!(session_id.0.as_ref()));
+
+        prompt_once(&agent, &session_id).await;
+        assert_eq!(factory.built(), vec!["anthropic/opus"]);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_model_is_refused_and_the_session_keeps_its_own() {
+        let (agent, factory) = providers_agent(vec![ModelEvent::TextDelta { delta: "ok".into() }]);
+        initialize(&agent).await;
+        let _home = home();
+        let session_id = new_session_in(&agent, "").await;
+        // Chosen first, so there is an "own" for the refusal to leave alone.
+        result_of(
+            agent
+                .handle(request(
+                    SESSION_SET_CONFIG_OPTION,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "configId": "model",
+                        "value": "openai/small",
+                    }),
+                ))
+                .await,
+        );
+
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_SET_CONFIG_OPTION,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "configId": "model",
+                        "value": "openai/missing",
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
+
+        // Refused, so the session still runs on what it was seeded with.
+        prompt_once(&agent, &session_id).await;
+        assert_eq!(factory.built(), vec!["openai/small"]);
+    }
+
+    #[tokio::test]
+    async fn setting_an_option_that_does_not_exist_is_invalid_params() {
+        let (agent, _factory) = providers_agent(vec![]);
+        initialize(&agent).await;
+        let _home = home();
+        let session_id = new_session_in(&agent, "").await;
+
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_SET_CONFIG_OPTION,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "configId": "mode",
+                        "value": "anthropic/opus",
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn a_provider_deleted_under_a_session_makes_its_turns_refuse() {
+        let (agent, _factory) = providers_agent(vec![ModelEvent::TextDelta { delta: "ok".into() }]);
+        initialize(&agent).await;
+        let _home = home();
+        let session_id = new_session_in(&agent, "").await;
+        choose(&agent, &session_id, "anthropic/opus").await;
+
+        // The provider goes away, as when a user removes it from the panel.
+        result_of(
+            agent
+                .handle(request(
+                    SRUD_PROVIDER_DELETE,
+                    json!({ "providerId": "anthropic" }),
+                ))
+                .await,
+        );
+
+        // Refused rather than quietly run on another provider: a turn recorded
+        // under one model while another answered would make the log a lie.
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "hello" }],
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
+        assert!(
+            error.message.contains("no longer configured"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_methods_round_trip_over_rpc() {
+        let (agent, _factory) = providers_agent(vec![]);
+        initialize(&agent).await;
+
+        let listed = result_of(agent.handle(request(SRUD_PROVIDER_LIST, json!({}))).await);
+        assert_eq!(listed["providers"].as_array().unwrap().len(), 2);
+        assert!(listed["default"].is_null(), "nothing is the default yet");
+        // A key is readable back only as a mask — enough to tell two apart, not
+        // enough to use one.
+        assert_eq!(listed["providers"][0]["apiKey"], json!("sk-…-key"));
+        assert_eq!(listed["providers"][0]["hasKey"], json!(true));
+
+        let added = result_of(
+            agent
+                .handle(request(
+                    SRUD_PROVIDER_SET,
+                    json!({
+                        "provider": {
+                            "id": "local",
+                            "name": "Local",
+                            "baseUrl": "https://local.example/v1",
+                            "apiKey": "sk-local-1234567890",
+                            "models": [{ "id": "m", "name": "M" }],
+                        }
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(added["providers"].as_array().unwrap().len(), 3);
+
+        let defaulted = result_of(
+            agent
+                .handle(request(
+                    SRUD_PROVIDER_SET_DEFAULT,
+                    json!({ "model": "openai/large" }),
+                ))
+                .await,
+        );
+        assert_eq!(defaulted["default"], json!("openai/large"));
+
+        // And that is where the next session starts.
+        let _home = home();
+        assert_eq!(
+            new_session_result(&agent).await["configOptions"][0]["currentValue"],
+            json!("openai/large")
+        );
+
+        let removed = result_of(
+            agent
+                .handle(request(
+                    SRUD_PROVIDER_DELETE,
+                    json!({ "providerId": "local" }),
+                ))
+                .await,
+        );
+        assert_eq!(removed["providers"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_agent_without_providers_offers_no_model_option() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let _home = home();
+
+        let result = new_session_result(&agent).await;
+        assert!(
+            result["configOptions"].is_null(),
+            "a fixed client has nothing to choose between"
+        );
+
+        // The method is not merely unpopulated — it is refused outright, matching
+        // what the capabilities promised.
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_SET_CONFIG_OPTION,
+                    json!({
+                        "sessionId": result["sessionId"].as_str().unwrap(),
+                        "configId": "model",
+                        "value": "openai/small",
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), METHOD_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_restored_session_remembers_the_model_it_chose() {
+        let _env = Guard::take(&[config::HOME_VAR]);
+        std::env::set_var(config::HOME_VAR, test_env::unique_dir("srud-agent-restore"));
+        let store = Arc::new(ProviderStore::load().expect("an empty store"));
+        store
+            .upsert(sample_provider("openai", &["small", "large"]))
+            .unwrap();
+        store
+            .upsert(sample_provider("anthropic", &["opus"]))
+            .unwrap();
+
+        let factory = RecordingFactory::new(vec![ModelEvent::TextDelta { delta: "hi".into() }]);
+        let first = Agent::with_providers(
+            Some(scripted(Vec::new())),
+            Arc::new(ToolRegistry::new()),
+            ModelProviders::new(store.clone(), factory),
+        );
+        initialize(&first).await;
+        let (session_id, cwd) = session_with_a_home(&first).await;
+        choose(&first, &session_id, "anthropic/opus").await;
+        prompt_once(&first, &session_id).await;
+        drop(first);
+
+        // A second agent, as after a restart, rebuilt from the same log.
+        let second = Agent::with_providers(
+            Some(scripted(Vec::new())),
+            Arc::new(ToolRegistry::new()),
+            ModelProviders::new(store, RecordingFactory::new(Vec::new())),
+        );
+        initialize(&second).await;
+        let result = result_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(
+            result["configOptions"][0]["currentValue"],
+            json!("anthropic/opus"),
+            "the choice survives the restart"
+        );
     }
 }

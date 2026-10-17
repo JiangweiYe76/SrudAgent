@@ -7,7 +7,7 @@
 //! **The registry is in-memory, but the sessions are not**: a restart empties the
 //! map, and `session/load` and `session/resume` rebuild an entry from the log the
 //! session left behind. [`find_log`] locates one by the id in its filename, which
-//! is what stands in for an index until there is one.
+//! is what stands in for an index.
 //!
 //! A session works in a directory the client named, or in one of its own under
 //! the configuration directory, so one session's files are never another's.
@@ -55,6 +55,10 @@ struct Tracked {
     /// The agent's display title. `None` until the first prompt names the
     /// session, or until a client renames it.
     title: Option<String>,
+    /// The model this session runs on, as last chosen. Seeded from the provider
+    /// configuration when the session is created, and changed only by the client
+    /// that selects another one.
+    model: Option<String>,
     /// Whether the working directory is one this agent created, and so may
     /// remove. A directory the client named belongs to the user.
     workspace_is_ours: bool,
@@ -181,9 +185,8 @@ pub enum RestoreError {
 
 /// Every session log under the configuration directory.
 ///
-/// Walked rather than indexed, which stands in for an index until there is one:
-/// a listing has to reach all of them and a single load has to reach one, and
-/// both start by knowing where they are.
+/// Walked rather than indexed: a listing has to reach all of them and a single
+/// load has to reach one, and both start by knowing where they are.
 async fn log_files() -> Result<Vec<PathBuf>, RestoreError> {
     let home = config::home().ok_or(config::ConfigError::NoHome)?;
     let mut found = Vec::new();
@@ -219,8 +222,8 @@ fn names_session(path: &Path, id: &impl Display) -> bool {
 /// Finds the log a session was written to.
 ///
 /// Searched rather than computed: the filename carries the moment the session was
-/// created, which only the write path knew. An index would answer this in one
-/// lookup, and [`log_files`] is what stands in for one until then.
+/// created, which only the write path knew. [`log_files`] is what stands in for
+/// an index.
 async fn find_log(id: &SessionId) -> Result<PathBuf, RestoreError> {
     log_files()
         .await?
@@ -231,7 +234,7 @@ async fn find_log(id: &SessionId) -> Result<PathBuf, RestoreError> {
 
 /// Opens the log for a session about to work in `cwd`.
 ///
-/// Laid out by date, the way the design has it: `sessions/YYYY/MM/DD/session-<ts>-<id>.jsonl`.
+/// Laid out by date: `sessions/YYYY/MM/DD/session-<ts>-<id>.jsonl`.
 /// The date is the session's own creation date rather than the turn's, so every
 /// turn of one session lands in one file and the path reads as when the
 /// conversation began.
@@ -266,13 +269,14 @@ async fn open_log(
 #[derive(Default)]
 pub struct SessionManager {
     sessions: Mutex<HashMap<String, Tracked>>,
-    /// Serialises title changes.
+    /// Serialises changes to the settings that get a log record of their own:
+    /// the title and the model.
     ///
-    /// Async, and taken for the whole change, because deciding the title and
+    /// Async, and taken for the whole change, because deciding the new value and
     /// recording it straddle an await: the sessions map is behind a std lock, and
     /// holding one across the write is not `Send`. Without this, two changes could
     /// record in one order and apply in another.
-    titles: tokio::sync::Mutex<()>,
+    settings: tokio::sync::Mutex<()>,
     /// Serialises restores.
     ///
     /// The repairs a log needs are derived from what it holds, so two restores
@@ -303,7 +307,18 @@ impl SessionManager {
     /// [`CreateError::Workspace`] when that workspace cannot be created. A
     /// session with no working directory cannot call a tool, so neither failure
     /// leaves a session half-started.
-    pub async fn create(&self, cwd: Option<PathBuf>) -> Result<SessionId, CreateError> {
+    ///
+    /// `model` is the model reference the session starts on, or `None` when the
+    /// caller has none to offer. It is taken here rather than set afterwards so
+    /// that it is recorded before the session is announced, like everything else
+    /// a session starts with: a session that answered `session/new` and then
+    /// turned out to have no model recorded would be one a reader could not
+    /// reconstruct.
+    pub async fn create(
+        &self,
+        cwd: Option<PathBuf>,
+        model: Option<String>,
+    ) -> Result<SessionId, CreateError> {
         let session_id = srud_core::types::SessionId::new();
         let (cwd, workspace_is_ours) = match usable_directory(cwd) {
             Some(cwd) => (cwd, false),
@@ -341,6 +356,18 @@ impl SessionManager {
             source: std::io::Error::other(source),
         })?;
 
+        // Recorded only when there is one, so a session that was offered no model
+        // carries no record at all rather than a `null` a reader would have to
+        // tell apart from a cleared selection.
+        if let Some(model) = &model {
+            log.record(&SessionEvent::model(Some(model.clone())))
+                .await
+                .map_err(|source| CreateError::Log {
+                    what: "the session's model".into(),
+                    source: std::io::Error::other(source),
+                })?;
+        }
+
         self.sessions
             .lock()
             .expect("session map lock poisoned")
@@ -350,6 +377,7 @@ impl SessionManager {
                     session,
                     log: Arc::new(log),
                     title: None,
+                    model,
                     workspace_is_ours,
                 },
             );
@@ -430,6 +458,7 @@ impl SessionManager {
                     session,
                     log: Arc::new(log),
                     title: loaded.title.clone(),
+                    model: loaded.model.clone(),
                     // A directory this agent made is one it may remove again; the
                     // recorded cwd says which it was.
                     workspace_is_ours: workspace_for(loaded.session_id)
@@ -469,7 +498,7 @@ impl SessionManager {
     /// If the title could not be recorded. The change is not applied in that case:
     /// a title a reader cannot find later is one the session does not have.
     pub async fn set_title(&self, id: &SessionId, title: &str) -> Result<bool, RecordError> {
-        let _changing = self.titles.lock().await;
+        let _changing = self.settings.lock().await;
         let title = normalise_title(title);
         let Some(log) = self.log_of(id) else {
             return Ok(false);
@@ -500,7 +529,7 @@ impl SessionManager {
     ///
     /// As [`SessionManager::set_title`].
     pub async fn name_if_unnamed(&self, id: &SessionId, title: &str) -> Result<bool, RecordError> {
-        let _changing = self.titles.lock().await;
+        let _changing = self.settings.lock().await;
         let Some(title) = normalise_title(title) else {
             return Ok(false);
         };
@@ -527,6 +556,48 @@ impl SessionManager {
             .expect("session map lock poisoned")
             .get(id.0.as_ref())
             .map(|tracked| Arc::clone(&tracked.log))
+    }
+
+    /// Sets the model a session runs on, returning whether the session existed.
+    ///
+    /// The reference is not validated here: this layer records what the session
+    /// runs on, and whether the reference names a configured provider is the
+    /// caller's to have checked — it is the one that knows the provider file.
+    ///
+    /// # Errors
+    ///
+    /// If the change could not be recorded. It is not applied in that case: the
+    /// log is what a resumed session is rebuilt from, so a model that only ever
+    /// existed in memory would silently change back on the next load.
+    pub async fn set_model(
+        &self,
+        id: &SessionId,
+        model: Option<String>,
+    ) -> Result<bool, RecordError> {
+        let _changing = self.settings.lock().await;
+        let Some(log) = self.log_of(id) else {
+            return Ok(false);
+        };
+        SessionLog::record(log.as_ref(), &SessionEvent::model(model.clone())).await?;
+
+        let mut sessions = self.sessions.lock().expect("session map lock poisoned");
+        let Some(tracked) = sessions.get_mut(id.0.as_ref()) else {
+            // Gone between the record and here, so nothing was changed. The
+            // record is already in a log that is going with it.
+            return Ok(false);
+        };
+        tracked.model = model;
+        Ok(true)
+    }
+
+    /// Reads the model a session runs on, if one is chosen.
+    #[must_use]
+    pub fn model(&self, id: &SessionId) -> Option<String> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .and_then(|tracked| tracked.model.clone())
     }
 
     /// Reads a session's display title, if it has one.
@@ -708,7 +779,7 @@ mod tests {
     /// test rather than the caller when the workspace cannot be made.
     async fn create(manager: &SessionManager) -> SessionId {
         manager
-            .create(None)
+            .create(None, None)
             .await
             .expect("the workspace is creatable")
     }
@@ -751,6 +822,21 @@ mod tests {
             .into_iter()
             .filter_map(|entry| match entry.event {
                 SessionEvent::Title { title } => Some(title),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The model records a session's log holds, oldest first.
+    async fn recorded_models(id: &SessionId) -> Vec<Option<String>> {
+        let path = session_log_path(id);
+        srud_core::session_store::read(&path)
+            .await
+            .expect("a log to read")
+            .entries
+            .into_iter()
+            .filter_map(|entry| match entry.event {
+                SessionEvent::Model { model } => Some(model),
                 _ => None,
             })
             .collect()
@@ -844,7 +930,7 @@ mod tests {
         let chosen = test_env::unique_dir("srud-chosen");
 
         let id = manager
-            .create(Some(chosen.clone()))
+            .create(Some(chosen.clone()), None)
             .await
             .expect("no workspace is needed");
 
@@ -882,7 +968,10 @@ mod tests {
     #[tokio::test]
     async fn nothing_named_for_the_client_means_a_workspace() {
         let (manager, _env) = manager();
-        let id = manager.create(Some(PathBuf::new())).await.expect("created");
+        let id = manager
+            .create(Some(PathBuf::new()), None)
+            .await
+            .expect("created");
 
         assert_given_a_workspace(&manager, &id, "an empty path names no directory");
     }
@@ -892,7 +981,7 @@ mod tests {
         let (manager, _env) = manager();
         let gone = test_env::unique_dir("srud-gone").join("never-created");
 
-        let id = manager.create(Some(gone)).await.expect("created");
+        let id = manager.create(Some(gone), None).await.expect("created");
 
         assert_given_a_workspace(&manager, &id, "a directory that is not there");
     }
@@ -903,7 +992,7 @@ mod tests {
         let file = test_env::unique_dir("srud-file").join("a-file");
         std::fs::write(&file, "not a directory").expect("a file");
 
-        let id = manager.create(Some(file)).await.expect("created");
+        let id = manager.create(Some(file), None).await.expect("created");
 
         assert_given_a_workspace(&manager, &id, "a file is not a working directory");
     }
@@ -913,7 +1002,7 @@ mod tests {
         let (manager, _env) = manager();
 
         let id = manager
-            .create(Some(PathBuf::from("relative/path")))
+            .create(Some(PathBuf::from("relative/path")), None)
             .await
             .expect("created");
 
@@ -939,7 +1028,10 @@ mod tests {
     async fn removing_a_session_leaves_a_directory_the_client_named() {
         let (manager, _env) = manager();
         let chosen = test_env::unique_dir("srud-chosen");
-        let id = manager.create(Some(chosen.clone())).await.expect("created");
+        let id = manager
+            .create(Some(chosen.clone()), None)
+            .await
+            .expect("created");
 
         assert!(manager.remove(&id).await);
 
@@ -1007,6 +1099,90 @@ mod tests {
         assert_eq!(manager.title(&id), None);
         // Cleared means unnamed, so the next prompt may name it again.
         assert!(manager.name_if_unnamed(&id, "named again").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_session_records_the_model_it_starts_on() {
+        // Written at creation rather than set afterwards, so a session is never
+        // announced with no model recorded.
+        let (manager, _env) = manager();
+        let id = manager
+            .create(None, Some("openai/gpt-4o".to_string()))
+            .await
+            .expect("created");
+
+        assert_eq!(manager.model(&id).as_deref(), Some("openai/gpt-4o"));
+        assert_eq!(
+            recorded_models(&id).await,
+            vec![Some("openai/gpt-4o".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_created_with_no_model_records_none() {
+        // No record at all, rather than a `null` a reader would have to tell
+        // apart from a cleared selection.
+        let (manager, _env) = manager();
+        let id = create(&manager).await;
+
+        assert_eq!(manager.model(&id), None);
+        assert!(recorded_models(&id).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_model_change_reaches_the_log() {
+        // The model is not derivable and not constant: a session resumed without
+        // this would run on whatever the default is that day, over a conversation
+        // another model wrote.
+        let (manager, _env) = manager();
+        let id = manager
+            .create(None, Some("openai/gpt-4o".to_string()))
+            .await
+            .expect("created");
+
+        manager
+            .set_model(&id, Some("deepseek/deepseek-chat".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            recorded_models(&id).await,
+            vec![
+                Some("openai/gpt-4o".to_string()),
+                Some("deepseek/deepseek-chat".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn setting_a_model_on_an_unknown_session_reports_it() {
+        let (manager, _env) = manager();
+
+        assert!(!manager
+            .set_model(&SessionId::new("nope"), Some("openai/gpt-4o".to_string()))
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_restored_session_remembers_the_model_it_ran_on() {
+        // The point of recording it: a restart rebuilds the session, and the
+        // model it was using has to come back with it.
+        let (manager, _env) = manager();
+        let chosen = test_env::unique_dir("srud-model-restore");
+        let id = manager
+            .create(Some(chosen.clone()), Some("openai/gpt-4o".to_string()))
+            .await
+            .expect("created");
+        manager.forget(&id);
+
+        let loaded = manager
+            .restore(&id, &chosen)
+            .await
+            .expect("the session comes back");
+
+        assert_eq!(loaded.model.as_deref(), Some("openai/gpt-4o"));
+        assert_eq!(manager.model(&id).as_deref(), Some("openai/gpt-4o"));
     }
 
     #[tokio::test]
@@ -1174,7 +1350,10 @@ mod tests {
     async fn removing_a_stored_session_leaves_a_directory_the_client_named() {
         let (manager, _env) = manager();
         let chosen = test_env::unique_dir("srud-chosen-stored");
-        let id = manager.create(Some(chosen.clone())).await.expect("created");
+        let id = manager
+            .create(Some(chosen.clone()), None)
+            .await
+            .expect("created");
         manager.forget(&id);
 
         assert!(manager.remove(&id).await);

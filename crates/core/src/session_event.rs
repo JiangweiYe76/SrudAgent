@@ -23,6 +23,7 @@
 //! {"time":"2026-10-03T21:28:14.123Z","event":{"type":"session","session_id":"…","cwd":"…","version":1}}
 //! {"time":"…","event":{"type":"system","content":"# Role\n\n…"}}
 //! {"time":"…","event":{"type":"title","title":"Fix the timestamp"}}
+//! {"time":"…","event":{"type":"model","model":"deepseek/deepseek-chat"}}
 //! {"time":"…","event":{"type":"turn_started","turn_id":"…"}}
 //! {"time":"…","event":{"type":"item","turn_id":"…","message_id":"…","item":{…}}}
 //! {"time":"…","event":{"type":"turn_ended","turn_id":"…","reason":"interrupted"}}
@@ -134,6 +135,29 @@ pub enum SessionEvent {
         title: Option<String>,
     },
 
+    /// The model this session runs on, as last chosen.
+    ///
+    /// Written whenever the choice changes, and a reader takes the last one.
+    /// `None` clears it, which is not the same as no record at all.
+    ///
+    /// Recorded because the answer is not derivable and not constant: the user
+    /// can switch models mid-conversation, and the history it produced was
+    /// produced by whichever one was selected then. Without this, resuming a
+    /// session would silently run it on today's default, over a conversation
+    /// another model wrote.
+    ///
+    /// Like [`Title`](Self::Title) this is session scope rather than turn scope:
+    /// it changes between turns, and it is read before any turn runs.
+    ///
+    /// The value is a `providerId/modelId` reference, and it is deliberately
+    /// **not** checked for resolution on the way out. A session whose provider
+    /// has since been deleted still ran on what it ran on, and rewriting the
+    /// record to say otherwise would be a lie about the history beside it.
+    Model {
+        /// The model reference, or `None` when it was cleared.
+        model: Option<String>,
+    },
+
     /// A turn began. Has no wire counterpart.
     TurnStarted {
         /// Which turn.
@@ -235,6 +259,12 @@ impl SessionEvent {
         Self::Title { title }
     }
 
+    /// Builds a model change. `None` records a cleared selection.
+    #[must_use]
+    pub fn model(model: Option<String>) -> Self {
+        Self::Model { model }
+    }
+
     /// Builds a history-entry record.
     #[must_use]
     pub fn item(turn_id: TurnId, message_id: Option<MessageId>, item: ResponseItem) -> Self {
@@ -247,12 +277,15 @@ impl SessionEvent {
 
     /// The turn this record belongs to, if it belongs to one.
     ///
-    /// The session's own record, the system instruction and the title do not: all
-    /// three are written at session scope, outside any turn.
+    /// The session's own record, the system instruction, the title and the model
+    /// do not: all four are written at session scope, outside any turn.
     #[must_use]
     pub fn turn_id(&self) -> Option<TurnId> {
         match self {
-            Self::Session { .. } | Self::System { .. } | Self::Title { .. } => None,
+            Self::Session { .. }
+            | Self::System { .. }
+            | Self::Title { .. }
+            | Self::Model { .. } => None,
             Self::TurnStarted { turn_id }
             | Self::Item { turn_id, .. }
             | Self::TurnEnded { turn_id, .. } => Some(*turn_id),
@@ -320,6 +353,7 @@ mod tests {
             SessionEvent::session(SessionId::new(), PathBuf::from("/w")),
             SessionEvent::system("# Role\n\nYou are Srud."),
             SessionEvent::title(Some("Fix the timestamp".into())),
+            SessionEvent::model(Some("deepseek/deepseek-chat".into())),
             SessionEvent::TurnStarted { turn_id },
             SessionEvent::item(
                 turn_id,
@@ -364,6 +398,11 @@ mod tests {
                 SessionEvent::title(Some("Fix the timestamp".into())),
                 "title",
                 vec!["title"],
+            ),
+            (
+                SessionEvent::model(Some("openai/gpt-4o".into())),
+                "model",
+                vec!["model"],
             ),
             (
                 SessionEvent::TurnStarted { turn_id },
@@ -424,6 +463,8 @@ mod tests {
             SessionEvent::system("# Role"),
             SessionEvent::title(Some("A title".into())),
             SessionEvent::title(None),
+            SessionEvent::model(Some("openai/gpt-4o".into())),
+            SessionEvent::model(None),
         ] {
             assert_eq!(outside.turn_id(), None, "{outside:?}");
         }
@@ -454,6 +495,37 @@ mod tests {
         assert!(value["title"].is_null(), "{value}");
         let back: SessionEvent = serde_json::from_value(value).unwrap();
         assert_eq!(back, SessionEvent::title(None));
+    }
+
+    #[test]
+    fn a_model_choice_is_recorded_with_its_reference() {
+        // The model is not derivable and not constant: the history beside this
+        // record was produced by whichever model was selected when it was
+        // written, so a reader has to be able to tell which one that was.
+        let value =
+            serde_json::to_value(SessionEvent::model(Some("deepseek/deepseek-chat".into())))
+                .unwrap();
+
+        assert_eq!(value["type"], "model");
+        assert_eq!(value["model"], "deepseek/deepseek-chat");
+        let back: SessionEvent = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            back,
+            SessionEvent::model(Some("deepseek/deepseek-chat".into()))
+        );
+    }
+
+    #[test]
+    fn a_cleared_model_is_written_rather_than_omitted() {
+        // The same rule the title follows: `null` is the statement "this session
+        // has no model record", where omitting the field would say "this record
+        // says nothing about the model" and leave the previous one standing.
+        let value = serde_json::to_value(SessionEvent::model(None)).unwrap();
+
+        assert_eq!(value["type"], "model");
+        assert!(value["model"].is_null(), "{value}");
+        let back: SessionEvent = serde_json::from_value(value).unwrap();
+        assert_eq!(back, SessionEvent::model(None));
     }
 
     #[test]

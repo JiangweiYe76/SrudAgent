@@ -90,9 +90,9 @@ describe('setLevel', () => {
 
   it('records only the newest of two clicks that answer out of order', async () => {
     // Two clicks in quick succession leave two webview calls in flight, and they do
-    // not promise to answer in order. If the older one answers last it used to
-    // overwrite the newer level, so the button claimed 150% while the window was at
-    // 200% — and the next start came up at the wrong size.
+    // not promise to answer in order. The store must keep the newest level even
+    // when the older call answers last: otherwise the recorded level no longer
+    // matches the window, and the next start comes up at the wrong size.
     const gates: Array<() => void> = [];
     mocks.setZoom.mockImplementation(
       () =>
@@ -104,8 +104,8 @@ describe('setLevel', () => {
     const first = useZoomStore.getState().setLevel(1.5);
     const second = useZoomStore.getState().setLevel(2);
 
-    // The newer call answers first, then the older one — the order that used to lose
-    // the newer level.
+    // The newer call answers first, then the older one — the order in which a
+    // blind write-back would lose the newer level.
     gates[1]();
     await second;
     expect(useZoomStore.getState().level).toBe(2);
@@ -126,10 +126,10 @@ describe('applyZoom', () => {
   });
 
   it('leaves the document unscaled', async () => {
-    // The bug this replaced: `zoom` on `<html>` multiplied the offset of Radix's
-    // fixed-position portal, so a dropdown landed away from its trigger by 80 px at
-    // 125% and 520 px at 200%. jsdom has no layout, so the drift cannot be measured
-    // here; what can be is that the one thing that caused it is gone.
+    // Scaling goes through the webview rather than `zoom` on `<html>`, because
+    // that would multiply the offset of Radix's fixed-position portals and land
+    // a dropdown away from its trigger. jsdom has no layout, so the drift itself
+    // cannot be measured here; what can be is that the document stays unscaled.
     await applyZoom(2);
     expect(document.documentElement.style.zoom).toBe('');
   });

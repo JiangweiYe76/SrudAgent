@@ -3,6 +3,7 @@ import { Settings } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
+import { ModelSelect } from './components/ModelSelect';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
 import { useSessionStore, displayTitle, isBusy, isReopening } from './lib/sessionStore';
@@ -17,6 +18,7 @@ function App() {
   const addSession = useSessionStore((s) => s.addSession);
   const sendTurn = useSessionStore((s) => s.sendTurn);
   const stopTurn = useSessionStore((s) => s.stopTurn);
+  const setModel = useSessionStore((s) => s.setModel);
   const renameSession = useSessionStore((s) => s.renameSession);
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const init = useSessionStore((s) => s.init);
@@ -45,15 +47,24 @@ function App() {
       <main className="relative flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-5 text-sm font-medium">
           <span className="truncate">{active ? displayTitle(active) : 'SrudAgent'}</span>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setSettingsOpen(true)}
-            title={t('settings.open')}
-            aria-label={t('settings.open')}
-          >
-            <Settings className="h-4 w-4" />
-          </Button>
+          <div className="flex shrink-0 items-center gap-1">
+            {/* The session's model, next to the session it changes. Absent when
+                the agent offers no choice — a host configured no provider. */}
+            <ModelSelect
+              options={active?.model ?? null}
+              disabled={reopening}
+              onSelect={setModel}
+            />
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setSettingsOpen(true)}
+              title={t('settings.open')}
+              aria-label={t('settings.open')}
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+          </div>
         </header>
         {initError && (
           <div className="border-b border-border bg-destructive/10 px-5 py-2 text-xs text-destructive">
