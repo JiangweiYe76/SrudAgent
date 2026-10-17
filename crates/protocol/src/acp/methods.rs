@@ -34,9 +34,9 @@ pub const SESSION_UPDATE: &str = "session/update";
 /// Agent -> client: ask the user to approve an action (approval flow).
 pub const SESSION_REQUEST_PERMISSION: &str = "session/request_permission";
 
-// SrudAgent extensions (`_srud/unstable/*`). Declared in `initialize` via
-// `agentCapabilities._meta.srud.unstable`; unknown extension *methods* answer
-// with `-32601`, unknown extension *notifications* are ignored.
+// SrudAgent extensions (`_srud/unstable/*`). Not advertised in `initialize`'s
+// `agentCapabilities._meta`; unknown extension *methods* answer with `-32601`,
+// unknown extension *notifications* are ignored.
 
 /// Client -> agent: fork a session at the current history point.
 pub const SRUD_SESSION_FORK: &str = "_srud/unstable/session/fork";
@@ -49,3 +49,18 @@ pub const SRUD_SESSION_ROLLOUT_READ: &str = "_srud/unstable/session/rollout/read
 /// ACP lets the *agent* name a session (`SessionInfoUpdate`) but defines no
 /// client-to-agent method for the user to rename one, so this fills that gap.
 pub const SRUD_SESSION_SET_TITLE: &str = "_srud/unstable/session/set_title";
+
+// Provider administration. These are the only methods that ever carry a
+// credential, and none of them is a `configOptions` concern: what a *session*
+// may choose between travels in `configOptions`, while which endpoints exist and
+// what they are authenticated with is a property of the machine the agent runs
+// on.
+
+/// Client -> agent: list the configured providers, with keys masked.
+pub const SRUD_PROVIDER_LIST: &str = "_srud/unstable/provider/list";
+/// Client -> agent: add a provider, or replace the one with the same id.
+pub const SRUD_PROVIDER_SET: &str = "_srud/unstable/provider/set";
+/// Client -> agent: remove a provider.
+pub const SRUD_PROVIDER_DELETE: &str = "_srud/unstable/provider/delete";
+/// Client -> agent: choose the model new sessions start from.
+pub const SRUD_PROVIDER_SET_DEFAULT: &str = "_srud/unstable/provider/set_default";

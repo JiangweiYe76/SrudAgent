@@ -22,14 +22,18 @@ use crate::acp::{
     SessionResumeCapabilities,
 };
 
-/// The `_srud/unstable/session/*` extension method names. They are not
-/// advertised in `agentCapabilities._meta`; calls to them answer
-/// `METHOD_NOT_FOUND`.
+/// The `_srud/unstable/session/*` and `_srud/unstable/provider/*` extension
+/// method names. They are not advertised in `agentCapabilities._meta`; a client
+/// that does not know them simply never calls them.
 pub const SRUD_UNSTABLE_METHODS: &[&str] = &[
     "sessionFork",
     "sessionSteer",
     "rolloutRead",
     "sessionSetTitle",
+    "providerList",
+    "providerSet",
+    "providerDelete",
+    "providerSetDefault",
 ];
 
 /// SrudAgent's agent-side capabilities.
@@ -103,11 +107,15 @@ mod tests {
     }
 
     #[test]
-    fn unstable_method_names_cover_fork_steer_rollout_and_set_title() {
-        assert_eq!(SRUD_UNSTABLE_METHODS.len(), 4);
+    fn unstable_method_names_cover_the_extensions_this_build_defines() {
+        assert_eq!(SRUD_UNSTABLE_METHODS.len(), 8);
         assert!(SRUD_UNSTABLE_METHODS.contains(&"sessionFork"));
         assert!(SRUD_UNSTABLE_METHODS.contains(&"sessionSteer"));
         assert!(SRUD_UNSTABLE_METHODS.contains(&"rolloutRead"));
         assert!(SRUD_UNSTABLE_METHODS.contains(&"sessionSetTitle"));
+        assert!(SRUD_UNSTABLE_METHODS.contains(&"providerList"));
+        assert!(SRUD_UNSTABLE_METHODS.contains(&"providerSet"));
+        assert!(SRUD_UNSTABLE_METHODS.contains(&"providerDelete"));
+        assert!(SRUD_UNSTABLE_METHODS.contains(&"providerSetDefault"));
     }
 }
