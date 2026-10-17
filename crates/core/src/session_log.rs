@@ -135,6 +135,7 @@ fn describe(entry: &SessionEvent) -> String {
         SessionEvent::Session { .. } => "the session record".into(),
         SessionEvent::System { .. } => "the system instruction".into(),
         SessionEvent::Title { .. } => "the title".into(),
+        SessionEvent::Model { .. } => "the model choice".into(),
         SessionEvent::TurnStarted { turn_id } => format!("the start of turn {turn_id}"),
         SessionEvent::TurnEnded { turn_id, .. } => format!("the end of turn {turn_id}"),
         SessionEvent::Item { turn_id, item, .. } => {

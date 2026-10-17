@@ -29,6 +29,7 @@ enum Dialect {
     #[cfg_attr(windows, allow(dead_code))]
     Posix,
     /// PowerShell, and cmd as the fallback beneath it.
+    #[cfg_attr(unix, allow(dead_code))]
     Windows,
 }
 

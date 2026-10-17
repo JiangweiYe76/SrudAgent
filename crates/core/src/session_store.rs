@@ -204,6 +204,13 @@ pub struct Loaded {
     pub version: u32,
     /// The title, as last set.
     pub title: Option<String>,
+    /// The model the session runs on, as last chosen.
+    ///
+    /// Carried rather than resolved: the log says what the session ran on, and a
+    /// provider that has since been deleted does not change what already
+    /// happened. A caller offering the choice again is the one that decides how
+    /// to present a reference that no longer resolves.
+    pub model: Option<String>,
     /// The history the model should see next, oldest first.
     pub history: Vec<ResponseItem>,
     /// What a client replaying the session should be shown, oldest first.
@@ -286,8 +293,11 @@ fn summarize_log(log: &ReadLog) -> Result<Summary, LoadError> {
             }
             SessionEvent::Title { title: last } => title = last.clone(),
             // Everything else is the session doing its work, which a description
-            // of the session has no use for.
-            SessionEvent::System { .. }
+            // of the session has no use for. The model is not part of a
+            // description either: it is what the *conversation* runs on, and a
+            // listing only names sessions.
+            SessionEvent::Model { .. }
+            | SessionEvent::System { .. }
             | SessionEvent::TurnStarted { .. }
             | SessionEvent::Item { .. }
             | SessionEvent::TurnEnded { .. } => {}
@@ -341,6 +351,10 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     };
 
     let mut title = None;
+    // The model the session runs on, as last chosen. Read here for the same
+    // reason the title is: it changes after the session exists, so the last
+    // record is the only one that says what is true now.
+    let mut model = None;
     // Turns the log opened and never closed. A turn's end record can fail to
     // write while the turn itself still ends, so more than one can be open.
     let mut open: Vec<TurnId> = Vec::new();
@@ -351,6 +365,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     for entry in &log.entries {
         match &entry.event {
             SessionEvent::Title { title: last } => title = last.clone(),
+            SessionEvent::Model { model: last } => model = last.clone(),
             SessionEvent::TurnStarted { turn_id } => open.push(*turn_id),
             SessionEvent::TurnEnded { turn_id, reason } => {
                 // A turn ends once. A log carrying a second end for one is
@@ -365,7 +380,6 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
             SessionEvent::Session { .. } | SessionEvent::System { .. } => {}
         }
     }
-
     // A session that has not stopped has nothing to repair: what the log is
     // missing is what has not happened yet.
     let repairs = if stopped {
@@ -409,6 +423,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         cwd,
         version,
         title,
+        model,
         history,
         conversation,
         turn_ends,
@@ -1045,6 +1060,61 @@ mod tests {
         let loaded = rebuild(&log, true).expect("a session");
 
         assert_eq!(loaded.title, None, "a cleared title clears it");
+    }
+
+    #[test]
+    fn the_last_model_wins() {
+        // A session can be switched mid-conversation, so a rebuild that took the
+        // first record would run the session on a model it stopped using.
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::model(Some("openai/gpt-4o".into())),
+            SessionEvent::model(Some("deepseek/deepseek-chat".into())),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.model.as_deref(), Some("deepseek/deepseek-chat"));
+    }
+
+    #[test]
+    fn a_session_without_a_model_record_has_none() {
+        // Not every log has one: a session that never had a model chosen, or one
+        // written before this record existed, reads as "no model recorded" rather
+        // than as some default.
+        let log = log_of(vec![opening(), said(TurnId::new(), "hello")]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.model, None);
+    }
+
+    #[test]
+    fn a_cleared_model_clears_it() {
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::model(Some("openai/gpt-4o".into())),
+            SessionEvent::model(None),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.model, None);
+    }
+
+    #[test]
+    fn a_model_reference_is_not_resolved_on_the_way_out() {
+        // The log says what the session ran on. A provider the user has since
+        // deleted does not change what already happened, so the record is
+        // returned as written rather than dropped or rewritten.
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::model(Some("deleted-provider/gone".into())),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.model.as_deref(), Some("deleted-provider/gone"));
     }
 
     #[test]
