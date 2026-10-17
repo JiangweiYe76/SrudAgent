@@ -1,4 +1,4 @@
-//! The `bash` tool: run one shell command in the session's working directory.
+//! The `shell` tool: run one shell command in the session's working directory.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -12,7 +12,7 @@ use tokio::{join, time::timeout};
 use super::{failure_text, Tool, ToolContext, ToolError, ToolOutcome};
 
 /// The name the model calls.
-const NAME: &str = "bash";
+const NAME: &str = "shell";
 
 /// The syntax a shell reads.
 ///
@@ -255,7 +255,7 @@ struct Args {
 
 /// Runs shell commands from the session's working directory.
 #[derive(Debug)]
-pub struct BashTool {
+pub struct ShellTool {
     /// How long one command may run before it is stopped.
     timeout: Duration,
     /// The interpreter commands are handed to.
@@ -265,13 +265,13 @@ pub struct BashTool {
     description: String,
 }
 
-impl Default for BashTool {
+impl Default for ShellTool {
     fn default() -> Self {
         Self::new(Duration::from_secs(120))
     }
 }
 
-impl BashTool {
+impl ShellTool {
     /// A tool that gives each command `timeout` to finish.
     pub(crate) fn new(timeout: Duration) -> Self {
         let shell = Shell::detect();
@@ -285,7 +285,7 @@ impl BashTool {
 }
 
 #[async_trait::async_trait]
-impl Tool for BashTool {
+impl Tool for ShellTool {
     fn name(&self) -> &str {
         NAME
     }
@@ -624,7 +624,7 @@ mod tests {
     /// A directory for one test to run in, emptied first so a rerun starts from
     /// the same place.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("srud-bash-tests").join(name);
+        let dir = std::env::temp_dir().join("srud-shell-tests").join(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch directory");
         dir
@@ -638,7 +638,7 @@ mod tests {
 
     /// Runs `command`, expecting well-formed arguments.
     async fn run(dir: &std::path::Path, command: &str) -> ToolOutcome {
-        BashTool::default()
+        ShellTool::default()
             .call(&ctx(dir), serde_json::json!({ "command": command }))
             .await
             .expect("the arguments match the schema")
@@ -776,9 +776,9 @@ mod tests {
     async fn does_not_hand_the_command_the_hosts_environment() {
         let dir = scratch("env");
         // Set here, so the assertion does not rest on the developer's own shell.
-        std::env::set_var("SRUD_BASH_TEST_SECRET", "leaked");
-        let out = reply(&run(&dir, "echo \"[$SRUD_BASH_TEST_SECRET]\"").await);
-        std::env::remove_var("SRUD_BASH_TEST_SECRET");
+        std::env::set_var("SRUD_SHELL_TEST_SECRET", "leaked");
+        let out = reply(&run(&dir, "echo \"[$SRUD_SHELL_TEST_SECRET]\"").await);
+        std::env::remove_var("SRUD_SHELL_TEST_SECRET");
 
         assert_eq!(
             out["stdout"], "[]\n",
@@ -790,7 +790,7 @@ mod tests {
     #[tokio::test]
     async fn stops_a_command_that_outlasts_its_budget() {
         let dir = scratch("timeout");
-        let tool = BashTool::new(Duration::from_millis(150));
+        let tool = ShellTool::new(Duration::from_millis(150));
         let outcome = tool
             .call(&ctx(&dir), serde_json::json!({ "command": "sleep 30" }))
             .await
@@ -814,7 +814,7 @@ mod tests {
         // A path nothing has created, so the spawn itself fails. `scratch` would have
         // made the directory, and then there would be nothing to fail.
         let dir = std::env::temp_dir()
-            .join("srud-bash-tests")
+            .join("srud-shell-tests")
             .join("never-created");
         let _ = std::fs::remove_dir_all(&dir);
         let outcome = run(&dir, "echo hello").await;
@@ -914,7 +914,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_argument_is_refused() {
         let dir = scratch("unknown-argument");
-        let err = BashTool::default()
+        let err = ShellTool::default()
             .call(
                 &ctx(&dir),
                 serde_json::json!({ "command": "echo hi", "cwd": "/etc" }),
@@ -1119,9 +1119,9 @@ mod tests {
         #[tokio::test]
         async fn does_not_hand_the_command_the_hosts_environment() {
             let dir = scratch("windows-env");
-            std::env::set_var("SRUD_BASH_TEST_SECRET", "leaked");
-            let out = reply(&run(&dir, "echo \"[$env:SRUD_BASH_TEST_SECRET]\"").await);
-            std::env::remove_var("SRUD_BASH_TEST_SECRET");
+            std::env::set_var("SRUD_SHELL_TEST_SECRET", "leaked");
+            let out = reply(&run(&dir, "echo \"[$env:SRUD_SHELL_TEST_SECRET]\"").await);
+            std::env::remove_var("SRUD_SHELL_TEST_SECRET");
 
             assert_eq!(
                 out["stdout"].as_str().expect("stdout").trim_end(),
@@ -1135,7 +1135,7 @@ mod tests {
         #[tokio::test]
         async fn stops_a_command_that_outlasts_its_budget() {
             let dir = scratch("windows-timeout");
-            let tool = BashTool::new(Duration::from_millis(300));
+            let tool = ShellTool::new(Duration::from_millis(300));
             let outcome = tool
                 .call(
                     &ctx(&dir),
@@ -1225,7 +1225,7 @@ mod tests {
         /// and no promise of one the machine does not have.
         #[test]
         fn the_description_names_the_interpreter_it_resolved() {
-            let tool = BashTool::default();
+            let tool = ShellTool::default();
             let description = tool.description();
 
             assert!(

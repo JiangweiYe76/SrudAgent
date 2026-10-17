@@ -6,7 +6,7 @@
 //! model.
 
 use srud_core::tools::{
-    bash::BashTool, failure_text, read::ReadTool, Tool, ToolContext, ToolOutcome, FAILURE_MARKER,
+    failure_text, read::ReadTool, shell::ShellTool, Tool, ToolContext, ToolOutcome, FAILURE_MARKER,
 };
 
 use std::path::{Path, PathBuf};
@@ -34,8 +34,8 @@ async fn read(dir: &Path, path: &str) -> ToolOutcome {
         .expect("the arguments match the schema")
 }
 
-async fn bash(dir: &Path, command: &str) -> ToolOutcome {
-    BashTool::default()
+async fn shell(dir: &Path, command: &str) -> ToolOutcome {
+    ShellTool::default()
         .call(&ctx(dir), serde_json::json!({ "command": command }))
         .await
         .expect("the arguments match the schema")
@@ -49,24 +49,24 @@ async fn the_model_sees_four_distinguishable_shapes() {
 
     let read_ok = read(&dir, "note.txt").await;
     let read_missing = read(&dir, "nope.txt").await;
-    let bash_ok = bash(&dir, "echo hello").await;
-    let bash_refused = bash(&dir, "rm note.txt").await;
+    let shell_ok = shell(&dir, "echo hello").await;
+    let shell_refused = shell(&dir, "rm note.txt").await;
 
     println!("── read, found ─────────────────────────");
     println!("{}", read_ok.output);
     println!("── read, missing ──────────────────────");
     println!("{}", read_missing.output);
-    println!("── bash, ran ──────────────────────────");
-    println!("{}", bash_ok.output);
-    println!("── bash, refused ──────────────────────");
-    println!("{}", bash_refused.output);
+    println!("── shell, ran ─────────────────────────");
+    println!("{}", shell_ok.output);
+    println!("── shell, refused ─────────────────────");
+    println!("{}", shell_refused.output);
 
-    assert!(!read_ok.is_error && !bash_ok.is_error);
-    assert!(read_missing.is_error && bash_refused.is_error);
+    assert!(!read_ok.is_error && !shell_ok.is_error);
+    assert!(read_missing.is_error && shell_refused.is_error);
 
     // A failure is recognisable without parsing prose, whichever tool produced it.
     assert!(read_missing.output.starts_with(FAILURE_MARKER));
-    assert!(bash_refused.output.starts_with(FAILURE_MARKER));
+    assert!(shell_refused.output.starts_with(FAILURE_MARKER));
 }
 
 /// A result and a failure are distinguishable by the first line alone, which is
@@ -77,9 +77,9 @@ async fn the_first_line_is_enough_to_tell_them_apart() {
 
     for outcome in [
         read(&dir, "note.txt").await,
-        bash(&dir, "echo hi").await,
+        shell(&dir, "echo hi").await,
         read(&dir, "nope.txt").await,
-        bash(&dir, "dd if=/dev/zero of=x").await,
+        shell(&dir, "dd if=/dev/zero of=x").await,
         read(&dir, ".").await,
     ] {
         let first = outcome.output.lines().next().unwrap_or_default();
@@ -134,7 +134,7 @@ async fn a_failure_carries_what_to_try() {
     let dir = scratch("hints", "note.txt", "one\n");
     let missing = read(&dir, "nope.txt").await;
     let directory = read(&dir, ".").await;
-    let refused = bash(&dir, "rm note.txt").await;
+    let refused = shell(&dir, "rm note.txt").await;
 
     // The cause alone would leave these open; the second part closes them.
     assert!(

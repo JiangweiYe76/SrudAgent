@@ -614,7 +614,7 @@ mod tests {
             chunk(serde_json::json!([call(
                 0,
                 Some("call_3a2730d5"),
-                Some("bash"),
+                Some("shell"),
                 ""
             )])),
             &mut calls,
@@ -631,7 +631,7 @@ mod tests {
             calls.take(),
             vec![ModelEvent::ToolCall {
                 call_id: "call_3a2730d5".into(),
-                name: "bash".into(),
+                name: "shell".into(),
                 arguments: r#"{"command":"echo hi"}"#.into(),
             }],
             "the first chunk's id and name survive the empty ones"
