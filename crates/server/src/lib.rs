@@ -12,10 +12,11 @@
 //!
 //! Behavioural boundaries:
 //!
-//! - The session registry is in memory, so a restart empties it. What a turn
-//!   wrote to the session's log survives, but nothing reads it back: `session/load`,
-//!   `session/resume`, and the `_srud/unstable/*` extensions answer
-//!   `METHOD_NOT_FOUND` and are not advertised in the capabilities.
+//! - The session registry is in memory, so a restart empties it, and
+//!   `session/load` and `session/resume` rebuild an entry from the log the
+//!   session left behind. The `_srud/unstable/*` extensions that are not
+//!   implemented answer `METHOD_NOT_FOUND`, and none of them is advertised in
+//!   the capabilities.
 //! - No approval flow — `session/request_permission` is not implemented; a tool
 //!   call runs unless the tool itself refuses it. `bash` refuses a list of
 //!   commands by name, which is not a boundary: a command that deletes a file
@@ -26,7 +27,9 @@
 //! What a host supplies and what it does not:
 //!
 //! - The model client — [`Agent::new`] takes one, so a test can hand over a
-//!   scripted model and a live host can pick a provider.
+//!   scripted model and a live host can pick a provider. A host whose users
+//!   choose between providers supplies [`Agent::with_providers`] instead, and
+//!   the agent resolves each session's model from [`providers::ProviderStore`].
 //! - Nothing else. The tool set comes from [`standard_tools`], because the
 //!   tools are read by the turn loop, which runs here rather than in the host.
 
@@ -34,10 +37,12 @@ mod agent;
 pub mod config;
 mod convert;
 mod events;
+pub mod providers;
 mod sessions;
 mod tools;
 
-pub use agent::{Agent, RpcReply};
+pub use agent::{Agent, ModelProviders, RpcReply};
+pub use providers::{Model, ModelFactory, Provider, ProviderError, ProviderStore, Providers};
 pub use sessions::{CreateError, SessionManager};
 pub use tools::standard_tools;
 

@@ -19,6 +19,12 @@ const WINDOWS_HOME_VAR: &str = "USERPROFILE";
 /// The directory created under the user's home when [`HOME_VAR`] is unset.
 const DIR_NAME: &str = ".srudagent";
 
+/// The file providers and their credentials are configured in.
+///
+/// Named for what it holds rather than for the code that reads it: it is a file
+/// the user may edit by hand, unlike the session logs beside it.
+pub const PROVIDERS_FILE: &str = "providers.json";
+
 /// Why the configuration directory could not be established.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -81,6 +87,20 @@ pub fn ensure() -> Result<PathBuf, ConfigError> {
         source,
     })?;
     Ok(path)
+}
+
+/// The provider configuration file, whether or not it exists yet.
+///
+/// The file is not created here: a user who has configured no provider is a user
+/// with nothing to write, and an empty file would read as one that had been
+/// emptied.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoHome`] when there is no configuration directory to
+/// put it under.
+pub fn providers_path() -> Result<PathBuf, ConfigError> {
+    Ok(home().ok_or(ConfigError::NoHome)?.join(PROVIDERS_FILE))
 }
 
 /// Reads a variable as a path, treating blank as unset.
