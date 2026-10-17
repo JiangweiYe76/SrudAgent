@@ -497,8 +497,8 @@ describe('waiting for the first token', () => {
 
 describe('thinking dots', () => {
   // The turn outlives its reasoning by most of its length: the model thinks, then
-  // writes, and only then does the turn close. A mark tied to the turn therefore kept
-  // animating for the entire answer, which is the bug these cover.
+  // writes, and only then does the turn close. A mark tied to the turn would
+  // therefore keep animating for the entire answer; these pin it to the reasoning.
   const thinking = { id: 's1', thought: 'Let me think', assistantText: '', toolCalls: [] };
 
   it('marks reasoning that is still arriving', () => {

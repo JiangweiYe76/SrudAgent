@@ -357,7 +357,7 @@ it('leaves inline code as a single element', () => {
 
 describe('links', () => {
   // A click the webview acts on navigates the webview, which replaces the whole app
-  // with whatever page the model linked. That is the bug these guard against.
+  // with whatever page the model linked. That is what these guard against.
   it('opens a web link through the browser instead of navigating', () => {
     const html = render('see [the docs](https://example.com/docs)');
 

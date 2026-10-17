@@ -117,9 +117,9 @@ describe.skipIf(!executablePath)('code gutter geometry', () => {
   }
 
   it('leaves a real gap between the number and the code', async () => {
-    // The regression this file is for. The gap has to be a stated value, not the
-    // remainder of `padding - margin - width`, which is how it read as present
-    // while rendering as zero.
+    // The gap has to be a stated value, not the remainder of
+    // `padding - margin - width`: a remainder can compute to zero while still
+    // looking configured, and the gutter renders with no space at all.
     const { gapPx } = await measure();
 
     expect(gapPx).toBeGreaterThan(4);
