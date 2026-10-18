@@ -171,15 +171,30 @@ describe('sessionStore live path', () => {
     expect(calls).not.toContain('session/new');
   });
 
-  it('clicking new chat creates only local drafts', async () => {
+  it('clicking new chat on an empty chat opens nothing new', async () => {
     const { useSessionStore, calls } = await boot();
+    // Boot already opens one draft, and it reads as "Start a new chat".
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
     useSessionStore.getState().addSession();
     useSessionStore.getState().addSession();
-    expect(useSessionStore.getState().sessions).toHaveLength(3);
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
+    expect(useSessionStore.getState().sessions[0].id).toBe(useSessionStore.getState().activeId);
     expect(calls).not.toContain('session/new');
-    expect(
-      useSessionStore.getState().sessions.every((s) => s.backendId === null),
-    ).toBe(true);
+  });
+
+  it('clicking new chat away from a spoken-in session opens one draft', async () => {
+    const { useSessionStore } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    expect(useSessionStore.getState().sessions[0].turns).toHaveLength(1);
+
+    useSessionStore.getState().addSession();
+    expect(useSessionStore.getState().sessions).toHaveLength(2);
+    expect(useSessionStore.getState().sessions[0].turns).toEqual([]);
+    expect(useSessionStore.getState().activeId).toBe(useSessionStore.getState().sessions[0].id);
+
+    // The screen is an empty chat again, so the next click changes nothing.
+    useSessionStore.getState().addSession();
+    expect(useSessionStore.getState().sessions).toHaveLength(2);
   });
 
   it('the first message materializes the backend before prompting', async () => {
@@ -264,6 +279,9 @@ describe('sessionStore live path', () => {
 
   it('deletes a draft without touching the backend', async () => {
     const { useSessionStore, calls } = await boot();
+    // Something spoken in the open chat first: new chat is refused on an
+    // empty one, so this is what makes a second draft possible at all.
+    useSessionStore.getState().sendTurn('hi');
     useSessionStore.getState().addSession();
     expect(useSessionStore.getState().sessions).toHaveLength(2);
     const newest = useSessionStore.getState().sessions[0].id;
