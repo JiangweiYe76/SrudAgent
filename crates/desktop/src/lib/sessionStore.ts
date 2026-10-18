@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { toast } from 'sonner';
 import type { ModelOptions, Session, Step, ToolCall, Turn, TurnEndReason } from './types';
 import { t } from './i18n';
 import {
@@ -353,6 +354,10 @@ interface SessionState {
   // has finished failing, and one flag cleared by the first to settle would open
   // the prompt while the second is still arriving.
   reopeningCount: number;
+  // Sessions a delete is in flight for. The row stays until the agent agrees —
+  // a refused delete must lose nothing — and this is what the sidebar shows
+  // while it waits.
+  deletingIds: string[];
   init: () => Promise<void>;
   select: (id: string) => void;
   addSession: () => void;
@@ -456,6 +461,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   activeId: '',
   initError: null,
   reopeningCount: 0,
+  deletingIds: [],
 
   init: () => {
     starting ??= start();
@@ -677,13 +683,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   deleteSession: (id) => {
     const session = get().sessions.find((s) => s.id === id);
     if (!session) return;
+    // A draft holds nothing backend-side, so it goes at once.
     if (!session.backendId) {
       removeSession(id);
+      toast.success(t('sidebar.deleted'));
       return;
     }
+    // Flagged before the request: the row stays until the agent agrees, and
+    // without a mark of its own it would look untouched while the reply is on
+    // its way — which reads as nothing having happened.
+    set((s) => ({ deletingIds: [...s.deletingIds, id] }));
     void requestDelete(session.backendId)
-      .then(() => removeSession(id))
-      .catch((err) => set({ initError: String(err) }));
+      .then(() => {
+        removeSession(id);
+        toast.success(t('sidebar.deleted'));
+      })
+      .catch((err) => {
+        set({ initError: String(err) });
+        toast.error(t('sidebar.deleteFailed'));
+      })
+      .finally(() => {
+        set((s) => ({ deletingIds: s.deletingIds.filter((x) => x !== id) }));
+      });
   },
 }));
 

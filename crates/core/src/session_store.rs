@@ -319,6 +319,49 @@ fn summarize_log(log: &ReadLog) -> Result<Summary, LoadError> {
     })
 }
 
+/// What a log's session record says about where its session began.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Origin {
+    /// The session the log belongs to.
+    pub session_id: SessionId,
+    /// The directory the session works in.
+    pub cwd: PathBuf,
+}
+
+/// Reads just the session record of a session's log.
+///
+/// Enough to say where a session lived — a delete deciding whose files it may
+/// remove — without paying for the conversation that makes up the rest of the
+/// file: the record is written once, at the head, so the read stops there
+/// rather than parsing every line the way [`summarize`] does.
+///
+/// # Errors
+///
+/// As [`read`], or when the log holds no session record. A line that does not
+/// parse is skipped rather than failing the read, for the same reason
+/// [`read`] skips one.
+pub async fn origin(path: impl AsRef<Path>) -> Result<Origin, LoadError> {
+    let file = tokio::fs::File::open(path).await?;
+    let mut lines = BufReader::new(file).lines();
+
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(logged) = serde_json::from_str::<Logged>(&line) else {
+            continue;
+        };
+        if let SessionEvent::Session {
+            session_id, cwd, ..
+        } = logged.event
+        {
+            return Ok(Origin { session_id, cwd });
+        }
+    }
+
+    Err(LoadError::NoSession)
+}
+
 /// Rebuilds a session that has not stopped.
 ///
 /// Nothing is repaired: a turn with no end is one still running, and a call with
@@ -620,6 +663,41 @@ mod tests {
         assert_eq!(log.entries[1].line, 2, "lines are numbered from one");
         let item = log.entries[1].event.history_item().unwrap();
         assert_eq!(item, &ResponseItem::assistant("hi"));
+    }
+
+    #[tokio::test]
+    async fn origin_reads_the_session_record_from_the_head() {
+        let (writer, path) = fresh("origin").await;
+        let id = SessionId::new();
+
+        writer
+            .record(&SessionEvent::session(id, PathBuf::from("/w")))
+            .await
+            .expect("the first record");
+        writer
+            .record_item(turn(), None, &ResponseItem::assistant("hi"))
+            .await
+            .expect("a record");
+
+        let origin = origin(&path).await.expect("an origin");
+
+        assert_eq!(origin.session_id, id);
+        assert_eq!(origin.cwd, PathBuf::from("/w"));
+    }
+
+    #[tokio::test]
+    async fn origin_of_a_log_that_names_no_session_says_so() {
+        // Only the session record can name the session, and this log never
+        // wrote one: skipping what does not parse must not invent an answer.
+        let (writer, path) = fresh("origin-missing").await;
+        writer
+            .record_item(turn(), None, &ResponseItem::assistant("hi"))
+            .await
+            .expect("a record");
+
+        let error = origin(&path).await.expect_err("no session record");
+
+        assert!(matches!(error, LoadError::NoSession), "{error:?}");
     }
 
     #[tokio::test]

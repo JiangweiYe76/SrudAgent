@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Loader2, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { deleteWarning, displayTitle } from '@/lib/sessionStore';
@@ -18,6 +18,9 @@ import {
 interface SidebarProps {
   sessions: Session[];
   activeId: string;
+  // Sessions whose delete is in flight. Their rows stay put — a refused delete
+  // must lose nothing — so they show this instead of the actions.
+  deletingIds: string[];
   onSelect: (id: string) => void;
   onNew: () => void;
   onRename: (id: string, title: string) => void;
@@ -78,6 +81,7 @@ function SessionActions({
 export function Sidebar({
   sessions,
   activeId,
+  deletingIds,
   onSelect,
   onNew,
   onRename,
@@ -112,26 +116,46 @@ export function Sidebar({
         </Button>
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
-        {sessions.map((s) => (
-          <button
-            key={s.id}
-            className={`group flex cursor-pointer items-center gap-1 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-item-hover ${
-              s.id === activeId ? 'bg-item-hover' : ''
-            }`}
-            onClick={() => onSelect(s.id)}
-          >
-            {/* The title and its timestamp stack; the actions centre against
-                both lines rather than sitting on the title alone. */}
-            <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
-              <span className="w-full truncate text-[13px]">{displayTitle(s)}</span>
-              <span className="text-[11px] text-muted-foreground">{formatTime(s.updatedAt)}</span>
-            </span>
-            <SessionActions
-              onRename={() => setRenamingId(s.id)}
-              onDelete={() => setDeletingId(s.id)}
-            />
-          </button>
-        ))}
+        {sessions.map((s) => {
+          // On its way out: the row stays until the agent agrees, and says so —
+          // dimmed, with a spinner where the actions were, since firing delete
+          // again would stack a second request on the first.
+          const deleting = deletingIds.includes(s.id);
+          return (
+            <button
+              key={s.id}
+              className={`group flex cursor-pointer items-center gap-1 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-item-hover ${
+                s.id === activeId ? 'bg-item-hover' : ''
+              } ${deleting ? 'opacity-60' : ''}`}
+              onClick={() => {
+                if (!deleting) onSelect(s.id);
+              }}
+              aria-disabled={deleting || undefined}
+            >
+              {/* The title and its timestamp stack; the actions centre against
+                  both lines rather than sitting on the title alone. */}
+              <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
+                <span className="w-full truncate text-[13px]">{displayTitle(s)}</span>
+                <span className="text-[11px] text-muted-foreground">{formatTime(s.updatedAt)}</span>
+              </span>
+              {deleting ? (
+                <span
+                  role="status"
+                  aria-label={t('sidebar.deleting')}
+                  title={t('sidebar.deleting')}
+                  className="flex shrink-0 items-center justify-center p-1"
+                >
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                </span>
+              ) : (
+                <SessionActions
+                  onRename={() => setRenamingId(s.id)}
+                  onDelete={() => setDeletingId(s.id)}
+                />
+              )}
+            </button>
+          );
+        })}
       </nav>
 
       <RenameSessionModal

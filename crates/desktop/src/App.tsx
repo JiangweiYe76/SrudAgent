@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Settings } from 'lucide-react';
+import { Toaster } from 'sonner';
 import { Sidebar } from './components/Sidebar';
 import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
@@ -7,13 +8,14 @@ import { ModelSelect } from './components/ModelSelect';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
 import { useSessionStore, displayTitle, isBusy, isReopening } from './lib/sessionStore';
-import { useTheme } from './lib/theme';
+import { useTheme, useThemeStore } from './lib/theme';
 import { t } from './lib/i18n';
 import './styles.css';
 
 function App() {
   const sessions = useSessionStore((s) => s.sessions);
   const activeId = useSessionStore((s) => s.activeId);
+  const deletingIds = useSessionStore((s) => s.deletingIds);
   const select = useSessionStore((s) => s.select);
   const addSession = useSessionStore((s) => s.addSession);
   const sendTurn = useSessionStore((s) => s.sendTurn);
@@ -27,6 +29,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useTheme();
+  const theme = useThemeStore((s) => s.mode);
 
   useEffect(() => {
     void init();
@@ -39,6 +42,7 @@ function App() {
       <Sidebar
         sessions={sessions}
         activeId={activeId}
+        deletingIds={deletingIds}
         onSelect={select}
         onNew={addSession}
         onRename={renameSession}
@@ -84,6 +88,7 @@ function App() {
         />
       </main>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <Toaster theme={theme} position="top-center" />
     </div>
   );
 }

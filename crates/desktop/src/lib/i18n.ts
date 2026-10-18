@@ -11,6 +11,9 @@ const en = {
     'Delete "{title}" and its {n} message(s)? This cannot be undone.',
   'sidebar.deleteConfirm': 'Delete',
   'sidebar.actions': 'Session actions',
+  'sidebar.deleting': 'Deleting…',
+  'sidebar.deleted': 'Session deleted',
+  'sidebar.deleteFailed': 'Could not delete the session.',
 
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',

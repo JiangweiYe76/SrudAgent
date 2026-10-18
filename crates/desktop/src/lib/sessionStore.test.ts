@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     throw new Error('invoke not configured');
   },
   notifyCb: null as ((event: { payload: unknown }) => void) | null,
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -25,6 +26,8 @@ vi.mock('@tauri-apps/api/event', () => ({
     return Promise.resolve(() => undefined);
   },
 }));
+
+vi.mock('sonner', () => ({ toast: mocks.toast }));
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -51,6 +54,9 @@ const reply = (id: number, result: unknown) => ({ jsonrpc: '2.0', id, result });
 async function boot(
   options: {
     failDelete?: boolean;
+    // Keeps `session/delete` open until its deferred settles, so a test can
+    // watch the store while the agent has not answered yet.
+    holdDelete?: boolean;
     loadFails?: { code: number; message: string };
     loadFailsFirst?: { code: number; message: string };
     listed?: Array<Record<string, unknown>>;
@@ -64,6 +70,7 @@ async function boot(
   mocks.notifyCb = null;
   const prompt = deferred<{ stopReason: string }>();
   const load = deferred<null>();
+  const del = deferred<null>();
   const calls: string[] = [];
   const requested: Array<{ method: string; params: unknown }> = [];
   let created = 0;
@@ -117,6 +124,7 @@ async function boot(
           return reply(payload.id, { title: 'Renamed' });
         case 'session/delete':
           if (options.failDelete) throw new Error('delete refused');
+          if (options.holdDelete) return del.promise.then(() => reply(payload.id, {}));
           return reply(payload.id, {});
       }
     }
@@ -152,11 +160,23 @@ async function boot(
       expect(active().backendId).not.toBeNull();
     });
   };
-  return { useSessionStore, prompt, load, fire, active, calls, requested, waitForBackend };
+  return {
+    useSessionStore,
+    prompt,
+    load,
+    deleteGate: del,
+    fire,
+    active,
+    calls,
+    requested,
+    waitForBackend,
+  };
 }
 
 beforeEach(() => {
   mocks.notifyCb = null;
+  mocks.toast.success.mockClear();
+  mocks.toast.error.mockClear();
 });
 
 describe('sessionStore live path', () => {
@@ -369,6 +389,31 @@ describe('sessionStore live path', () => {
     // The row is dropped only after the agent agrees, so a failed delete loses
     // nothing.
     expect(useSessionStore.getState().sessions).toHaveLength(1);
+    expect(useSessionStore.getState().deletingIds).toEqual([]);
+    expect(mocks.toast.error).toHaveBeenCalledWith('Could not delete the session.');
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+  });
+
+  it('says a delete is under way until the agent agrees', async () => {
+    const { useSessionStore, active, deleteGate, waitForBackend } = await boot({
+      holdDelete: true,
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const id = active().id;
+
+    // Flagged the moment the delete is asked for: the row stays, dimmed with a
+    // spinner, for as long as the agent keeps us waiting.
+    useSessionStore.getState().deleteSession(id);
+    expect(useSessionStore.getState().deletingIds).toEqual([id]);
+    expect(useSessionStore.getState().sessions.some((s) => s.id === id)).toBe(true);
+
+    deleteGate.resolve(null);
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().deletingIds).toEqual([]);
+    });
+    expect(useSessionStore.getState().sessions.some((s) => s.id === id)).toBe(false);
+    expect(mocks.toast.success).toHaveBeenCalledWith('Session deleted');
   });
 
   it('marks a call pending until the update that carries its arguments', async () => {
