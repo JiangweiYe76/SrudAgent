@@ -1,9 +1,11 @@
-import { useState } from 'react';
 import { ArrowUp, Plus, Square } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
 
 interface ChatInputProps {
+  // The draft of the session on screen, and the way to change it.
+  value: string;
+  onValueChange: (text: string) => void;
   onSend: (text: string) => void;
   onNew: () => void;
   // True while the session has a turn in flight. Stop is always rendered, so
@@ -12,14 +14,13 @@ interface ChatInputProps {
   onStop: () => void;
 }
 
-export function ChatInput({ onSend, onNew, busy, onStop }: ChatInputProps) {
-  const [value, setValue] = useState('');
-
+export function ChatInput({ value, onValueChange, onSend, onNew, busy, onStop }: ChatInputProps) {
   const submit = () => {
     const text = value.trim();
     if (!text || busy) return;
+    // The store clears the draft when it takes the turn; a refused send leaves
+    // the text in the box.
     onSend(text);
-    setValue('');
   };
 
   return (
@@ -29,7 +30,7 @@ export function ChatInput({ onSend, onNew, busy, onStop }: ChatInputProps) {
         value={value}
         placeholder={t('chat.placeholder')}
         rows={2}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => onValueChange(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();

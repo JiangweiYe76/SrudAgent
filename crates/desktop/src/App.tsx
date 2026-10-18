@@ -7,7 +7,7 @@ import { ChatInput } from './components/ChatInput';
 import { ModelSelect } from './components/ModelSelect';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
-import { useSessionStore, displayTitle, isBusy, isReopening } from './lib/sessionStore';
+import { useSessionStore, displayTitle, draftFor, isBusy, isReopening } from './lib/sessionStore';
 import { useTheme, useThemeStore } from './lib/theme';
 import { t } from './lib/i18n';
 import './styles.css';
@@ -25,6 +25,8 @@ function App() {
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
+  const setDraft = useSessionStore((s) => s.setDraft);
+  const draft = useSessionStore((s) => draftFor(s, activeId));
   const reopening = useSessionStore(isReopening);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -81,6 +83,8 @@ function App() {
             it. There is no turn to stop in that window, so the stop control does
             nothing until one is open. */}
         <ChatInput
+          value={draft}
+          onValueChange={(text) => setDraft(activeId, text)}
           onSend={sendTurn}
           onNew={addSession}
           busy={isBusy(active) || reopening}
