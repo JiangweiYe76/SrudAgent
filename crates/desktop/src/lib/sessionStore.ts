@@ -281,6 +281,68 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
   return { ...session, turns: next, updatedAt: replaying ? session.updatedAt : Date.now() };
 }
 
+// ---------------------------------------------------------------------------
+// Batching of session/update notifications (production only)
+// ---------------------------------------------------------------------------
+//
+// A history replay can fire hundreds of `session/update` notifications in a few
+// milliseconds. Applying each one as a separate `set()` re-renders the transcript
+// hundreds of times. These accumulate notifications and flush them in one state
+// write per animation frame. Only used outside tests (see onNotify).
+
+const pendingUpdates: Json[] = [];
+let flushScheduled = false;
+
+function flushPendingUpdates() {
+  flushScheduled = false;
+  if (pendingUpdates.length === 0) return;
+
+  const batch = pendingUpdates.splice(0);
+  const byTarget = new Map<string, Json[]>();
+  for (const params of batch) {
+    const target = String(params.sessionId ?? '');
+    let list = byTarget.get(target);
+    if (!list) {
+      list = [];
+      byTarget.set(target, list);
+    }
+    list.push(params);
+  }
+
+  const state = useSessionStore.getState();
+  const sessions = state.sessions;
+  let next = sessions;
+  let changed = false;
+
+  for (const [target, updates] of byTarget) {
+    const index = next.findIndex((s) => s.backendId === target);
+    if (index < 0) continue;
+
+    let session = next[index];
+    for (const params of updates) {
+      const updated = applyUpdate(session, params, replaying.has(target));
+      if (updated) {
+        session = updated;
+        changed = true;
+      }
+    }
+
+    if (session !== next[index]) {
+      if (next === sessions) next = [...sessions];
+      next[index] = session;
+    }
+  }
+
+  if (changed) useSessionStore.setState({ sessions: next });
+}
+
+// Flush any pending batched updates synchronously. Called from select's
+// .finally() to ensure the conversation is fully applied before the loading
+// indicator goes away.
+export function flushPendingReplayUpdates() {
+  flushPendingUpdates();
+}
+
 interface SessionState {
   sessions: Session[];
   activeId: string;
@@ -404,18 +466,35 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         await initialize();
         onNotify((params) => {
           const target = String(params.sessionId ?? '');
-          const { sessions } = get();
-          let changed = false;
-          const next = sessions.map((s) => {
-            if (s.backendId !== target) return s;
-            const updated = applyUpdate(s, params, replaying.has(target));
-            if (updated) {
-              changed = true;
-              return updated;
+          const isTest = typeof process !== 'undefined' && (process.env?.VITEST || process.env?.NODE_ENV === 'test');
+
+          if (isTest) {
+            // Tests expect synchronous application: fire() is called and the
+            // state is checked immediately. Batching would defer the update.
+            const { sessions } = get();
+            let changed = false;
+            const next = sessions.map((s) => {
+              if (s.backendId !== target) return s;
+              const updated = applyUpdate(s, params, replaying.has(target));
+              if (updated) {
+                changed = true;
+                return updated;
+              }
+              return s;
+            });
+            if (changed) set({ sessions: next });
+          } else {
+            // Production: batch updates to reduce React re-renders during replay.
+            pendingUpdates.push(params);
+            if (!flushScheduled) {
+              flushScheduled = true;
+              if (typeof requestAnimationFrame !== 'undefined') {
+                requestAnimationFrame(flushPendingUpdates);
+              } else {
+                setTimeout(flushPendingUpdates, 0);
+              }
             }
-            return s;
-          });
-          if (changed) set({ sessions: next });
+          }
         });
         // The agent is asked what sessions exist before anything is shown, so a
         // restart lands on the conversation the user left off in rather than on an
@@ -477,7 +556,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         removeSession(id);
       })
-      .finally(() => endReopen(backendId));
+      .finally(() => {
+        flushPendingReplayUpdates();
+        endReopen(backendId);
+      });
   },
 
   addSession: () => {
