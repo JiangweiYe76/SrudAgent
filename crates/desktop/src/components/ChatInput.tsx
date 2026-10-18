@@ -1,4 +1,4 @@
-import { ArrowUp, Plus, Square } from 'lucide-react';
+import { ArrowUp, Square } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
 
@@ -7,14 +7,13 @@ interface ChatInputProps {
   value: string;
   onValueChange: (text: string) => void;
   onSend: (text: string) => void;
-  onNew: () => void;
   // True while the session has a turn in flight. Stop is always rendered, so
   // the row does not shift when a turn starts; it is only clickable while busy.
   busy: boolean;
   onStop: () => void;
 }
 
-export function ChatInput({ value, onValueChange, onSend, onNew, busy, onStop }: ChatInputProps) {
+export function ChatInput({ value, onValueChange, onSend, busy, onStop }: ChatInputProps) {
   const submit = () => {
     const text = value.trim();
     if (!text || busy) return;
@@ -38,43 +37,32 @@ export function ChatInput({ value, onValueChange, onSend, onNew, busy, onStop }:
           }
         }}
       />
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-end gap-1.5">
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon"
-          onClick={onNew}
-          title={t('sidebar.newChat')}
-          aria-label={t('sidebar.newChat')}
+          onClick={onStop}
+          disabled={!busy}
+          title={t('chat.stop')}
+          aria-label={t('chat.stop')}
+          // Red while it can be pressed, and back to the neutral outline once
+          // there is nothing to stop. Coloured rather than plain outline because
+          // stopping a running turn is the one control here that discards work
+          // rather than adding it.
+          className="text-destructive hover:bg-destructive/10 hover:text-destructive disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
         >
-          <Plus className="h-4 w-4" />
+          <Square className="h-3 w-3 fill-current" />
         </Button>
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={onStop}
-            disabled={!busy}
-            title={t('chat.stop')}
-            aria-label={t('chat.stop')}
-            // Red while it can be pressed, and back to the neutral outline once
-            // there is nothing to stop. Coloured rather than plain outline because
-            // stopping a running turn is the one control here that discards work
-            // rather than adding it.
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-          >
-            <Square className="h-3 w-3 fill-current" />
-          </Button>
-          <Button
-            size="icon"
-            onClick={submit}
-            disabled={!value.trim() || busy}
-            title={t('chat.send')}
-            aria-label={t('chat.send')}
-            className="disabled:bg-border disabled:text-muted-foreground"
-          >
-            <ArrowUp className="h-4 w-4" />
-          </Button>
-        </div>
+        <Button
+          size="icon"
+          onClick={submit}
+          disabled={!value.trim() || busy}
+          title={t('chat.send')}
+          aria-label={t('chat.send')}
+          className="disabled:bg-border disabled:text-muted-foreground"
+        >
+          <ArrowUp className="h-4 w-4" />
+        </Button>
       </div>
     </div>
   );

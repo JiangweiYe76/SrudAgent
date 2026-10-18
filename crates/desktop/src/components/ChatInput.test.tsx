@@ -27,7 +27,6 @@ function render(props: Partial<Parameters<typeof ChatInput>[0]> = {}) {
     value: '',
     onValueChange: vi.fn(),
     onSend: vi.fn(),
-    onNew: vi.fn(),
     busy: false,
     onStop: vi.fn(),
     ...props,
@@ -116,11 +115,5 @@ describe('ChatInput', () => {
     expect(container.querySelector('[aria-label="Stop"]')!.hasAttribute('disabled')).toBe(true);
     click('[aria-label="Stop"]');
     expect(idle.onStop).not.toHaveBeenCalled();
-  });
-
-  it('opens a new chat from the box', () => {
-    const { onNew } = render();
-    click('[aria-label="New chat"]');
-    expect(onNew).toHaveBeenCalled();
   });
 });

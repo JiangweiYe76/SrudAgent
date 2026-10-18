@@ -86,7 +86,6 @@ function App() {
           value={draft}
           onValueChange={(text) => setDraft(activeId, text)}
           onSend={sendTurn}
-          onNew={addSession}
           busy={isBusy(active) || reopening}
           onStop={stopTurn}
         />
