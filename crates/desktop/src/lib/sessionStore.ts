@@ -563,6 +563,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   addSession: () => {
+    // The session on screen already reads as "Start a new chat", so another
+    // draft would only stack an identical empty row in the sidebar. `loaded`
+    // guards the other way: a listed conversation not yet on screen has no
+    // turns simply because it has not arrived, and that is not an empty chat.
+    const state = get();
+    const active = state.sessions.find((s) => s.id === state.activeId);
+    if (active && active.loaded && active.turns.length === 0) return;
     const draft = freshSession();
     set((s) => ({ sessions: [draft, ...s.sessions], activeId: draft.id }));
   },
