@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { toast } from 'sonner';
 import type { ModelOptions, Session, Step, ToolCall, Turn, TurnEndReason } from './types';
 import { t } from './i18n';
+import { loadDrafts, saveDrafts } from './drafts';
 import {
   cancelTurn,
   deleteSession as requestDelete,
@@ -358,6 +359,9 @@ interface SessionState {
   // a refused delete must lose nothing — and this is what the sidebar shows
   // while it waits.
   deletingIds: string[];
+  // What each session's input box holds, keyed by `draftKeyOf`.
+  drafts: Record<string, string>;
+  setDraft: (id: string, text: string) => void;
   init: () => Promise<void>;
   select: (id: string) => void;
   addSession: () => void;
@@ -371,6 +375,12 @@ interface SessionState {
 // A session's conversation is on its way in.
 export function isReopening(state: Pick<SessionState, 'reopeningCount'>): boolean {
   return state.reopeningCount > 0;
+}
+
+// What a session's input box shows: the draft filed under its key, or empty
+// when it has none.
+export function draftFor(state: Pick<SessionState, 'sessions' | 'drafts'>, id: string): string {
+  return state.drafts[draftKeyOf(state.sessions, id)] ?? '';
 }
 
 // The backend sessions whose `session/load` is still in flight. The updates they
@@ -395,6 +405,31 @@ function endReopen(backendId: string) {
 export function isBusy(session: Session | undefined): boolean {
   if (!session || session.turns.length === 0) return false;
   return session.turns[session.turns.length - 1].endReason === undefined;
+}
+
+// The key a session's draft is filed under: the backend id once the session
+// has one, its local id until then.
+function draftKeyOf(sessions: Session[], id: string): string {
+  return sessions.find((s) => s.id === id)?.backendId ?? id;
+}
+
+// The stored drafts whose session the agent still lists.
+function listedDrafts(sessions: Session[]): Record<string, string> {
+  const live = new Set(
+    sessions.map((s) => s.backendId).filter((id): id is string => id !== null),
+  );
+  const drafts: Record<string, string> = {};
+  for (const [key, text] of Object.entries(loadDrafts())) {
+    if (live.has(key)) drafts[key] = text;
+  }
+  return drafts;
+}
+
+function withoutDraft(drafts: Record<string, string>, key: string): Record<string, string> {
+  if (!(key in drafts)) return drafts;
+  const next = { ...drafts };
+  delete next[key];
+  return next;
 }
 
 // A session starts as a local draft: no backend session and no workspace
@@ -462,6 +497,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   initError: null,
   reopeningCount: 0,
   deletingIds: [],
+  drafts: {},
 
   init: () => {
     starting ??= start();
@@ -511,8 +547,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const listed = await listSessions();
         const now = Date.now();
         const sessions = listed.map((info) => listedSession(info, now));
+        const drafts = listedDrafts(sessions);
+        // Rewritten with the live drafts, so keys for sessions that are gone do
+        // not sit in storage.
+        saveDrafts(drafts);
         if (sessions.length > 0) {
-          set({ sessions, initError: null });
+          set({ sessions, drafts, initError: null });
           get().select(sessions[0].id);
           return;
         }
@@ -527,6 +567,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         starting = null;
       }
     }
+  },
+
+  setDraft: (id, text) => {
+    const key = draftKeyOf(get().sessions, id);
+    const drafts = { ...get().drafts };
+    // An empty box leaves no entry behind.
+    if (text) drafts[key] = text;
+    else delete drafts[key];
+    set({ drafts });
+    saveDrafts(drafts);
   },
 
   select: (id) => {
@@ -590,11 +640,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const now = Date.now();
     const turn: Turn = { id: uid('t'), userInput, steps: [], createdAt: now };
 
+    // The draft goes with the turn it became. Cleared only once the turn is
+    // accepted: a refused send leaves the text in the box.
+    const draftKey = draftKeyOf(state.sessions, sessionId);
     set((s) => ({
       sessions: s.sessions.map((sess) =>
         sess.id === sessionId ? { ...sess, turns: [...sess.turns, turn], updatedAt: now } : sess,
       ),
+      drafts: withoutDraft(s.drafts, draftKey),
     }));
+    saveDrafts(get().drafts);
 
     void (async () => {
       let backendId = get().sessions.find((s) => s.id === sessionId)?.backendId ?? null;
@@ -605,13 +660,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // a workspace of its own under the configuration directory.
           const created = await newSession('');
           const draftTitle = get().sessions.find((s) => s.id === sessionId)?.title?.trim() || '';
-          useSessionStore.setState((s) => ({
-            sessions: s.sessions.map((sess) =>
-              sess.id === sessionId
-                ? { ...sess, backendId: created.sessionId, model: created.model }
-                : sess,
-            ),
-          }));
+          useSessionStore.setState((s) => {
+            // The draft moves to the backend id. Text typed while the backend
+            // session was being created is still under the local id here.
+            const key = draftKeyOf(s.sessions, sessionId);
+            const drafts = { ...s.drafts };
+            const text = drafts[key];
+            delete drafts[key];
+            if (text !== undefined) drafts[created.sessionId] = text;
+            return {
+              sessions: s.sessions.map((sess) =>
+                sess.id === sessionId
+                  ? { ...sess, backendId: created.sessionId, model: created.model }
+                  : sess,
+              ),
+              drafts,
+            };
+          });
+          saveDrafts(useSessionStore.getState().drafts);
           backendId = created.sessionId;
           if (draftTitle) {
             try {
@@ -721,13 +787,20 @@ function removeSession(id: string) {
   // not the one on screen, so the view stays where it is and there is nothing
   // more to ask for. An empty string means it was on screen and nothing is left.
   let movedTo: string | null = null;
+  let removed = false;
   useSessionStore.setState((s) => {
     const remaining = s.sessions.filter((sess) => sess.id !== id);
     if (remaining.length === s.sessions.length) return s;
-    if (s.activeId !== id) return { sessions: remaining };
+    removed = true;
+    // The key is resolved before the row is filtered out: it comes from the
+    // session itself, and the session is about to stop being there to ask.
+    const drafts = withoutDraft(s.drafts, draftKeyOf(s.sessions, id));
+    if (s.activeId !== id) return { sessions: remaining, drafts };
     movedTo = remaining[0]?.id ?? '';
-    return { sessions: remaining, activeId: movedTo };
+    return { sessions: remaining, activeId: movedTo, drafts };
   });
+  if (!removed) return;
+  saveDrafts(useSessionStore.getState().drafts);
   if (movedTo === null) return;
   // Nothing left to fall back to, so a draft: the sidebar is never a dead end.
   if (movedTo === '') {

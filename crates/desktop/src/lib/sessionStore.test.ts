@@ -5,7 +5,7 @@
 // reopen path (a remembered session's log replayed back into turns).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Session } from './types';
-import { displayTitle, isReopening } from './sessionStore';
+import { displayTitle, draftFor, isReopening } from './sessionStore';
 import { SESSION_NOT_FOUND } from './acp';
 
 const mocks = vi.hoisted(() => ({
@@ -1125,5 +1125,146 @@ describe('sessionStore model selection', () => {
 
     expect(calls).not.toContain('session/set_config_option');
     expect(active().model).toBeNull();
+  });
+});
+
+// The draft each session's input box holds: switching sessions swaps what the
+// box shows, and a send takes the draft of the session it was sent in.
+describe('sessionStore drafts', () => {
+  const LISTED = {
+    sessionId: 'S-previous',
+    cwd: '/work/previous',
+    title: 'Why the build fails',
+    updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  // One session that has been spoken in (so new chat opens a second one) and
+  // the draft that follows it, with the first session's draft already typed.
+  async function bootTwoSessions() {
+    const booted = await boot();
+    booted.useSessionStore.getState().sendTurn('hi');
+    await booted.waitForBackend();
+    booted.useSessionStore.getState().addSession();
+    const first = booted.useSessionStore.getState().sessions[1];
+    booted.useSessionStore.getState().setDraft(first.id, 'for the first');
+    const second = booted.useSessionStore.getState().sessions[0];
+    booted.useSessionStore.getState().setDraft(second.id, 'for the second');
+    return { ...booted, first, second };
+  }
+
+  const stored = () => JSON.parse(localStorage.getItem('srud.drafts') ?? 'null');
+
+  it('keeps a draft per session, so a switch swaps what the box shows', async () => {
+    const { useSessionStore, first, second } = await bootTwoSessions();
+
+    expect(draftFor(useSessionStore.getState(), second.id)).toBe('for the second');
+
+    useSessionStore.getState().select(first.id);
+    expect(draftFor(useSessionStore.getState(), first.id)).toBe('for the first');
+    // What the second one holds is untouched by looking at the first.
+    expect(draftFor(useSessionStore.getState(), second.id)).toBe('for the second');
+  });
+
+  it('files a draft under the backend id once the session has one', async () => {
+    const { useSessionStore, first, second } = await bootTwoSessions();
+
+    // The first session is materialized, so its draft is keyed by its backend
+    // id; the second is a local draft, keyed by its local id.
+    expect(stored()).toEqual({ S1: 'for the first', [second.id]: 'for the second' });
+    expect(first.backendId).toBe('S1');
+    expect(draftFor(useSessionStore.getState(), first.id)).toBe('for the first');
+  });
+
+  it('sending takes the draft of the session it was sent in, and only that one', async () => {
+    const { useSessionStore, first, second, waitForBackend } = await bootTwoSessions();
+
+    useSessionStore.getState().sendTurn('go');
+
+    // The sent text is gone from the box it was sent in; the other session
+    // keeps its draft.
+    expect(draftFor(useSessionStore.getState(), second.id)).toBe('');
+    expect(draftFor(useSessionStore.getState(), first.id)).toBe('for the first');
+
+    await waitForBackend();
+    expect(draftFor(useSessionStore.getState(), second.id)).toBe('');
+    expect(stored()).toEqual({ S1: 'for the first' });
+  });
+
+  it('keeps a draft typed while the first turn is still in flight', async () => {
+    // The backend session does not exist yet when the typing happens, so the
+    // draft is filed under the local id and moves when the session
+    // materializes.
+    const { useSessionStore, active, prompt, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    useSessionStore.getState().setDraft(active().id, 'still typing');
+
+    await waitForBackend();
+
+    expect(draftFor(useSessionStore.getState(), active().id)).toBe('still typing');
+    expect(stored()).toEqual({ S1: 'still typing' });
+
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+  });
+
+  it('keeps the draft when the store refuses the send', async () => {
+    const { useSessionStore, active, calls } = await boot({ listed: [LISTED] });
+    await vi.waitFor(() => {
+      expect(isReopening(useSessionStore.getState())).toBe(true);
+    });
+
+    useSessionStore.getState().setDraft(active().id, 'too early');
+    useSessionStore.getState().sendTurn('too early');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(calls).not.toContain('session/prompt');
+    expect(draftFor(useSessionStore.getState(), active().id)).toBe('too early');
+  });
+
+  it('drops the draft of a deleted session', async () => {
+    const { useSessionStore, first, second } = await bootTwoSessions();
+
+    // The materialized one, deleted while the draft is on screen: the delete
+    // goes through the agent, and the draft goes with it.
+    useSessionStore.getState().deleteSession(first.id);
+    await vi.waitFor(() => {
+      expect(stored()).toEqual({ [second.id]: 'for the second' });
+    });
+
+    expect(draftFor(useSessionStore.getState(), useSessionStore.getState().activeId)).toBe(
+      'for the second',
+    );
+  });
+
+  it('leaves no entry for a box that was cleared', async () => {
+    const { useSessionStore, active } = await boot();
+
+    useSessionStore.getState().setDraft(active().id, 'typed then cleared');
+    useSessionStore.getState().setDraft(active().id, '');
+
+    expect(useSessionStore.getState().drafts).toEqual({});
+    expect(stored()).toEqual({});
+  });
+
+  it('restores the drafts of listed sessions and drops the rest', async () => {
+    localStorage.setItem(
+      'srud.drafts',
+      JSON.stringify({
+        'S-previous': 'leftover from last run',
+        'S-gone': 'a session that no longer exists',
+        's1000': 'a local draft that never left its run',
+      }),
+    );
+    const { useSessionStore, active } = await boot({ listed: [LISTED] });
+
+    expect(draftFor(useSessionStore.getState(), active().id)).toBe('leftover from last run');
+    // Storage is rewritten with the live drafts.
+    expect(stored()).toEqual({ 'S-previous': 'leftover from last run' });
   });
 });
