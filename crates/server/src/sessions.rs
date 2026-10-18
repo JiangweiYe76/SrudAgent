@@ -667,20 +667,31 @@ impl SessionManager {
             // The session came from a listing and is deleted without ever being
             // opened, so what it worked in is in its log and nowhere else.
             None => {
-                let Ok(summary) = srud_core::session_store::summarize(&path).await else {
+                // Only the session record is read: it says where the session
+                // lived, and the conversation around it is what makes a long
+                // log slow to describe.
+                let Ok(origin) = srud_core::session_store::origin(&path).await else {
                     return false;
                 };
                 // Whether the directory is the agent's to remove is decided the
                 // same way as at creation, by whether it is the one the agent
                 // would have made for this session.
-                let ours = workspace_for(summary.session_id).is_ok_and(|w| w == summary.cwd);
-                (summary.cwd, ours)
+                let ours = workspace_for(origin.session_id).is_ok_and(|w| w == origin.cwd);
+                (origin.cwd, ours)
             }
         };
 
+        // The log goes before the reply: a log left behind would bring the
+        // session back on the next listing, and that is a race this call can
+        // lose. The workspace is different — nothing lists it, and the caller
+        // cannot act on whether it went — so its removal is detached rather
+        // than held open: a workspace of thousands of files would otherwise
+        // hold the delete, and its row, open for as long as it took.
         let _ = tokio::fs::remove_file(path).await;
         if workspace_is_ours {
-            let _ = tokio::fs::remove_dir_all(cwd).await;
+            tokio::spawn(async move {
+                let _ = tokio::fs::remove_dir_all(cwd).await;
+            });
         }
         true
     }
@@ -782,6 +793,22 @@ mod tests {
             .create(None, None)
             .await
             .expect("the workspace is creatable")
+    }
+
+    /// Waits for the workspace removal `remove` fires in the background.
+    ///
+    /// The reply stops short of the directory on purpose — holding it open for
+    /// thousands of files would hold the delete open with it — so a test that
+    /// read the directory the instant the reply landed would race a removal it
+    /// cannot see.
+    async fn wait_until_gone(path: &Path) -> bool {
+        for _ in 0..200 {
+            if !path.exists() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
     }
 
     /// The path of a session's log, found by the id in its filename.
@@ -1021,7 +1048,7 @@ mod tests {
 
         assert!(manager.remove(&id).await);
 
-        assert!(!cwd.exists(), "{cwd:?} went with the session");
+        assert!(wait_until_gone(&cwd).await, "{cwd:?} went with the session");
     }
 
     #[tokio::test]
@@ -1342,7 +1369,7 @@ mod tests {
 
         assert!(manager.remove(&id).await);
 
-        assert!(!cwd.exists(), "{cwd:?} went with the session");
+        assert!(wait_until_gone(&cwd).await, "{cwd:?} went with the session");
         assert!(manager.list().await.is_empty(), "and so does its log");
     }
 

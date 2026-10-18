@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { Brain, Check, ChevronDown, Copy, Loader2, Wrench } from 'lucide-react';
 import type { Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
@@ -133,7 +133,12 @@ function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
 // the end has not scrolled away, and must not be treated as if they had.
 const STICK_SLOP = 32;
 
-export function MessageList({ turns, reopening }: MessageListProps) {
+// Memoised because `App` re-renders on every store write — a rename, another
+// session's streaming, a batched replay flush — and re-drawing the transcript
+// each time is what makes a long conversation expensive to keep on screen.
+// Nothing here is read from outside its props, so the same `turns` reference
+// means there is nothing new to draw.
+export const MessageList = memo(function MessageList({ turns, reopening }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
@@ -319,4 +324,4 @@ export function MessageList({ turns, reopening }: MessageListProps) {
       </div>
     </div>
   );
-}
+});
