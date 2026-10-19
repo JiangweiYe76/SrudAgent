@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Loader2, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
-import { deleteWarning, displayTitle } from '@/lib/sessionStore';
+import { deleteWarning, displayTitle, isBusy } from '@/lib/sessionStore';
+import { toast } from 'sonner';
 import { DeleteSessionModal } from '@/components/DeleteSessionModal';
 import { RenameSessionModal } from '@/components/RenameSessionModal';
 import { Button } from '@/components/ui/button';
@@ -150,7 +151,13 @@ export function Sidebar({
               ) : (
                 <SessionActions
                   onRename={() => setRenamingId(s.id)}
-                  onDelete={() => setDeletingId(s.id)}
+                  onDelete={() => {
+                    if (isBusy(s)) {
+                      toast.error(t('sidebar.deleteBusy'));
+                      return;
+                    }
+                    setDeletingId(s.id);
+                  }}
                 />
               )}
             </button>

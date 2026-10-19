@@ -633,9 +633,7 @@ mod tests {
     }
 
     fn ctx(dir: &Path) -> ToolContext {
-        ToolContext {
-            cwd: dir.to_path_buf(),
-        }
+        ToolContext { cwd: dir.to_path_buf(), cancel: tokio_util::sync::CancellationToken::new() }
     }
 
     /// Runs the tool against `dir`, expecting well-formed arguments.

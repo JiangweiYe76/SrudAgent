@@ -119,7 +119,7 @@ mod tests {
         )
         .unwrap();
 
-        let ctx = ToolContext { cwd: root.clone() };
+        let ctx = ToolContext { cwd: root.clone(), cancel: tokio_util::sync::CancellationToken::new() };
         let outcome = SkillTool
             .call(&ctx, serde_json::json!({ "name": "demo" }))
             .await
@@ -136,7 +136,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("srud-skill-tool-empty-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let ctx = ToolContext { cwd: root.clone() };
+        let ctx = ToolContext { cwd: root.clone(), cancel: tokio_util::sync::CancellationToken::new() };
         let outcome = SkillTool
             .call(&ctx, serde_json::json!({ "name": "nope" }))
             .await
