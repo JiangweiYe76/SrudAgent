@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Loader2, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
-import { deleteWarning, displayTitle } from '@/lib/sessionStore';
+import { toast } from 'sonner';
+import { deleteWarning, displayTitle, isBusy } from '@/lib/sessionStore';
 import { DeleteSessionModal } from '@/components/DeleteSessionModal';
 import { RenameSessionModal } from '@/components/RenameSessionModal';
 import { Button } from '@/components/ui/button';
@@ -42,9 +43,11 @@ function formatTime(ts: number): string {
 function SessionActions({
   onRename,
   onDelete,
+  busy,
 }: {
   onRename: () => void;
   onDelete: () => void;
+  busy: boolean;
 }) {
   return (
     // The menu must not bubble to the row, or opening it would also select the
@@ -69,7 +72,7 @@ function SessionActions({
         </DropdownMenuItem>
         {/* Delete is separated and coloured: it cannot be undone. */}
         <DropdownMenuSeparator />
-        <DropdownMenuItemDestructive onSelect={onDelete}>
+        <DropdownMenuItemDestructive onSelect={onDelete} disabled={busy}>
           <Trash2 className="h-3.5 w-3.5" />
           {t('sidebar.deleteTitle')}
         </DropdownMenuItemDestructive>
@@ -150,7 +153,14 @@ export function Sidebar({
               ) : (
                 <SessionActions
                   onRename={() => setRenamingId(s.id)}
-                  onDelete={() => setDeletingId(s.id)}
+                  onDelete={() => {
+                    if (isBusy(s)) {
+                      toast.error(t('sidebar.deleteBusy'));
+                      return;
+                    }
+                    setDeletingId(s.id);
+                  }}
+                  busy={isBusy(s)}
                 />
               )}
             </button>

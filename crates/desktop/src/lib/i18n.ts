@@ -14,6 +14,7 @@ const en = {
   'sidebar.deleting': 'Deleting…',
   'sidebar.deleted': 'Session deleted',
   'sidebar.deleteFailed': 'Could not delete the session.',
+  'sidebar.deleteBusy': 'Stop the running turn before deleting this session.',
 
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',
