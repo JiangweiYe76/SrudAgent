@@ -647,6 +647,19 @@ impl SessionManager {
     /// only be shown a session it was told about, and every one of those came from
     /// here.
     pub async fn remove(&self, id: &SessionId) -> bool {
+        // Interrupt any turn that is still running for this session before
+        // tearing down its log and workspace, the way `session/close` does.
+        // Otherwise the turn keeps spending and recording into a file that is
+        // about to be unlinked, where the writes still report success.
+        if let Some(session) = self.get(id) {
+            session.interrupt();
+            let deadline = tokio::time::Instant::now()
+                + std::time::Duration::from_secs(30);
+            while session.is_busy() && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+
         let removed = self
             .sessions
             .lock()
@@ -687,10 +700,14 @@ impl SessionManager {
         // cannot act on whether it went — so its removal is detached rather
         // than held open: a workspace of thousands of files would otherwise
         // hold the delete, and its row, open for as long as it took.
-        let _ = tokio::fs::remove_file(path).await;
+        if let Err(err) = tokio::fs::remove_file(&path).await {
+            eprintln!("session: could not remove log {}: {err}", path.display());
+        }
         if workspace_is_ours {
             tokio::spawn(async move {
-                let _ = tokio::fs::remove_dir_all(cwd).await;
+                if let Err(err) = tokio::fs::remove_dir_all(&cwd).await {
+                    eprintln!("session: could not remove workspace {}: {err}", cwd.display());
+                }
             });
         }
         true
