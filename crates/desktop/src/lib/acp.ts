@@ -300,10 +300,13 @@ export const MODALITIES: readonly Modality[] = ['image', 'audio', 'video'];
 //
 // `modalities` is what the model accepts besides text; empty is a text-only
 // model, and is what every model written before the field existed reads as.
+// `contextWindow` is the maximum context in tokens as configured by the user;
+// absent means no window was set, and usage is not shown for that model.
 export interface ProviderModel {
   id: string;
   name?: string;
   modalities: Modality[];
+  contextWindow?: number;
 }
 
 // One configured provider, as the panel is shown it.
@@ -351,6 +354,12 @@ function parseModalities(value: unknown): Modality[] {
   return MODALITIES.filter((modality) => seen.has(modality));
 }
 
+// A context window only exists as a positive whole number of tokens; anything
+// else — absent, malformed, zero — reads as "no window configured".
+function parseContextWindow(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
 function parseCatalog(result: Json): ProviderCatalog {
   const providers = Array.isArray(result.providers) ? result.providers : [];
   return {
@@ -371,6 +380,7 @@ function parseCatalog(result: Json): ProviderCatalog {
                     id: model.id,
                     name: typeof model.name === 'string' ? model.name : undefined,
                     modalities: parseModalities(model.modalities),
+                    contextWindow: parseContextWindow(model.contextWindow),
                   },
                 ]
               : [],

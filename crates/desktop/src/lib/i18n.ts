@@ -107,6 +107,10 @@ const en = {
   'providers.model.field.name.hint': 'What the picker shows. The id stands in when there is none.',
   'providers.model.field.accepts': 'Accepts',
   'providers.model.field.accepts.hint': 'Besides text. Nothing selected is a text-only model.',
+  'providers.model.field.context': 'Context window',
+  'providers.model.field.context.hint':
+    'Maximum tokens in context, as tokens. Blank hides the usage ring.',
+  'providers.model.badContext': 'The context window must be a whole number of tokens above zero.',
   'providers.modality.image': 'Image',
   'providers.modality.audio': 'Audio',
   'providers.modality.video': 'Video',
@@ -118,6 +122,16 @@ const en = {
   'chat.placeholder': 'Type a message… (Enter to send, Shift+Enter for newline)',
   'chat.send': 'Send',
   'chat.stop': 'Stop',
+  'chat.context': 'Context: {pct}% ({used} / {size} tokens)',
+  'usage.title': 'Token usage',
+  'usage.context': 'Context',
+  'usage.cacheHit': 'Cache hit',
+  'usage.input': 'Input tokens',
+  'usage.output': 'Output tokens',
+  'usage.cached': 'Cached input',
+  'usage.cacheWrite': 'Cache write',
+  'usage.reasoning': 'Reasoning output',
+  'usage.note': 'Totals accumulate over every step this session reported.',
 
   'mock.reply': '(mock) Got it. Real replies will appear here once the backend is wired up.',
 } as const;

@@ -148,6 +148,12 @@ pub enum Event {
         name: String,
         result: crate::tools::ToolOutcome,
     },
+    /// One model request's token counts, as the provider reported them.
+    ///
+    /// Emitted once per step that got a report, after that step's assistant
+    /// message is recorded. Not conversation: a consumer renders it as
+    /// diagnostics, and history rebuilds ignore it.
+    UsageRecorded { usage: crate::client::TokenUsage },
     /// The turn stopped. Exactly one of these closes every turn.
     TurnComplete {
         turn_id: TurnId,

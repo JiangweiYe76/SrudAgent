@@ -8,7 +8,10 @@ import { ModelSelect } from './components/ModelSelect';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
 import { useSessionStore, displayTitle, draftFor, isBusy, isReopening } from './lib/sessionStore';
+import { useProviderStore } from './lib/providers';
 import { useTheme, useThemeStore } from './lib/theme';
+import type { Provider } from './lib/acp';
+import type { UsageState } from './lib/types';
 import { t } from './lib/i18n';
 import './styles.css';
 
@@ -28,6 +31,8 @@ function App() {
   const setDraft = useSessionStore((s) => s.setDraft);
   const draft = useSessionStore((s) => draftFor(s, activeId));
   const reopening = useSessionStore(isReopening);
+  const providers = useProviderStore((s) => s.providers);
+  const defaultModel = useProviderStore((s) => s.defaultModel);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useTheme();
@@ -37,7 +42,33 @@ function App() {
     void init();
   }, [init]);
 
+  // The catalog the ring needs is the provider store's, which the settings
+  // panel only asks for when it opens; the main window wants it from the start.
+  useEffect(() => {
+    void useProviderStore.getState().load();
+  }, []);
+
   const active = sessions.find((s) => s.id === activeId);
+
+  // The ring shows context pressure from the moment the session names a model,
+  // not only after the first report: the window comes from the catalog, and
+  // occupancy reads as zero until the agent says otherwise. Once reports
+  // arrive they speak for themselves, window included.
+  const modelRef = active?.model?.currentValue || defaultModel || '';
+  const windowSize = contextWindowOf(providers, modelRef);
+  const usage: UsageState | undefined =
+    active?.usage ??
+    (windowSize
+      ? {
+          used: 0,
+          size: windowSize,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          reasoningOutputTokens: 0,
+        }
+      : undefined);
 
   return (
     <div className="flex h-full">
@@ -88,12 +119,23 @@ function App() {
           onSend={sendTurn}
           busy={isBusy(active) || reopening}
           onStop={stopTurn}
+          usage={usage}
         />
       </main>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <Toaster theme={theme} position="top-center" />
     </div>
   );
+}
+
+// The configured window of the model a reference names, or undefined when the
+// reference is empty, malformed, or names a model that is gone. A reference is
+// spelled `providerId/modelId`, and model ids never carry a slash.
+function contextWindowOf(providers: Provider[], reference: string): number | undefined {
+  const slash = reference.lastIndexOf('/');
+  if (slash <= 0) return undefined;
+  const provider = providers.find((p) => p.id === reference.slice(0, slash));
+  return provider?.models.find((m) => m.id === reference.slice(slash + 1))?.contextWindow;
 }
 
 export default App;

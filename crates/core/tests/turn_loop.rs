@@ -42,6 +42,7 @@ fn kind_of(event: &Event) -> &'static str {
         Event::ToolCallBegin { .. } => "ToolCallBegin",
         Event::ToolCallEnd { .. } => "ToolCallEnd",
         Event::ToolCallNamed { .. } => "ToolCallNamed",
+        Event::UsageRecorded { .. } => "UsageRecorded",
         Event::TurnComplete { .. } => "TurnComplete",
     }
 }
@@ -186,6 +187,89 @@ async fn a_plain_exchange_records_history_and_emits_in_order() {
         &history[2],
         ResponseItem::Message { role: Role::Assistant, content } if content == "Hello"
     ));
+}
+
+#[tokio::test]
+async fn a_reported_usage_is_recorded_and_announced() {
+    let session = session();
+    let sink = Recorder::default();
+    let (tools, _calls) = tool_registry();
+    let usage = srud_core::client::TokenUsage {
+        input_tokens: 120,
+        output_tokens: 30,
+        cached_input_tokens: 100,
+        cache_write_input_tokens: 20,
+        reasoning_output_tokens: 8,
+    };
+    let client = Scripted::new(vec![vec![text("Hi"), Ok(ModelEvent::Usage(usage)), done()]]);
+
+    let log = Volatile::new();
+
+    let result = srud_core::run_turn(
+        &session,
+        TurnInput { text: "hi".into() },
+        client.as_ref(),
+        &tools,
+        &log,
+        &sink,
+    )
+    .await
+    .expect("turn runs");
+
+    assert_eq!(result.reason, TurnEndReason::Completed);
+
+    // The announcement follows the message its request produced: the usage is
+    // the cost of that request, and a consumer pairing them reads them in order.
+    let kinds = sink.kinds();
+    let usage_at = kinds
+        .iter()
+        .position(|k| *k == "UsageRecorded")
+        .expect("usage is announced");
+    let message_at = kinds
+        .iter()
+        .rposition(|k| *k == "AgentMessageDelta")
+        .expect("message is announced");
+    assert!(
+        usage_at > message_at,
+        "usage comes after the message it costs: {kinds:?}"
+    );
+
+    let recorded: Vec<_> = log.records().into_iter().map(|line| line.event).collect();
+    assert!(
+        recorded.contains(&srud_core::SessionEvent::UsageRecorded {
+            turn_id: result.turn_id,
+            usage,
+        }),
+        "the usage record is durable: {recorded:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_provider_that_reports_nothing_produces_no_usage_record() {
+    let session = session();
+    let sink = Recorder::default();
+    let (tools, _calls) = tool_registry();
+    let client = Scripted::new(vec![vec![text("Hi"), done()]]);
+    let log = Volatile::new();
+
+    srud_core::run_turn(
+        &session,
+        TurnInput { text: "hi".into() },
+        client.as_ref(),
+        &tools,
+        &log,
+        &sink,
+    )
+    .await
+    .expect("turn runs");
+
+    assert!(!sink.kinds().contains(&"UsageRecorded"));
+    assert!(
+        !log.records()
+            .iter()
+            .any(|line| matches!(line.event, srud_core::SessionEvent::UsageRecorded { .. })),
+        "absence is not recorded as zeroes"
+    );
 }
 
 #[tokio::test]

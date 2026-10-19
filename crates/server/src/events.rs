@@ -65,12 +65,17 @@ impl EventHub {
     }
 
     /// Binds a sink for one session's turns.
+    ///
+    /// `context_size` is the configured window of the session's model, carried
+    /// on every usage notification the sink emits; `None` when the model has
+    /// no window configured.
     #[must_use]
-    pub fn sink_for(&self, session_id: CoreSessionId) -> TurnSink {
+    pub fn sink_for(&self, session_id: CoreSessionId, context_size: Option<u64>) -> TurnSink {
         TurnSink {
             tx: self.tx.clone(),
             session_id: SessionId::new(session_id.to_string()),
             turn_id: OnceLock::new(),
+            context_size,
         }
     }
 }
@@ -86,6 +91,7 @@ pub struct TurnSink {
     tx: broadcast::Sender<Notification<SessionNotification>>,
     session_id: SessionId,
     turn_id: OnceLock<TurnId>,
+    context_size: Option<u64>,
 }
 
 impl EventSink for TurnSink {
@@ -102,8 +108,12 @@ impl EventSink for TurnSink {
                 None => return,
             },
         };
-        let Some(notification) = to_notification(&self.session_id, &turn_id.to_string(), event)
-        else {
+        let Some(notification) = to_notification(
+            &self.session_id,
+            &turn_id.to_string(),
+            event,
+            self.context_size,
+        ) else {
             return;
         };
         // A send error only means there are no subscribers right now; the
@@ -133,7 +143,7 @@ mod tests {
     fn sink_broadcasts_mapped_notifications() {
         let hub = EventHub::new();
         let mut rx = hub.subscribe();
-        let sink = hub.sink_for(CoreSessionId::new());
+        let sink = hub.sink_for(CoreSessionId::new(), None);
 
         sink.emit(Event::AgentMessageDelta {
             message_id: None,
@@ -167,7 +177,7 @@ mod tests {
     fn notification_carries_turn_id_in_meta() {
         let hub = EventHub::new();
         let mut rx = hub.subscribe();
-        let sink = hub.sink_for(CoreSessionId::new());
+        let sink = hub.sink_for(CoreSessionId::new(), None);
 
         let turn_id = TurnId::new();
         sink.emit(Event::TurnStarted { turn_id });
@@ -208,7 +218,7 @@ mod tests {
     #[test]
     fn sink_without_subscribers_does_not_panic() {
         let hub = EventHub::new();
-        let sink = hub.sink_for(CoreSessionId::new());
+        let sink = hub.sink_for(CoreSessionId::new(), None);
         sink.emit(Event::TurnStarted {
             turn_id: TurnId::new(),
         });

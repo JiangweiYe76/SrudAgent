@@ -64,6 +64,35 @@ pub struct SrudMeta {
     /// `stopReason: "end_turn"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<bool>,
+    /// Token counts for the step that just ran, breaking down what the stable
+    /// `usage` fields aggregate. Absent when the provider reported no usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SrudUsage>,
+}
+
+/// Per-step token counts carried under `_meta.srud.usage`.
+///
+/// The standard `UsageUpdate` only has `used` and `size`; the breakdown lives
+/// here so third-party clients still parse the stable fields while SrudAgent's
+/// own frontend can show cache hits and reasoning.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SrudUsage {
+    /// Tokens sent to the model for this step.
+    #[serde(default)]
+    pub input_tokens: u64,
+    /// Tokens the model produced for this step.
+    #[serde(default)]
+    pub output_tokens: u64,
+    /// Input tokens served from the provider's cache.
+    #[serde(default)]
+    pub cached_input_tokens: u64,
+    /// Input tokens written into the cache (Responses API only).
+    #[serde(default)]
+    pub cache_write_input_tokens: u64,
+    /// Output tokens spent on reasoning.
+    #[serde(default)]
+    pub reasoning_output_tokens: u64,
 }
 
 impl SrudMeta {
@@ -77,6 +106,7 @@ impl SrudMeta {
             && self.turn_end_reason.is_none()
             && self.limit.is_none()
             && self.refusal.is_none()
+            && self.usage.is_none()
     }
 
     /// Wraps this payload as a standalone `_meta` object: `{"srud": {...}}`.

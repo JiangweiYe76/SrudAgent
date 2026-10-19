@@ -138,6 +138,9 @@ fn describe(entry: &SessionEvent) -> String {
         SessionEvent::Model { .. } => "the model choice".into(),
         SessionEvent::TurnStarted { turn_id } => format!("the start of turn {turn_id}"),
         SessionEvent::TurnEnded { turn_id, .. } => format!("the end of turn {turn_id}"),
+        SessionEvent::UsageRecorded { turn_id, .. } => {
+            format!("the token usage of turn {turn_id}")
+        }
         SessionEvent::Item { turn_id, item, .. } => {
             let kind = match item {
                 ResponseItem::Message { .. } => "message",

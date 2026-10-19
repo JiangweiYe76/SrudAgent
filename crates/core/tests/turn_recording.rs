@@ -72,6 +72,7 @@ fn kind_of(event: &Event) -> String {
         Event::ToolCallBegin { .. } => "ToolCallBegin".into(),
         Event::ToolCallEnd { .. } => "ToolCallEnd".into(),
         Event::ToolCallNamed { .. } => "ToolCallNamed".into(),
+        Event::UsageRecorded { .. } => "UsageRecorded".into(),
         Event::TurnComplete { .. } => "TurnComplete".into(),
     }
 }
@@ -136,6 +137,7 @@ fn describe(entry: &SessionEvent) -> String {
         SessionEvent::Model { .. } => "model".into(),
         SessionEvent::TurnStarted { .. } => "turn_started".into(),
         SessionEvent::TurnEnded { .. } => "turn_ended".into(),
+        SessionEvent::UsageRecorded { .. } => "usage".into(),
         SessionEvent::Item { item, .. } => match item {
             ResponseItem::Message {
                 role: srud_core::types::Role::User,

@@ -263,6 +263,60 @@ describe('sessionStore live path', () => {
     expect(displayTitle(active())).toBe('New session');
   });
 
+  it('takes a usage report and adds its breakdown to the session totals', async () => {
+    const { useSessionStore, active, fire, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    fire(
+      { sessionUpdate: 'usage_update', used: 1000, size: 128000 },
+      {
+        turnId: 't1',
+        usage: {
+          inputTokens: 900,
+          outputTokens: 100,
+          cachedInputTokens: 600,
+          cacheWriteInputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+      },
+    );
+    expect(active().usage).toEqual({
+      used: 1000,
+      size: 128000,
+      inputTokens: 900,
+      outputTokens: 100,
+      cachedInputTokens: 600,
+      cacheWriteInputTokens: 0,
+      reasoningOutputTokens: 0,
+    });
+
+    // The next report replaces the occupancy — it is the newest reading of the
+    // same window — and adds its share to the totals the cache rate is read from.
+    // Fields it leaves out read as zero, so the earlier totals pass through.
+    fire(
+      { sessionUpdate: 'usage_update', used: 2500, size: 128000 },
+      { turnId: 't1', usage: { inputTokens: 1600, cachedInputTokens: 1200 } },
+    );
+    expect(active().usage).toEqual({
+      used: 2500,
+      size: 128000,
+      inputTokens: 2500,
+      outputTokens: 100,
+      cachedInputTokens: 1800,
+      cacheWriteInputTokens: 0,
+      reasoningOutputTokens: 0,
+    });
+  });
+
+  it('a usage report without counts to read changes nothing', async () => {
+    const { useSessionStore, active, fire, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    fire({ sessionUpdate: 'usage_update', used: 'many', size: 128000 });
+    expect(active().usage).toBeUndefined();
+  });
+
   it('renaming a draft stores the title locally without backend work', async () => {
     const { useSessionStore, active, calls } = await boot();
     const id = active().id;

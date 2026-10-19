@@ -22,7 +22,7 @@
 
 use futures::StreamExt;
 
-use crate::client::{ModelClient, ModelEvent, ModelRequest};
+use crate::client::{ModelClient, ModelEvent, ModelRequest, TokenUsage};
 use crate::context;
 use crate::prompt;
 use crate::session::Session;
@@ -179,6 +179,28 @@ impl<'a> Journal<'a> {
         self.log
             .record(&crate::session_event::SessionEvent::system(content))
             .await
+    }
+
+    /// Records one request's token counts and announces them.
+    ///
+    /// Separate from [`Journal::record`]: the counts are not a history entry —
+    /// they describe what a request cost, and must not enter the conversation
+    /// the next request is built from.
+    ///
+    /// # Errors
+    ///
+    /// As [`Journal::record`]. The turn loop treats a refusal as a loss of
+    /// diagnostics, not of the turn: the counts are the provider's statement
+    /// about a request that already happened.
+    pub async fn record_usage(&self, usage: TokenUsage) -> Result<(), RecordError> {
+        self.log
+            .record(&crate::session_event::SessionEvent::UsageRecorded {
+                turn_id: self.turn_id,
+                usage,
+            })
+            .await?;
+        self.sink.emit(Event::UsageRecorded { usage });
+        Ok(())
     }
 
     /// Records the turn's end and then announces it.
@@ -410,6 +432,9 @@ async fn run_step(
     let mut message = String::new();
     let mut reasoning = String::new();
     let mut tool_calls: Vec<PendingToolCall> = Vec::new();
+    // The last report wins: a provider that repeats usage across chunks should
+    // be read at its final word, the same as any other aggregate.
+    let mut usage: Option<TokenUsage> = None;
 
     loop {
         if cancel.is_cancelled() {
@@ -418,6 +443,7 @@ async fn run_step(
             // does not change why the turn is ending, and reporting it here would
             // report the interruption as something else.
             let _ = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
+            flush_usage(journal, usage).await;
             return Err(TurnEndReason::Interrupted);
         }
 
@@ -425,6 +451,7 @@ async fn run_step(
         let Some(item) = next else {
             // The provider went away without signalling completion.
             let _ = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
+            flush_usage(journal, usage).await;
             return Err(TurnEndReason::Error);
         };
 
@@ -433,6 +460,7 @@ async fn run_step(
             Err(_) => {
                 let _ =
                     flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
+                flush_usage(journal, usage).await;
                 return Err(TurnEndReason::Error);
             }
         };
@@ -466,6 +494,7 @@ async fn run_step(
                 name,
                 arguments,
             }),
+            ModelEvent::Usage(reported) => usage = Some(reported),
             ModelEvent::Done => break,
         }
     }
@@ -477,6 +506,7 @@ async fn run_step(
     flush_assistant(journal, &message_id, &thought_id, &message, &reasoning)
         .await
         .map_err(|_| TurnEndReason::Error)?;
+    flush_usage(journal, usage).await;
 
     if tool_calls.is_empty() {
         return Ok(StepOutcome::Finished);
@@ -492,6 +522,17 @@ async fn run_step(
     }
 
     Ok(StepOutcome::NeedsFollowUp)
+}
+
+/// Records the step's token counts, if the provider reported any.
+///
+/// Best-effort: a refused record costs the diagnostics of one request, not the
+/// turn — the counts describe a request that already happened, and the
+/// conversation is already durable by the time this runs.
+async fn flush_usage(journal: &Journal<'_>, usage: Option<TokenUsage>) {
+    if let Some(usage) = usage {
+        let _ = journal.record_usage(usage).await;
+    }
 }
 
 /// A tool call the model asked for, not yet executed.

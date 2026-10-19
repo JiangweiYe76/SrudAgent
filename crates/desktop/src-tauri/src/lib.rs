@@ -168,6 +168,7 @@ async fn handle_provider_command(
                         id: m.id,
                         name: m.name,
                         modalities: m.modalities,
+                        context_window: m.context_window,
                     })
                     .collect(),
             };
@@ -472,6 +473,7 @@ mod tests {
                 id: "gpt-4o".into(),
                 name: None,
                 modalities: vec![],
+                context_window: None,
             }],
         };
         // No network call: building the client is all this shell decides.
