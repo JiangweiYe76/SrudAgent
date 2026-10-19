@@ -307,7 +307,9 @@ impl Agent {
         self.name_from_first_prompt(&request.session_id, &text)
             .await;
 
-        let sink = self.hub.sink_for(session.id());
+        let sink = self
+            .hub
+            .sink_for(session.id(), self.context_size_for(&request.session_id));
         let result = srud_core::turn::run_turn(
             &session,
             srud_core::types::TurnInput { text },
@@ -389,6 +391,7 @@ impl Agent {
         // the whole conversation by the time `session/load` resolves. Anything
         // sent after would arrive as a change to a session the client already
         // believes it has.
+        let context_size = self.context_size_for(&request.session_id);
         let reasons: std::collections::HashMap<_, _> = loaded.turn_ends.iter().cloned().collect();
         let mut replay = loaded.conversation.iter().peekable();
         while let Some(event) = replay.next() {
@@ -403,7 +406,9 @@ impl Agent {
             } else {
                 None
             };
-            if let Some(notification) = replay_notification(&request.session_id, event, turn_end) {
+            if let Some(notification) =
+                replay_notification(&request.session_id, event, turn_end, context_size)
+            {
                 self.hub.send(notification);
             }
         }
@@ -512,6 +517,18 @@ impl Agent {
                     format!("cannot build a client for `{reference}`: {err}"),
                 )
             })
+    }
+
+    /// The configured context window of the session's model.
+    ///
+    /// `None` when the host configured no providers, the session names no
+    /// model, the model is no longer configured, or no window was set for it —
+    /// in each case usage reports simply go unshown rather than guessed at.
+    fn context_size_for(&self, id: &SessionId) -> Option<u64> {
+        let providers = self.providers.as_ref()?;
+        let reference = self.sessions.model(id)?;
+        let (_provider, model) = providers.store.resolve(&reference).ok()?;
+        model.context_window
     }
 
     /// The client the host fixed at construction, when it fixed one.
@@ -639,6 +656,7 @@ impl Agent {
                         id: model.id,
                         name: model.name,
                         modalities: model.modalities,
+                        context_window: model.context_window,
                     })
                     .collect(),
             })
@@ -1931,6 +1949,7 @@ mod tests {
                     id: (*model).to_owned(),
                     name: None,
                     modalities: Vec::new(),
+                    context_window: None,
                 })
                 .collect(),
         }

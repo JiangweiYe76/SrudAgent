@@ -1,6 +1,10 @@
+import { useState } from 'react';
+
 import { ArrowUp, Square } from 'lucide-react';
 import { t } from '@/lib/i18n';
+import type { UsageState } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { UsageModal } from '@/components/UsageModal';
 
 interface ChatInputProps {
   // The draft of the session on screen, and the way to change it.
@@ -11,9 +15,16 @@ interface ChatInputProps {
   // the row does not shift when a turn starts; it is only clickable while busy.
   busy: boolean;
   onStop: () => void;
+  // Token usage of the session on screen. Absent until a step reports any —
+  // a model with no configured window shows nothing here.
+  usage?: UsageState;
 }
 
-export function ChatInput({ value, onValueChange, onSend, busy, onStop }: ChatInputProps) {
+export function ChatInput({ value, onValueChange, onSend, busy, onStop, usage }: ChatInputProps) {
+  // The detail view behind the ring. It lives here so the indicator and its
+  // modal come and go together with the usage data itself.
+  const [usageOpen, setUsageOpen] = useState(false);
+
   const submit = () => {
     const text = value.trim();
     if (!text || busy) return;
@@ -38,6 +49,7 @@ export function ChatInput({ value, onValueChange, onSend, busy, onStop }: ChatIn
         }}
       />
       <div className="flex items-center justify-end gap-1.5">
+        {usage && <UsageIndicator usage={usage} onOpen={() => setUsageOpen(true)} />}
         <Button
           variant="outline"
           size="icon"
@@ -64,6 +76,53 @@ export function ChatInput({ value, onValueChange, onSend, busy, onStop }: ChatIn
           <ArrowUp className="h-4 w-4" />
         </Button>
       </div>
+      {usage && <UsageModal usage={usage} open={usageOpen} onOpenChange={setUsageOpen} />}
     </div>
+  );
+}
+
+// Context pressure, beside the stop button.
+//
+// The ring fills as the context window is consumed; its tooltip carries the
+// exact counts, and pressing it opens the full breakdown — cache hits and all.
+function UsageIndicator({ usage, onOpen }: { usage: UsageState; onOpen: () => void }) {
+  const ratio = usage.size > 0 ? Math.min(1, usage.used / usage.size) : 0;
+  const circumference = 2 * Math.PI * 6;
+  const contextTitle = t('chat.context', {
+    pct: Math.round(ratio * 100),
+    used: usage.used.toLocaleString(),
+    size: usage.size.toLocaleString(),
+  });
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="mr-1 flex cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-item-hover hover:text-foreground"
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label={contextTitle}>
+        <title>{contextTitle}</title>
+        <circle
+          cx="8"
+          cy="8"
+          r="6"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          opacity="0.25"
+        />
+        {/* Starts at twelve and fills clockwise; the dash is the used share. */}
+        <circle
+          cx="8"
+          cy="8"
+          r="6"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={`${circumference * ratio} ${circumference}`}
+          transform="rotate(-90 8 8)"
+        />
+      </svg>
+    </button>
   );
 }

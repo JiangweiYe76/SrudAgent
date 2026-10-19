@@ -190,6 +190,18 @@ pub enum SessionEvent {
         /// Why it stopped.
         reason: TurnEndReason,
     },
+
+    /// One model request's token counts, as the provider reported them.
+    ///
+    /// Not a history entry: it describes what a request cost, not what the
+    /// conversation contains. Written after the step's assistant message, so a
+    /// reader sees each request's cost where the request happened.
+    UsageRecorded {
+        /// Which turn.
+        turn_id: TurnId,
+        /// The counts themselves.
+        usage: crate::client::TokenUsage,
+    },
 }
 
 /// One line of the log: an event, and when it was written.
@@ -288,7 +300,8 @@ impl SessionEvent {
             | Self::Model { .. } => None,
             Self::TurnStarted { turn_id }
             | Self::Item { turn_id, .. }
-            | Self::TurnEnded { turn_id, .. } => Some(*turn_id),
+            | Self::TurnEnded { turn_id, .. }
+            | Self::UsageRecorded { turn_id, .. } => Some(*turn_id),
         }
     }
 

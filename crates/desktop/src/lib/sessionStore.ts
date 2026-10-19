@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import type { ModelOptions, Session, Step, ToolCall, Turn, TurnEndReason } from './types';
+import type {
+  ModelOptions,
+  Session,
+  Step,
+  ToolCall,
+  Turn,
+  TurnEndReason,
+  UsageState,
+} from './types';
 import { t } from './i18n';
 import { loadDrafts, saveDrafts } from './drafts';
 import {
@@ -171,6 +179,35 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
   if (kind === 'session_info_update') {
     const title = typeof update.title === 'string' ? update.title : null;
     return { ...session, title, updatedAt: replaying ? session.updatedAt : Date.now() };
+  }
+
+  // A usage report is session-level too: it describes the context the session
+  // is working in, not one turn's output, and it applies whether or not a turn
+  // is open. The stable fields give the newest occupancy; the `_meta.srud.usage`
+  // breakdown adds up across reports for the cache hit rate.
+  if (kind === 'usage_update') {
+    const used = Number(update.used);
+    const size = Number(update.size);
+    if (!Number.isFinite(used) || !Number.isFinite(size)) return null;
+    const breakdown = srudMeta(params).usage as Json | undefined;
+    // A count the breakdown leaves out reads as zero: providers report
+    // differently, and a missing field means "not reported", not "unknown".
+    const step = (field: string) =>
+      typeof breakdown?.[field] === 'number' ? breakdown[field] : 0;
+    const total = (field: keyof UsageState) => (session.usage?.[field] ?? 0) + step(field);
+    return {
+      ...session,
+      usage: {
+        used,
+        size,
+        inputTokens: total('inputTokens'),
+        outputTokens: total('outputTokens'),
+        cachedInputTokens: total('cachedInputTokens'),
+        cacheWriteInputTokens: total('cacheWriteInputTokens'),
+        reasoningOutputTokens: total('reasoningOutputTokens'),
+      },
+      updatedAt: replaying ? session.updatedAt : Date.now(),
+    };
   }
 
   // So is a model change: it was already recorded when this arrived, since the

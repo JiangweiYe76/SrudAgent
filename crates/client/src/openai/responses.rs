@@ -6,12 +6,13 @@
 use async_openai::types::responses::{
     CreateResponse, CreateResponseArgs, EasyInputContent, EasyInputMessage, FunctionCallOutput,
     FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, InputItem, InputParam, Item,
-    MessageType, OutputItem, ResponseStreamEvent, ResponseTextDeltaEvent, Role as ApiRole, Tool,
+    MessageType, OutputItem, ResponseStreamEvent, ResponseTextDeltaEvent, ResponseUsage,
+    Role as ApiRole, Tool,
 };
 use async_openai::{config::OpenAIConfig, Client};
 use futures::StreamExt;
 use srud_core::client::{
-    ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream,
+    ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream, TokenUsage,
 };
 use srud_core::tools::ToolDefinition;
 use srud_core::types::Role;
@@ -86,7 +87,7 @@ impl ModelClient for ResponsesClient {
                         return;
                     }
                 };
-                if let Some(item) = into_stream_item(translate(event, &mut pending)) {
+                for item in into_stream_items(translate(event, &mut pending)) {
                     yield item;
                 }
             }
@@ -118,6 +119,13 @@ enum Translated {
     CallReady(ModelEvent),
     /// The provider reported a failure.
     Fail(String),
+    /// The provider reported the request's cost, then completed.
+    UsageDone(TokenUsage),
+    /// The provider reported the cost of a request that ended badly.
+    ///
+    /// A failed or incomplete response still charged for what it produced;
+    /// dropping the report here would make the cost invisible.
+    UsageFail(TokenUsage, String),
 }
 
 /// Builds the SDK request from a core request.
@@ -252,27 +260,71 @@ fn translate(event: ResponseStreamEvent, pending: &mut Option<PendingCall>) -> T
                 arguments: call.arguments,
             })
         }
-        ResponseStreamEvent::ResponseCompleted(_) => Translated::Emit(ModelEvent::Done),
-        ResponseStreamEvent::ResponseFailed(failed) => Translated::Fail(
+        ResponseStreamEvent::ResponseCompleted(completed) => {
+            match completed.response.usage.as_ref().map(to_token_usage) {
+                Some(usage) => Translated::UsageDone(usage),
+                None => Translated::Emit(ModelEvent::Done),
+            }
+        }
+        ResponseStreamEvent::ResponseFailed(failed) => fail_translated(
+            failed.response.usage.as_ref(),
             failed
                 .response
                 .error
                 .map(|error| error.message)
                 .unwrap_or_else(|| "response failed".to_owned()),
         ),
-        ResponseStreamEvent::ResponseIncomplete(_) => {
-            Translated::Fail("response ended incomplete".to_owned())
-        }
+        ResponseStreamEvent::ResponseIncomplete(incomplete) => fail_translated(
+            incomplete.response.usage.as_ref(),
+            "response ended incomplete".to_owned(),
+        ),
         _ => Translated::Ignore,
     }
 }
 
-/// Adapts a translated event into a stream item.
-fn into_stream_item(translated: Translated) -> Option<Result<ModelEvent, ModelError>> {
+/// A failure, carrying the reported cost of the request first if there was one.
+fn fail_translated(usage: Option<&ResponseUsage>, message: String) -> Translated {
+    match usage {
+        Some(usage) => Translated::UsageFail(to_token_usage(usage), message),
+        None => Translated::Fail(message),
+    }
+}
+
+/// Maps the endpoint's usage onto the core's counts.
+///
+/// A negative cache-write count — which the endpoint's signed field allows but
+/// no provider is known to send — reads as zero, same as a missing one.
+fn to_token_usage(usage: &ResponseUsage) -> TokenUsage {
+    TokenUsage {
+        input_tokens: u64::from(usage.input_tokens),
+        output_tokens: u64::from(usage.output_tokens),
+        cached_input_tokens: u64::from(usage.input_tokens_details.cached_tokens),
+        cache_write_input_tokens: usage
+            .input_tokens_details
+            .cache_write_tokens
+            .and_then(|count| u64::try_from(count).ok())
+            .unwrap_or(0),
+        reasoning_output_tokens: u64::from(usage.output_tokens_details.reasoning_tokens),
+    }
+}
+
+/// Adapts a translated event into the stream items it produces.
+///
+/// Most events produce one; a completion or failure that carries a usage report
+/// produces the report and then the terminator, so the cost is seen before the
+/// step ends.
+fn into_stream_items(translated: Translated) -> Vec<Result<ModelEvent, ModelError>> {
     match translated {
-        Translated::Ignore => None,
-        Translated::Emit(event) | Translated::CallReady(event) => Some(Ok(event)),
-        Translated::Fail(message) => Some(Err(ModelError::Transport(message))),
+        Translated::Ignore => Vec::new(),
+        Translated::Emit(event) | Translated::CallReady(event) => vec![Ok(event)],
+        Translated::Fail(message) => vec![Err(ModelError::Transport(message))],
+        Translated::UsageDone(usage) => vec![Ok(ModelEvent::Usage(usage)), Ok(ModelEvent::Done)],
+        Translated::UsageFail(usage, message) => {
+            vec![
+                Ok(ModelEvent::Usage(usage)),
+                Err(ModelError::Transport(message)),
+            ]
+        }
     }
 }
 
@@ -435,8 +487,8 @@ mod tests {
                 response: sample_response(),
             },
         );
-        let item = into_stream_item(translate(event, &mut pending)).expect("an item");
-        assert!(matches!(item, Err(ModelError::Transport(_))));
+        let items = into_stream_items(translate(event, &mut pending));
+        assert!(matches!(items.last(), Some(Err(ModelError::Transport(_)))));
     }
 
     #[test]
@@ -449,7 +501,70 @@ mod tests {
             },
         );
         assert_eq!(translate(event, &mut pending), Translated::Ignore);
-        assert!(into_stream_item(Translated::Ignore).is_none());
+        assert!(into_stream_items(Translated::Ignore).is_empty());
+    }
+
+    /// The usage a completed, failed, or incomplete response can carry.
+    fn reported_usage() -> serde_json::Value {
+        serde_json::json!({
+            "input_tokens": 120,
+            "input_tokens_details": { "cached_tokens": 100, "cache_write_tokens": 20 },
+            "output_tokens": 30,
+            "output_tokens_details": { "reasoning_tokens": 8 },
+            "total_tokens": 150,
+        })
+    }
+
+    fn response_with_usage() -> async_openai::types::responses::Response {
+        serde_json::from_value(serde_json::json!({
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 0,
+            "model": "gpt-x",
+            "status": "completed",
+            "output": [],
+            "usage": reported_usage(),
+        }))
+        .expect("a response with usage deserializes")
+    }
+
+    const REPORTED: TokenUsage = TokenUsage {
+        input_tokens: 120,
+        output_tokens: 30,
+        cached_input_tokens: 100,
+        cache_write_input_tokens: 20,
+        reasoning_output_tokens: 8,
+    };
+
+    #[test]
+    fn a_completed_response_with_usage_reports_cost_before_done() {
+        let mut pending = None;
+        let event = ResponseStreamEvent::ResponseCompleted(
+            async_openai::types::responses::ResponseCompletedEvent {
+                sequence_number: 9,
+                response: response_with_usage(),
+            },
+        );
+        assert_eq!(
+            into_stream_items(translate(event, &mut pending)),
+            vec![Ok(ModelEvent::Usage(REPORTED)), Ok(ModelEvent::Done)],
+            "the cost is seen before the step ends"
+        );
+    }
+
+    #[test]
+    fn a_failed_response_still_reports_its_cost() {
+        let mut pending = None;
+        let event = ResponseStreamEvent::ResponseIncomplete(
+            async_openai::types::responses::ResponseIncompleteEvent {
+                sequence_number: 9,
+                response: response_with_usage(),
+            },
+        );
+        let items = into_stream_items(translate(event, &mut pending));
+        assert_eq!(items.len(), 2, "usage, then the failure: {items:?}");
+        assert_eq!(items[0], Ok(ModelEvent::Usage(REPORTED)));
+        assert!(matches!(items[1], Err(ModelError::Transport(_))));
     }
 
     #[test]

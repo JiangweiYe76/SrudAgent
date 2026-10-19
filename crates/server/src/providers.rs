@@ -56,6 +56,10 @@ pub struct Model {
     /// What the model accepts besides text. Empty is a text-only model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modalities: Vec<Modality>,
+    /// Maximum context window in tokens, as configured by the user. Used as
+    /// `UsageUpdate.size` so clients can render context pressure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
 }
 
 impl Model {
@@ -579,6 +583,7 @@ impl ProviderStore {
                         id: model.id.clone(),
                         name: model.name.clone(),
                         modalities: model.modalities.clone(),
+                        context_window: model.context_window,
                     })
                     .collect(),
             })
@@ -820,11 +825,13 @@ mod tests {
                     id: "small".into(),
                     name: Some("Small".into()),
                     modalities: vec![],
+                    context_window: None,
                 },
                 Model {
                     id: "large".into(),
                     name: None,
                     modalities: vec![],
+                    context_window: None,
                 },
             ],
         }
@@ -945,6 +952,7 @@ mod tests {
             id: "  ".into(),
             name: None,
             modalities: vec![],
+            context_window: None,
         }];
         assert!(matches!(
             store.upsert(blank),
@@ -957,11 +965,13 @@ mod tests {
                 id: "same".into(),
                 name: None,
                 modalities: vec![],
+                context_window: None,
             },
             Model {
                 id: "same".into(),
                 name: None,
                 modalities: vec![],
+                context_window: None,
             },
         ];
         assert!(matches!(

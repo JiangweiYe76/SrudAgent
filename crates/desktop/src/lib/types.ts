@@ -78,6 +78,21 @@ export interface Turn {
   endedAt?: number;
 }
 
+// The token usage a session has reported, as the latest `usage` update and the
+// running totals seen across the session's steps.
+export interface UsageState {
+  // Tokens currently in the model's context, from the newest report.
+  used: number;
+  // The configured context window, from the newest report.
+  size: number;
+  // Sums over every step that reported, for the detail view and the cache rate.
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  reasoningOutputTokens: number;
+}
+
 export interface Session {
   id: string;
   // The backend session id, once the session exists on the agent. Null until
@@ -99,6 +114,9 @@ export interface Session {
   // before the agent listed anything.
   model: ModelOptions | null;
   turns: Turn[];
+  // Token usage, once a step has reported any. Absent for a session whose
+  // model has no configured window — the agent sends nothing to show.
+  usage?: UsageState;
   createdAt: number;
   updatedAt: number;
 }

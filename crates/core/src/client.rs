@@ -9,6 +9,7 @@
 use std::pin::Pin;
 
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::tools::ToolDefinition;
@@ -45,6 +46,25 @@ pub enum ModelRequestItem {
     FunctionCallOutput { call_id: String, output: String },
 }
 
+/// Token counts for one model request, as the provider reported them.
+///
+/// Providers report per-request aggregates only: these are the numbers the
+/// provider charged for, not a breakdown of what inside the request cost what.
+/// Zero means the provider did not report the field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenUsage {
+    /// Tokens charged for the prompt.
+    pub input_tokens: u64,
+    /// Tokens charged for the completion.
+    pub output_tokens: u64,
+    /// Prompt tokens served from the provider's cache.
+    pub cached_input_tokens: u64,
+    /// Prompt tokens written to the provider's cache by this request.
+    pub cache_write_input_tokens: u64,
+    /// Completion tokens spent on reasoning.
+    pub reasoning_output_tokens: u64,
+}
+
 /// One message from the model's stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelEvent {
@@ -65,6 +85,11 @@ pub enum ModelEvent {
         name: String,
         arguments: String,
     },
+    /// Token counts for this request, as the provider reported them.
+    ///
+    /// Arrives before [`ModelEvent::Done`] when the provider reports it at all;
+    /// a provider that reports nothing emits no `Usage` for the request.
+    Usage(TokenUsage),
     /// The model finished this response.
     Done,
 }
@@ -169,7 +194,8 @@ mod tests {
                 ModelEvent::Done => break,
                 ModelEvent::ThoughtDelta { .. }
                 | ModelEvent::ToolCall { .. }
-                | ModelEvent::ToolCallNamed { .. } => {}
+                | ModelEvent::ToolCallNamed { .. }
+                | ModelEvent::Usage(_) => {}
             }
         }
         assert_eq!(text, "hello");

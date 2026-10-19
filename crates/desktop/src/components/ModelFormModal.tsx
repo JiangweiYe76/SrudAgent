@@ -34,9 +34,22 @@ export function ModelFormModal({ model, taken, onSave, onClose }: ModelFormModal
   const [id, setId] = useState(() => model?.id ?? '');
   const [name, setName] = useState(() => model?.name ?? '');
   const [modalities, setModalities] = useState<Modality[]>(() => model?.modalities ?? []);
+  const [context, setContext] = useState(() =>
+    model?.contextWindow === undefined ? '' : String(model.contextWindow),
+  );
 
   const trimmed = id.trim();
   const editing = model !== null;
+  // A blank window is "not configured"; anything else has to read as a whole
+  // number of tokens above zero, which is what the agent will store.
+  const contextTrimmed = context.trim();
+  const contextNumber =
+    contextTrimmed === '' ? undefined : Number(contextTrimmed.replace(/_/g, ''));
+  const contextProblem =
+    contextNumber !== undefined &&
+    (!Number.isInteger(contextNumber) || contextNumber <= 0)
+      ? t('providers.model.badContext')
+      : null;
   // The agent's own rules, in the same words it would refuse with: an id cannot
   // be blank, cannot carry `/` (which separates a reference from its provider),
   // and cannot be listed twice under one provider.
@@ -45,7 +58,7 @@ export function ModelFormModal({ model, taken, onSave, onClose }: ModelFormModal
       ? t('providers.model.badId')
       : taken.includes(trimmed)
         ? t('providers.model.duplicate', { id: trimmed })
-        : null;
+        : contextProblem;
 
   function save() {
     const label = name.trim();
@@ -54,6 +67,7 @@ export function ModelFormModal({ model, taken, onSave, onClose }: ModelFormModal
       id: trimmed,
       ...(label ? { name: label } : {}),
       modalities: kept,
+      ...(contextNumber !== undefined ? { contextWindow: contextNumber } : {}),
     });
     onClose();
   }
@@ -103,6 +117,17 @@ export function ModelFormModal({ model, taken, onSave, onClose }: ModelFormModal
               value={modalities}
               onChange={setModalities}
             />
+          </Field>
+
+          <Field
+            label={t('providers.model.field.context')}
+            hint={
+              <span className="text-[11px] text-muted-foreground">
+                {t('providers.model.field.context.hint')}
+              </span>
+            }
+          >
+            <TextInput value={context} placeholder="128000" onChange={setContext} />
           </Field>
 
           {problem && (

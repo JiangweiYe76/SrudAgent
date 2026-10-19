@@ -300,7 +300,8 @@ fn summarize_log(log: &ReadLog) -> Result<Summary, LoadError> {
             | SessionEvent::System { .. }
             | SessionEvent::TurnStarted { .. }
             | SessionEvent::Item { .. }
-            | SessionEvent::TurnEnded { .. } => {}
+            | SessionEvent::TurnEnded { .. }
+            | SessionEvent::UsageRecorded { .. } => {}
         }
         updated_at = Some(entry.time);
     }
@@ -419,7 +420,12 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
                     turn_ends.push((*turn_id, *reason));
                 }
             }
-            SessionEvent::Item { .. } => items.push(&entry.event),
+            // Usage is not history — `history_item` keeps it out of what the
+            // model is re-sent — but it belongs to the conversation: a client
+            // replaying the session wants each step's cost where it happened.
+            SessionEvent::Item { .. } | SessionEvent::UsageRecorded { .. } => {
+                items.push(&entry.event);
+            }
             SessionEvent::Session { .. } | SessionEvent::System { .. } => {}
         }
     }
@@ -1124,6 +1130,42 @@ mod tests {
             ],
             "the env-context block is the one left out"
         );
+    }
+
+    #[test]
+    fn usage_records_replay_to_the_client_but_never_to_the_model() {
+        // A restart must not blank the session's costs: the records ride into
+        // the replayed conversation. They stay out of the model's history,
+        // which is what `history_item` decides.
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            said(turn_id, "hello"),
+            SessionEvent::UsageRecorded {
+                turn_id,
+                usage: crate::client::TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 4,
+                    ..Default::default()
+                },
+            },
+            SessionEvent::TurnEnded {
+                turn_id,
+                reason: TurnEndReason::Completed,
+            },
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert!(
+            loaded
+                .conversation
+                .iter()
+                .any(|event| matches!(event, SessionEvent::UsageRecorded { .. })),
+            "the client must be shown the step's cost"
+        );
+        assert_eq!(loaded.history.len(), 1, "{:?}", loaded.history);
     }
 
     #[test]

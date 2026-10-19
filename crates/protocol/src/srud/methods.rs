@@ -158,6 +158,11 @@ pub struct ProviderModel {
     /// What the model accepts besides text.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modalities: Vec<Modality>,
+    /// Maximum context window in tokens, as configured by the user. The agent
+    /// reports it as `UsageUpdate.size` so clients can render context pressure.
+    /// Absent when the model has no configured window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
 }
 
 /// Something a model accepts as input, besides the text it always takes.
@@ -425,6 +430,7 @@ mod tests {
                 id: "gpt-4o".into(),
                 name: Some("GPT-4o".into()),
                 modalities: vec![Modality::Image],
+                context_window: Some(128_000),
             }],
         }
     }

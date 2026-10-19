@@ -13,14 +13,15 @@
 //!   non-text content is dropped (the agent declares text-only prompt
 //!   capabilities).
 
+use srud_core::client::TokenUsage;
 use srud_core::session_event::SessionEvent;
 use srud_core::types::{Event, ResponseItem, Role, TurnEndReason};
 use srud_protocol::acp::{
     AcpError, ContentBlock, ContentChunk, Meta, Notification, SessionId, SessionNotification,
     SessionUpdate, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, CLIENT_METHOD_NAMES,
+    ToolCallUpdateFields, UsageUpdate, CLIENT_METHOD_NAMES,
 };
-use srud_protocol::srud::meta::SrudMeta;
+use srud_protocol::srud::meta::{SrudMeta, SrudUsage};
 use srud_protocol::srud::turn_end::{map_turn_end_reason, TurnEndWire};
 
 /// Which core events have no `session/update` representation.
@@ -30,6 +31,10 @@ pub enum Skipped {
     TurnStarted,
     /// The turn ended; the outcome flows through the prompt response.
     TurnComplete,
+    /// The provider reported usage, but the session's model has no configured
+    /// context window, so there is no `size` for a `usage` update to report
+    /// against. The breakdown has nowhere else to ride.
+    NoContextWindow,
 }
 
 /// Converts one core `Event` into its ACP `SessionUpdate`.
@@ -37,8 +42,14 @@ pub enum Skipped {
 /// The turn id is not attached here — [`to_notification`] carries it on the
 /// outer `SessionNotification`, since not every update variant has a `meta`
 /// field of its own.
+///
+/// `context_size` is the configured window of the session's model: a usage
+/// report without one to compare against has no wire representation.
 #[must_use]
-pub fn to_session_update(event: Event) -> Option<Result<SessionUpdate, Skipped>> {
+pub fn to_session_update(
+    event: Event,
+    context_size: Option<u64>,
+) -> Option<Result<SessionUpdate, Skipped>> {
     let update = match event {
         Event::TurnStarted { .. } => return Some(Err(Skipped::TurnStarted)),
         Event::UserMessage { content } => SessionUpdate::UserMessageChunk(ContentChunk::new(
@@ -63,6 +74,18 @@ pub fn to_session_update(event: Event) -> Option<Result<SessionUpdate, Skipped>>
         Event::ToolCallEnd {
             call_id, result, ..
         } => tool_result(call_id, result.output, result.is_error),
+        Event::UsageRecorded { usage } => {
+            let Some(size) = context_size else {
+                return Some(Err(Skipped::NoContextWindow));
+            };
+            // What the last request put into the context, plus what it produced
+            // back: the next request will carry both, so this is the occupancy
+            // after the step that reported it.
+            SessionUpdate::UsageUpdate(UsageUpdate::new(
+                usage.input_tokens + usage.output_tokens,
+                size,
+            ))
+        }
         Event::TurnComplete { .. } => return Some(Err(Skipped::TurnComplete)),
     };
     Some(Ok(update))
@@ -160,18 +183,25 @@ fn chunk(delta: String, message_id: Option<srud_core::session_event::MessageId>)
 /// Builds the `session/update` notification for a core event.
 ///
 /// Returns `None` for events that have no wire representation (see
-/// [`Skipped`]).
+/// [`Skipped`]). `context_size` is the configured window of the session's
+/// model, required for a usage report to be representable at all.
 #[must_use]
 pub fn to_notification(
     session_id: &SessionId,
     turn_id: &str,
     event: Event,
+    context_size: Option<u64>,
 ) -> Option<Notification<SessionNotification>> {
-    let update = match to_session_update(event)? {
+    // The breakdown is read before the event is consumed by the mapping.
+    let usage = match &event {
+        Event::UsageRecorded { usage } => Some(srud_usage(usage)),
+        _ => None,
+    };
+    let update = match to_session_update(event, context_size)? {
         Ok(update) => update,
         Err(_) => return None,
     };
-    let (update, outer_meta) = attach_turn_meta(update, turn_id, None);
+    let (update, outer_meta) = attach_turn_meta(update, turn_id, None, usage);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -184,21 +214,35 @@ pub fn to_notification(
 /// The turn id goes on the **outer** `SessionNotification` rather than the inner
 /// update variant, because several `SessionUpdate` variants do not carry a `meta`
 /// field of their own, and a single placement keeps the reader uniform. The end
-/// reason rides with it, on the same placement, for the same reason.
+/// reason and the usage breakdown ride with it, on the same placement, for the
+/// same reason.
 fn attach_turn_meta(
     update: SessionUpdate,
     turn_id: &str,
     turn_end: Option<TurnEndReason>,
+    usage: Option<SrudUsage>,
 ) -> (SessionUpdate, Meta) {
     let srud = SrudMeta {
         turn_id: Some(turn_id.to_string()),
         turn_end_reason: turn_end.map(replay_reason_wire).map(str::to_string),
+        usage,
         ..Default::default()
     };
     let meta = srud
         .to_meta()
         .expect("a payload with turnId is never empty");
     (update, meta)
+}
+
+/// Maps a core usage report onto its `_meta.srud.usage` breakdown.
+fn srud_usage(usage: &TokenUsage) -> SrudUsage {
+    SrudUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
+        cache_write_input_tokens: usage.cache_write_input_tokens,
+        reasoning_output_tokens: usage.reasoning_output_tokens,
+    }
 }
 
 /// The wire spelling of a reason a client is shown.
@@ -238,7 +282,30 @@ pub fn replay_notification(
     session_id: &SessionId,
     event: &SessionEvent,
     turn_end: Option<TurnEndReason>,
+    context_size: Option<u64>,
 ) -> Option<Notification<SessionNotification>> {
+    // A recorded usage report goes out exactly as the live one did, so a client
+    // sees one shape for it. Without a configured window it stays unshown, as
+    // live it would have been.
+    if let SessionEvent::UsageRecorded { turn_id, usage } = event {
+        let size = context_size?;
+        let update = SessionUpdate::UsageUpdate(UsageUpdate::new(
+            usage.input_tokens + usage.output_tokens,
+            size,
+        ));
+        let (update, outer_meta) = attach_turn_meta(
+            update,
+            &turn_id.to_string(),
+            turn_end,
+            Some(srud_usage(usage)),
+        );
+        let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
+        return Some(Notification {
+            method: CLIENT_METHOD_NAMES.session_update.into(),
+            params: Some(notification),
+        });
+    }
+
     let SessionEvent::Item {
         turn_id,
         message_id,
@@ -281,7 +348,7 @@ pub fn replay_notification(
         } => tool_result(call_id.clone(), output.clone(), *is_error),
     };
 
-    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), turn_end);
+    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), turn_end, None);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -341,7 +408,8 @@ mod tests {
     }
 
     fn notify(event: Event) -> Notification<SessionNotification> {
-        to_notification(&session_id(), "turn-1", event).expect("event maps to a notification")
+        to_notification(&session_id(), "turn-1", event, Some(128_000))
+            .expect("event maps to a notification")
     }
 
     #[test]
@@ -349,17 +417,104 @@ mod tests {
         use srud_core::types::TurnId;
         let turn_id = TurnId::new();
         assert_eq!(
-            to_session_update(Event::TurnStarted { turn_id }),
+            to_session_update(Event::TurnStarted { turn_id }, None),
             Some(Err(Skipped::TurnStarted))
         );
         assert_eq!(
-            to_session_update(Event::TurnComplete {
-                turn_id,
-                reason: TurnEndReason::Completed,
-            }),
+            to_session_update(
+                Event::TurnComplete {
+                    turn_id,
+                    reason: TurnEndReason::Completed,
+                },
+                None
+            ),
             Some(Err(Skipped::TurnComplete))
         );
-        assert!(to_notification(&session_id(), "t", Event::TurnStarted { turn_id }).is_none());
+        assert!(
+            to_notification(&session_id(), "t", Event::TurnStarted { turn_id }, None).is_none()
+        );
+    }
+
+    #[test]
+    fn a_usage_report_becomes_a_usage_update_with_the_breakdown_in_meta() {
+        let usage = TokenUsage {
+            input_tokens: 1_000,
+            output_tokens: 250,
+            cached_input_tokens: 800,
+            cache_write_input_tokens: 0,
+            reasoning_output_tokens: 40,
+        };
+        let n = notify(Event::UsageRecorded { usage });
+        let SessionUpdate::UsageUpdate(update) = &n.params.as_ref().unwrap().update else {
+            panic!("expected a usage_update");
+        };
+        assert_eq!(update.used, 1_250, "input plus output is the occupancy");
+        assert_eq!(update.size, 128_000);
+        let value = serde_json::to_value(&n).unwrap();
+        assert_eq!(
+            value["params"]["_meta"]["srud"]["usage"]["cachedInputTokens"],
+            json!(800)
+        );
+        assert_eq!(
+            value["params"]["_meta"]["srud"]["usage"]["reasoningOutputTokens"],
+            json!(40)
+        );
+    }
+
+    #[test]
+    fn a_replayed_usage_record_becomes_the_same_usage_update() {
+        let turn_id = srud_core::types::TurnId::new();
+        let event = SessionEvent::UsageRecorded {
+            turn_id,
+            usage: TokenUsage {
+                input_tokens: 500,
+                output_tokens: 100,
+                cached_input_tokens: 300,
+                cache_write_input_tokens: 0,
+                reasoning_output_tokens: 0,
+            },
+        };
+        let n = replay_notification(&session_id(), &event, None, Some(128_000))
+            .expect("a replayed usage record is shown");
+        let SessionUpdate::UsageUpdate(update) = &n.params.as_ref().unwrap().update else {
+            panic!("expected a usage_update");
+        };
+        assert_eq!(update.used, 600);
+        assert_eq!(update.size, 128_000);
+        let value = serde_json::to_value(&n).unwrap();
+        assert_eq!(
+            value["params"]["_meta"]["srud"]["usage"]["cachedInputTokens"],
+            json!(300)
+        );
+        assert_eq!(
+            value["params"]["_meta"]["srud"]["turnId"],
+            json!(turn_id.to_string())
+        );
+        // Without a configured window the replayed record stays unshown, as
+        // the live one would have.
+        assert!(replay_notification(&session_id(), &event, None, None).is_none());
+    }
+
+    #[test]
+    fn a_usage_report_without_a_configured_window_is_not_shown() {
+        assert_eq!(
+            to_session_update(
+                Event::UsageRecorded {
+                    usage: TokenUsage::default(),
+                },
+                None
+            ),
+            Some(Err(Skipped::NoContextWindow))
+        );
+        assert!(to_notification(
+            &session_id(),
+            "t",
+            Event::UsageRecorded {
+                usage: TokenUsage::default(),
+            },
+            None
+        )
+        .is_none());
     }
 
     #[test]

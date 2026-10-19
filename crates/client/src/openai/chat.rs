@@ -26,14 +26,14 @@ use async_openai::types::chat::{
     ChatCompletionRequestAssistantMessageContent, ChatCompletionRequestMessage,
     ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
     ChatCompletionRequestToolMessage, ChatCompletionRequestToolMessageContent,
-    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent, ChatCompletionTool,
-    ChatCompletionTools, CreateChatCompletionRequest, CreateChatCompletionRequestArgs,
-    FunctionCall, FunctionObject,
+    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+    ChatCompletionStreamOptions, ChatCompletionTool, ChatCompletionTools, CompletionUsage,
+    CreateChatCompletionRequest, CreateChatCompletionRequestArgs, FunctionCall, FunctionObject,
 };
 use async_openai::Client;
 use futures::StreamExt;
 use srud_core::client::{
-    ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream,
+    ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream, TokenUsage,
 };
 use srud_core::tools::ToolDefinition;
 use srud_core::types::Role;
@@ -137,6 +137,14 @@ pub struct StreamChunk {
     /// Empty on the trailing usage-only chunk some providers send.
     #[serde(default)]
     pub choices: Vec<ChunkChoice>,
+    /// Token counts for the request, reported once the stream has produced them.
+    ///
+    /// The SDK's own chunk type has no room for this, which is one of the
+    /// reasons streaming parses into this type. Present on the trailing chunk
+    /// when `stream_options.include_usage` was asked for; some providers repeat
+    /// it on every chunk, which is why the turn loop takes the last report.
+    #[serde(default)]
+    pub usage: Option<CompletionUsage>,
 }
 
 /// One alternative of a streamed chunk.
@@ -181,7 +189,34 @@ fn fold_chunk(chunk: StreamChunk, calls: &mut CallAssembly) -> Vec<ModelEvent> {
             }
         }
     }
+    // After the deltas of the chunk that carries it: the report describes the
+    // whole request, including whatever this chunk just produced.
+    if let Some(reported) = chunk.usage {
+        events.push(ModelEvent::Usage(to_token_usage(&reported)));
+    }
     events
+}
+
+/// Maps the endpoint's usage onto the core's counts.
+///
+/// The chat endpoint reports no cache-write count, so that field stays zero;
+/// detail fields a provider leaves out are read as zero rather than guessed at.
+fn to_token_usage(usage: &CompletionUsage) -> TokenUsage {
+    TokenUsage {
+        input_tokens: u64::from(usage.prompt_tokens),
+        output_tokens: u64::from(usage.completion_tokens),
+        cached_input_tokens: usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens)
+            .map_or(0, u64::from),
+        cache_write_input_tokens: 0,
+        reasoning_output_tokens: usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|details| details.reasoning_tokens)
+            .map_or(0, u64::from),
+    }
 }
 
 /// A tool call being assembled from stream fragments.
@@ -303,6 +338,12 @@ pub fn to_request(model: &str, request: &ModelRequest) -> CreateChatCompletionRe
         // The BYOT streaming call sends this request as built, so the flag the
         // SDK would otherwise set for a stream has to be set here.
         .stream(true)
+        // Without this the endpoint streams no usage at all: the field only
+        // arrives on the trailing chunk once the caller has asked for it.
+        .stream_options(ChatCompletionStreamOptions {
+            include_usage: Some(true),
+            include_obfuscation: None,
+        })
         .build()
         .unwrap_or_default()
 }
@@ -506,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn a_usage_only_chunk_carries_no_choices() {
+    fn a_usage_only_chunk_becomes_a_usage_event() {
         let mut calls = CallAssembly::default();
         let usage_only = serde_json::json!({
             "id": "chatcmpl-1",
@@ -514,10 +555,48 @@ mod tests {
             "created": 0,
             "model": "gpt-x",
             "choices": [],
-            "usage": { "total_tokens": 3 },
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 30,
+                "total_tokens": 150,
+                "prompt_tokens_details": { "cached_tokens": 100 },
+                "completion_tokens_details": { "reasoning_tokens": 8 },
+            },
         });
         let parsed: StreamChunk = serde_json::from_value(usage_only).expect("a chunk deserializes");
-        assert!(fold_chunk(parsed, &mut calls).is_empty());
+        assert_eq!(
+            fold_chunk(parsed, &mut calls),
+            vec![ModelEvent::Usage(TokenUsage {
+                input_tokens: 120,
+                output_tokens: 30,
+                cached_input_tokens: 100,
+                cache_write_input_tokens: 0,
+                reasoning_output_tokens: 8,
+            })],
+            "the empty-choices chunk carries the report, not deltas"
+        );
+    }
+
+    #[test]
+    fn a_usage_report_without_details_reads_as_zeroes() {
+        let mut calls = CallAssembly::default();
+        let value = serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "gpt-x",
+            "choices": [],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 },
+        });
+        let parsed: StreamChunk = serde_json::from_value(value).expect("a chunk deserializes");
+        assert_eq!(
+            fold_chunk(parsed, &mut calls),
+            vec![ModelEvent::Usage(TokenUsage {
+                input_tokens: 5,
+                output_tokens: 2,
+                ..Default::default()
+            })]
+        );
     }
 
     #[test]
