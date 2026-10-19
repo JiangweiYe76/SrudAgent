@@ -25,9 +25,7 @@ fn scratch(name: &str, files: &[(&str, &str)]) -> PathBuf {
 }
 
 fn ctx(dir: &Path) -> ToolContext {
-    ToolContext {
-        cwd: dir.to_path_buf(),
-    }
+    ToolContext { cwd: dir.to_path_buf(), cancel: tokio_util::sync::CancellationToken::new() }
 }
 
 /// Runs a search and hands back the parsed reply, so a test can read a field

@@ -16,6 +16,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use serde::{Deserialize, Serialize};
 
 /// What a tool needs to know about the run it is part of.
@@ -24,6 +26,9 @@ pub struct ToolContext {
     /// The session's working directory. A tool that takes a relative path
     /// resolves it against this.
     pub cwd: PathBuf,
+    /// The turn's cancellation token. A tool that runs long enough to notice
+    /// should stop when it fires.
+    pub cancel: CancellationToken,
 }
 
 /// What a tool produced.
@@ -369,9 +374,7 @@ mod tests {
 
     /// The context these tests hand to tools; none of them look at it.
     fn ctx() -> ToolContext {
-        ToolContext {
-            cwd: PathBuf::from("workspace"),
-        }
+        ToolContext { cwd: PathBuf::from("workspace"), cancel: tokio_util::sync::CancellationToken::new() }
     }
 
     fn registry() -> ToolRegistry {

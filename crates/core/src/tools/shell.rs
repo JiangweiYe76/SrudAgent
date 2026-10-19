@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::{join, time::timeout};
+use tokio::join;
 
 use super::{failure_text, Tool, ToolContext, ToolError, ToolOutcome};
 
@@ -344,27 +344,40 @@ impl Tool for ShellTool {
         // Drained together while the command runs. Reading one to its end first would
         // leave the child writing into a full pipe, waiting for a reader that is
         // not coming.
-        let collected = timeout(self.timeout, async {
+        // Run the collection in a task so cancellation can drop it (and the
+        // child with it, via kill_on_drop) without borrowing `child` here.
+        let handle = tokio::spawn(async move {
             let (out, err) = join!(
                 read_capped(stdout, MAX_CAPTURE_BYTES),
                 read_capped(stderr, MAX_CAPTURE_BYTES)
             );
             let status = child.wait().await;
             (out, err, status)
-        })
-        .await;
+        });
+
+        let abort_handle = handle.abort_handle();
+        let collected = tokio::select! {
+            res = tokio::time::timeout(self.timeout, handle) => res,
+            _ = ctx.cancel.cancelled() => {
+                abort_handle.abort();
+                let message = "Stopped by the user.".to_owned();
+                let hint = "The command was interrupted. Whatever it started may still be                             running: the signal reaches the shell, not its children.";
+                return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
+            }
+        };
 
         let (out, err, status) = match collected {
-            Ok(collected) => collected,
+            Ok(Ok((out, err, status))) => (out, err, status),
+            Ok(Err(_)) => {
+                let message = "The command's output could not be collected.".to_owned();
+                return Ok(ToolOutcome::failure(failure_text(message, None)));
+            }
             Err(_) => {
+                abort_handle.abort();
                 // The signal reaches the shell, not what the shell started: a process
                 // tree is not something this holds a handle to.
-                let _ = child.start_kill();
                 let message = format!("Stopped after {:?} without finishing.", self.timeout);
-                let hint = "Whatever the command started may still be running: the signal \
-                            reaches the shell, not its children. Check for a leftover process \
-                            before retrying, and split the work into steps that finish inside \
-                            the limit.";
+                let hint = "Whatever the command started may still be running: the signal                             reaches the shell, not its children. Check for a leftover process                             before retrying, and split the work into steps that finish inside                             the limit.";
                 return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
             }
         };
@@ -631,9 +644,7 @@ mod tests {
     }
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
-        ToolContext {
-            cwd: dir.to_path_buf(),
-        }
+        ToolContext { cwd: dir.to_path_buf(), cancel: tokio_util::sync::CancellationToken::new() }
     }
 
     /// Runs `command`, expecting well-formed arguments.

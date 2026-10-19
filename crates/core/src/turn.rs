@@ -516,7 +516,7 @@ async fn run_step(
         if cancel.is_cancelled() {
             return Err(TurnEndReason::Interrupted);
         }
-        if run_tool_call(journal, tools, call).await.is_err() {
+        if run_tool_call(journal, tools, call, cancel.clone()).await.is_err() {
             return Err(TurnEndReason::Error);
         }
     }
@@ -605,6 +605,7 @@ async fn run_tool_call(
     journal: &Journal<'_>,
     tools: &ToolRegistry,
     call: PendingToolCall,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), RecordError> {
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
@@ -631,6 +632,7 @@ async fn run_tool_call(
 
     let ctx = ToolContext {
         cwd: journal.session().cwd().to_path_buf(),
+        cancel: cancel.clone(),
     };
     let outcome = match tools.dispatch(&call.name, &ctx, arguments).await {
         Ok(outcome) => outcome,
