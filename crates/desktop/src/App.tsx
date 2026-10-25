@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Settings } from 'lucide-react';
 import { Toaster } from 'sonner';
 import { Sidebar } from './components/Sidebar';
@@ -22,6 +22,9 @@ function App() {
   const select = useSessionStore((s) => s.select);
   const addSession = useSessionStore((s) => s.addSession);
   const sendTurn = useSessionStore((s) => s.sendTurn);
+  const queueFollowup = useSessionStore((s) => s.queueFollowup);
+  const steerFollowup = useSessionStore((s) => s.steerFollowup);
+  const removeFollowup = useSessionStore((s) => s.removeFollowup);
   const stopTurn = useSessionStore((s) => s.stopTurn);
   const setModel = useSessionStore((s) => s.setModel);
   const renameSession = useSessionStore((s) => s.renameSession);
@@ -34,6 +37,15 @@ function App() {
   const providers = useProviderStore((s) => s.providers);
   const defaultModel = useProviderStore((s) => s.defaultModel);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The composer floats over the conversation, so the list keeps room under its
+  // last message for it. Measured rather than fixed: queued messages make the
+  // composer taller than any static padding accounts for. The inset adds 38 on
+  // top of the measured height: the box's 18px offset from the bottom edge plus
+  // 20px of clearance above it. 140 is the bare composer's own height (102)
+  // plus that 38, so the layout holds steady until the observer reports a real
+  // measurement.
+  const [composerHeight, setComposerHeight] = useState(140);
+  const onComposerHeight = useCallback((height: number) => setComposerHeight(height), []);
 
   useTheme();
   const theme = useThemeStore((s) => s.mode);
@@ -108,7 +120,11 @@ function App() {
             {initError}
           </div>
         )}
-        <MessageList turns={active?.turns ?? []} reopening={reopening} />
+        <MessageList
+          turns={active?.turns ?? []}
+          reopening={reopening}
+          bottomInset={composerHeight + 38}
+        />
         {/* Busy while a turn runs, and while a session is still being reopened:
             the conversation is arriving then, so a prompt would interleave with
             it. There is no turn to stop in that window, so the stop control does
@@ -117,9 +133,14 @@ function App() {
           value={draft}
           onValueChange={(text) => setDraft(activeId, text)}
           onSend={sendTurn}
+          onQueue={queueFollowup}
+          followups={active?.followups}
+          onSteerFollowup={steerFollowup}
+          onRemoveFollowup={removeFollowup}
           busy={isBusy(active) || reopening}
           onStop={stopTurn}
           usage={usage}
+          onHeightChange={onComposerHeight}
         />
       </main>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

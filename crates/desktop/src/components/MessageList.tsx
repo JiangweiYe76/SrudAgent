@@ -15,6 +15,10 @@ interface MessageListProps {
   // True while a session's log is being replayed into the store, which is what
   // tells an empty conversation apart from one that has not arrived yet.
   reopening: boolean;
+  // Room kept under the last message for the composer, which floats over the
+  // list. Measured from the composer itself: queued messages make it taller
+  // than any fixed padding would leave room for.
+  bottomInset?: number;
 }
 
 // Wall-clock time of an event, 24-hour. The hour must be included: minutes
@@ -138,7 +142,11 @@ const STICK_SLOP = 32;
 // each time is what makes a long conversation expensive to keep on screen.
 // Nothing here is read from outside its props, so the same `turns` reference
 // means there is nothing new to draw.
-export const MessageList = memo(function MessageList({ turns, reopening }: MessageListProps) {
+export const MessageList = memo(function MessageList({
+  turns,
+  reopening,
+  bottomInset = 140,
+}: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
@@ -220,22 +228,42 @@ export const MessageList = memo(function MessageList({ turns, reopening }: Messa
     <div ref={listRef} className="flex flex-1 flex-col overflow-y-auto">
       <div
         ref={contentRef}
-        className="mx-auto flex w-full max-w-[900px] flex-col gap-4 p-[20px_32px_140px]"
+        className="mx-auto flex w-full max-w-[900px] flex-col gap-4 p-[20px_32px_0]"
+        style={{ paddingBottom: bottomInset }}
       >
         {turns.map((turn) => {
           const lastText = turn.steps[turn.steps.length - 1]?.assistantText ?? '';
           return (
             <div key={turn.id} className="flex flex-col gap-3">
-              <div className="group flex flex-col items-end gap-1">
-                <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
-                  {turn.userInput}
+              {/* Each user message right-aligns inside the full column width:
+                  the block stays stretched, so the bubble's `max-w-[80%]`
+                  resolves against the column instead of against a
+                  shrink-to-fit parent — which would pin the bubble to 80% of
+                  its own meta row and wrap short messages. */}
+              <div className="flex flex-col items-end gap-2">
+                <div className="group flex w-full flex-col items-end gap-1">
+                  <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
+                    {turn.userInput}
+                  </div>
+                  {/* User msg meta appears only on hover. */}
+                  <MetaRow
+                    text={turn.userInput}
+                    ts={turn.createdAt}
+                    className="opacity-0 transition-opacity group-hover:opacity-100"
+                  />
                 </div>
-                {/* User msg meta appears only on hover. */}
-                <MetaRow
-                  text={turn.userInput}
-                  ts={turn.createdAt}
-                  className="opacity-0 transition-opacity group-hover:opacity-100"
-                />
+                {(turn.steeredInputs ?? []).map((text, index) => (
+                  <div key={index} className="group flex w-full flex-col items-end gap-1">
+                    <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
+                      {text}
+                    </div>
+                    <MetaRow
+                      text={text}
+                      ts={turn.createdAt}
+                      className="opacity-0 transition-opacity group-hover:opacity-100"
+                    />
+                  </div>
+                ))}
               </div>
               {turn.steps.map((step) => (
                 <div key={step.id} className="flex flex-col gap-2">

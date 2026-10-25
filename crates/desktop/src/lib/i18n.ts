@@ -50,6 +50,7 @@ const en = {
 
   'common.close': 'Close',
   'common.cancel': 'Cancel',
+  'common.delete': 'Delete',
   'common.reveal': 'Show value',
   'common.conceal': 'Hide value',
 
@@ -122,6 +123,7 @@ const en = {
 
   'chat.placeholder': 'Type a message… (Enter to send, Shift+Enter for newline)',
   'chat.send': 'Send',
+  'chat.steer': 'Steer',
   'chat.stop': 'Stop',
   'chat.context': 'Context: {pct}% ({used} / {size} tokens)',
   'usage.title': 'Token usage',
