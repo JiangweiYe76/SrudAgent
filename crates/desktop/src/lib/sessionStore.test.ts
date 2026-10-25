@@ -60,6 +60,8 @@ async function boot(
     loadFails?: { code: number; message: string };
     loadFailsFirst?: { code: number; message: string };
     listed?: Array<Record<string, unknown>>;
+    // Makes `session/steer` refuse, as a turn that ended or sealed does.
+    steerFails?: boolean;
     // The `configOptions` the agent hangs on each reply, as the wire spells them.
     newModel?: unknown;
     loadModel?: unknown;
@@ -122,6 +124,9 @@ async function boot(
           return reply(payload.id, {});
         case '_srud/unstable/session/set_title':
           return reply(payload.id, { title: 'Renamed' });
+        case '_srud/unstable/session/steer':
+          if (options.steerFails) throw new Error('steer refused');
+          return reply(payload.id, {});
         case 'session/delete':
           if (options.failDelete) throw new Error('delete refused');
           if (options.holdDelete) return del.promise.then(() => reply(payload.id, {}));
@@ -227,6 +232,82 @@ describe('sessionStore live path', () => {
     expect(active().backendId).toBe('S1');
     // Backend creation happens first, so no workspace exists for clicks alone.
     expect(calls.indexOf('session/new')).toBeLessThan(calls.indexOf('session/prompt'));
+  });
+
+  it('a message queued during a turn runs as the next turn once it ends', async () => {
+    const { useSessionStore, active, calls, prompt, waitForBackend } = await boot();
+    const promptsSoFar = () => calls.filter((m) => m === 'session/prompt').length;
+
+    useSessionStore.getState().sendTurn('first');
+    await waitForBackend();
+    await vi.waitFor(() => {
+      expect(promptsSoFar()).toBe(1);
+    });
+
+    // Typed while the turn runs: it waits its turn instead of starting a second
+    // one alongside it.
+    useSessionStore.getState().sendTurn('second');
+    expect(active().followups).toEqual(['second']);
+    expect(active().turns).toHaveLength(1);
+    expect(promptsSoFar()).toBe(1);
+
+    prompt.resolve({ stopReason: 'end_turn' });
+    // The finished turn releases the waiting message as its own turn, in order.
+    await vi.waitFor(() => {
+      expect(active().turns).toHaveLength(2);
+      expect(active().followups).toEqual([]);
+    });
+    expect(active().turns[1].userInput).toBe('second');
+    await vi.waitFor(() => {
+      expect(promptsSoFar()).toBe(2);
+    });
+  });
+
+  it('an accepted steer leaves the waiting area without starting a turn', async () => {
+    const { useSessionStore, active, calls, prompt, waitForBackend } = await boot();
+    const promptsSoFar = () => calls.filter((m) => m === 'session/prompt').length;
+
+    useSessionStore.getState().sendTurn('first');
+    await waitForBackend();
+    await vi.waitFor(() => {
+      expect(promptsSoFar()).toBe(1);
+    });
+    useSessionStore.getState().sendTurn('second');
+    expect(active().followups).toEqual(['second']);
+
+    useSessionStore.getState().steerFollowup(0);
+    await vi.waitFor(() => {
+      expect(active().followups).toEqual([]);
+    });
+    // Steered into the running turn, not sent as a turn of its own.
+    expect(promptsSoFar()).toBe(1);
+    expect(useSessionStore.getState().initError).toBeNull();
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+  });
+
+  it('a refused steer keeps the message waiting instead of losing it', async () => {
+    const { useSessionStore, active, calls, waitForBackend } = await boot({ steerFails: true });
+    const promptsSoFar = () => calls.filter((m) => m === 'session/prompt').length;
+
+    useSessionStore.getState().sendTurn('first');
+    await waitForBackend();
+    await vi.waitFor(() => {
+      expect(promptsSoFar()).toBe(1);
+    });
+    useSessionStore.getState().sendTurn('second');
+    expect(active().followups).toEqual(['second']);
+
+    useSessionStore.getState().steerFollowup(0);
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().initError).not.toBeNull();
+    });
+    // The turn still runs and would not take it, so the message stays where the
+    // user can still see it — a refusal is not a silent drop.
+    expect(active().followups).toEqual(['second']);
+    expect(promptsSoFar()).toBe(1);
   });
 
   it('a draft ignores backend updates until it materializes', async () => {

@@ -105,6 +105,21 @@ describe('ChatInput', () => {
     expect(container.querySelector('[aria-label="Send"]')!.hasAttribute('disabled')).toBe(true);
   });
 
+  it('lists waiting messages as separate lines', () => {
+    render({
+      busy: true,
+      followups: ['first waiting', 'second waiting'],
+      onSteerFollowup: vi.fn(),
+      onRemoveFollowup: vi.fn(),
+    });
+    const steerButtons = Array.from(container.querySelectorAll('[aria-label="Steer"]'));
+    expect(steerButtons).toHaveLength(2);
+    expect(container.textContent).toContain('first waiting');
+    expect(container.textContent).toContain('second waiting');
+    // Each line carries its own pair of actions.
+    expect(container.querySelectorAll('[aria-label="Delete"]')).toHaveLength(2);
+  });
+
   it('stops a running turn and nothing else', () => {
     const stopped = render({ value: 'typing anyway', busy: true });
     expect(container.querySelector('[aria-label="Stop"]')!.hasAttribute('disabled')).toBe(false);

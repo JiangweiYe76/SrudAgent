@@ -42,17 +42,21 @@
 //! environment-configured host both want. [`Agent::with_providers`] adds the
 //! resolvable path on top.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use serde_json::Value;
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
 use srud_core::tools::ToolRegistry;
+use srud_core::EventSink;
 use srud_protocol::acp::methods::{
     INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_LOAD,
     SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SRUD_PROVIDER_DELETE,
     SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT, SRUD_SESSION_SET_TITLE,
+    SRUD_SESSION_STEER,
 };
 use srud_protocol::acp::{
     AcpError, CancelNotification, CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate,
@@ -71,12 +75,13 @@ use srud_protocol::error::{
 use srud_protocol::srud::methods::{
     DeleteProviderRequest, DeleteProviderResponse, ListProvidersRequest, ListProvidersResponse,
     ProviderCatalog, SetDefaultProviderRequest, SetDefaultProviderResponse, SetProviderRequest,
-    SetProviderResponse, SetSessionTitleRequest, SetSessionTitleResponse,
+    SetProviderResponse, SetSessionTitleRequest, SetSessionTitleResponse, SteerRequest,
+    SteerResponse,
 };
 use srud_protocol::srud::turn_end::TurnEndWire;
 
 use crate::convert::{prompt_outcome, prompt_text, replay_notification};
-use crate::events::EventHub;
+use crate::events::{EventHub, TurnSink};
 use crate::providers::{self, ModelFactory, ProviderError, ProviderStore};
 use crate::sessions::{RestoreError, SessionManager};
 
@@ -128,6 +133,7 @@ pub struct Agent {
     tools: Arc<ToolRegistry>,
     sessions: Arc<SessionManager>,
     hub: EventHub,
+    active_sinks: Mutex<HashMap<SessionId, TurnSink>>,
     initialized: AtomicBool,
 }
 
@@ -145,6 +151,7 @@ impl Agent {
             tools,
             sessions: Arc::new(SessionManager::new()),
             hub: EventHub::new(),
+            active_sinks: Mutex::new(HashMap::new()),
             initialized: AtomicBool::new(false),
         }
     }
@@ -168,6 +175,7 @@ impl Agent {
             tools,
             sessions: Arc::new(SessionManager::new()),
             hub: EventHub::new(),
+            active_sinks: Mutex::new(HashMap::new()),
             initialized: AtomicBool::new(false),
         }
     }
@@ -220,6 +228,7 @@ impl Agent {
                 .map(|()| serialize(DeleteSessionResponse::new())),
             SESSION_SET_CONFIG_OPTION => self.handle_set_config_option(params).await.map(serialize),
             SRUD_SESSION_SET_TITLE => self.handle_set_title(params).await.map(serialize),
+            SRUD_SESSION_STEER => self.handle_steer(params).await.map(serialize),
             SRUD_PROVIDER_LIST => self.handle_provider_list(params),
             SRUD_PROVIDER_SET => self.handle_provider_set(params),
             SRUD_PROVIDER_DELETE => self.handle_provider_delete(params),
@@ -304,12 +313,31 @@ impl Agent {
         let client = self.client_for(&request.session_id)?;
 
         let text = prompt_with_validation(&request.prompt)?;
-        self.name_from_first_prompt(&request.session_id, &text)
-            .await;
 
         let sink = self
             .hub
             .sink_for(session.id(), self.context_size_for(&request.session_id));
+        // Registering the turn's sink is the busy gate: steer announcements reach
+        // the running turn through this map, so a second prompt must neither
+        // overwrite the live sink nor remove it when it unwinds. The gate also
+        // precedes naming, so a refused prompt leaves no trace.
+        {
+            let mut sinks = self
+                .active_sinks
+                .lock()
+                .expect("active sinks lock poisoned");
+            if sinks.contains_key(&request.session_id) {
+                return Err(AcpError::new(
+                    SESSION_BUSY,
+                    "session already has an active turn",
+                ));
+            }
+            sinks.insert(request.session_id.clone(), sink.clone());
+        }
+
+        self.name_from_first_prompt(&request.session_id, &text)
+            .await;
+
         let result = srud_core::turn::run_turn(
             &session,
             srud_core::types::TurnInput { text },
@@ -318,8 +346,12 @@ impl Agent {
             log.as_ref(),
             &sink,
         )
-        .await
-        .map_err(|err| match err {
+        .await;
+        self.active_sinks
+            .lock()
+            .expect("active sinks lock poisoned")
+            .remove(&request.session_id);
+        let result = result.map_err(|err| match err {
             srud_core::TurnError::Busy => {
                 AcpError::new(SESSION_BUSY, "session already has an active turn")
             }
@@ -350,6 +382,34 @@ impl Agent {
 
     async fn handle_list(&self) -> Result<ListSessionsResponse, AcpError> {
         Ok(ListSessionsResponse::new(self.sessions.list().await))
+    }
+
+    async fn handle_steer(&self, params: Value) -> Result<SteerResponse, AcpError> {
+        let request: SteerRequest = parse_params(params)?;
+        let session = self
+            .sessions
+            .get(&request.session_id)
+            .ok_or_else(|| session_not_found(&request.session_id))?;
+        let text = prompt_with_validation(&request.prompt)?;
+        if !session.steer(&text) {
+            return Err(AcpError::new(
+                SESSION_BUSY,
+                "session has no active turn to steer",
+            ));
+        }
+        // Announce the injected message the way a normal prompt does.
+        if let Some(sink) = self
+            .active_sinks
+            .lock()
+            .expect("active sinks lock poisoned")
+            .get(&request.session_id)
+            .cloned()
+        {
+            sink.emit(srud_core::types::Event::UserMessage {
+                content: text.clone(),
+            });
+        }
+        Ok(SteerResponse::default())
     }
 
     async fn handle_close(&self, params: Value) -> Result<(), AcpError> {
@@ -858,7 +918,6 @@ mod tests {
     use srud_core::client::{ModelEvent, ModelRequest, ModelStream};
     use srud_protocol::acp::methods::{
         SESSION_LIST, SRUD_SESSION_FORK, SRUD_SESSION_ROLLOUT_READ, SRUD_SESSION_SET_TITLE,
-        SRUD_SESSION_STEER,
     };
     use srud_protocol::acp::TextContent;
     use srud_protocol::acp::AGENT_METHOD_NAMES;
@@ -871,7 +930,6 @@ mod tests {
         AGENT_METHOD_NAMES.session_set_mode,
         AGENT_METHOD_NAMES.authenticate,
         SRUD_SESSION_FORK,
-        SRUD_SESSION_STEER,
         SRUD_SESSION_ROLLOUT_READ,
     ];
 
