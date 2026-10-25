@@ -126,6 +126,16 @@ export async function sendPrompt(sessionId: string, text: string): Promise<strin
   return String(result.stopReason ?? 'end_turn');
 }
 
+// Injects `text` into a turn that is already running. The agent appends it to
+// the active turn's context and announces it as a user message; the in-flight
+// `session/prompt` stays the single termination signal.
+export async function steerTurn(sessionId: string, text: string): Promise<void> {
+  await rpcRequest('_srud/unstable/session/steer', {
+    sessionId,
+    prompt: [{ type: 'text', text }],
+  });
+}
+
 // Hands a client the session's whole conversation as `session/update`
 // notifications, arriving before the response. The updates carry the turn each
 // belongs to and how each turn ended, since there is no `session/prompt`

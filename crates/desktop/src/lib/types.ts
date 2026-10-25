@@ -67,6 +67,10 @@ export interface Step {
 export interface Turn {
   id: string;
   userInput: string;
+  // Steered messages injected into this turn while it was running. Each is a
+  // distinct user message and is rendered as its own bubble, in arrival order,
+  // after `userInput` — they are not merged into it.
+  steeredInputs?: string[];
   // The agent's own id for this turn, once an update has named it. Set for a
   // turn opened live as soon as its first update arrives, and the only thing
   // that puts a replayed update in the turn it belongs to.
@@ -117,6 +121,8 @@ export interface Session {
   // Token usage, once a step has reported any. Absent for a session whose
   // model has no configured window — the agent sends nothing to show.
   usage?: UsageState;
+  // Follow-up messages queued while a turn is running.
+  followups?: string[];
   createdAt: number;
   updatedAt: number;
 }

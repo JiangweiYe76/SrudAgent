@@ -24,6 +24,7 @@ import {
   type ListedSession,
   RpcFailure,
   sendPrompt,
+  steerTurn as requestSteer,
   SESSION_NOT_FOUND,
   setSessionTitle,
   type Json,
@@ -235,7 +236,15 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
     // the turn's text and nothing else. That text is what fills in a turn which
     // came from the log; a turn this client opened already knows it, because it is
     // what was sent.
-    turn.userInput ||= userText;
+    // A steered message is a new user input arriving mid-turn: it is not the
+    // turn's original text, so it becomes its own bubble rather than being
+    // merged into the original one. The `||=` form would drop it, since the
+    // turn already knows what was sent.
+    if (!turn.userInput) {
+      turn.userInput = userText;
+    } else if (userText !== turn.userInput && !(turn.steeredInputs ?? []).includes(userText)) {
+      turn.steeredInputs = [...(turn.steeredInputs ?? []), userText];
+    }
   } else {
     const steps = turn.steps.map((st) => ({ ...st, toolCalls: [...st.toolCalls] }));
     const last = steps[steps.length - 1];
@@ -402,7 +411,12 @@ interface SessionState {
   init: () => Promise<void>;
   select: (id: string) => void;
   addSession: () => void;
-  sendTurn: (userInput: string) => void;
+  // `sessionId` names the conversation to run in; the visible box leaves it
+  // out and the active session is used.
+  sendTurn: (userInput: string, sessionId?: string) => void;
+  queueFollowup: (text: string) => void;
+  removeFollowup: (index: number) => void;
+  steerFollowup: (index: number) => void;
   stopTurn: () => void;
   setModel: (model: string) => void;
   renameSession: (id: string, title: string) => void;
@@ -482,6 +496,7 @@ function freshSession(): Session {
     title: null,
     model: null,
     turns: [],
+    followups: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -502,6 +517,7 @@ function listedSession(info: ListedSession, now: number): Session {
     // Known once the conversation is loaded: the model comes back with it.
     model: null,
     turns: [],
+    followups: [],
     createdAt: now,
     updatedAt: info.updatedAt ?? now,
   };
@@ -652,6 +668,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       .finally(() => {
         flushPendingReplayUpdates();
         endReopen(backendId);
+        // A turn that closed while the replay was in flight had its follow-up
+        // refused; it is owed one now that the conversation is back.
+        flushFollowups(id);
       });
   },
 
@@ -667,12 +686,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => ({ sessions: [draft, ...s.sessions], activeId: draft.id }));
   },
 
-  sendTurn: (userInput) => {
+  sendTurn: (userInput, target) => {
     const state = get();
-    const session = state.sessions.find((s) => s.id === state.activeId);
+    const session = state.sessions.find((s) => s.id === (target ?? state.activeId));
     // A turn refused mid-replay would be written into a conversation that is only
     // half back, and the two would end up interleaved.
-    if (!session || state.reopeningCount > 0 || isBusy(session)) return;
+    if (!session || state.reopeningCount > 0) return;
+    // While a turn is running, a submitted message is queued as a follow-up
+    // rather than starting a second turn. A drain that finds the turn still busy
+    // simply leaves its message waiting instead of queueing it twice.
+    if (isBusy(session)) {
+      if (!target) get().queueFollowup(userInput);
+      return;
+    }
     const sessionId = session.id;
     const now = Date.now();
     const turn: Turn = { id: uid('t'), userInput, steps: [], createdAt: now };
@@ -744,6 +770,64 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // The turn is not closed here: `session/cancel` only signals the token, and
     // the open `session/prompt` is what resolves it, as `interrupted`.
     void cancelTurn(session.backendId).catch((err) => set({ initError: String(err) }));
+  },
+
+  queueFollowup: (text) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const session = get().sessions.find((s) => s.id === get().activeId);
+    if (!session) return;
+    set((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === session.id ? { ...sess, followups: [...(sess.followups ?? []), trimmed] } : sess,
+      ),
+    }));
+    // Clear the input box once queued.
+    const key = draftKeyOf(get().sessions, session.id);
+    set((s) => ({ drafts: withoutDraft(s.drafts, key) }));
+    saveDrafts(get().drafts);
+  },
+
+  removeFollowup: (index) => {
+    const session = get().sessions.find((s) => s.id === get().activeId);
+    if (!session) return;
+    set((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === session.id
+          ? { ...sess, followups: (sess.followups ?? []).filter((_, i) => i !== index) }
+          : sess,
+      ),
+    }));
+  },
+
+  steerFollowup: (index) => {
+    const session = get().sessions.find((s) => s.id === get().activeId);
+    if (!session?.backendId) return;
+    const text = (session.followups ?? [])[index];
+    if (!text) return;
+    // The row leaves the waiting area only once the steer is accepted.
+    const drop = () =>
+      set((s) => ({
+        sessions: s.sessions.map((sess) =>
+          sess.id === session.id
+            ? { ...sess, followups: (sess.followups ?? []).filter((_, i) => i !== index) }
+            : sess,
+        ),
+      }));
+    requestSteer(session.backendId, text)
+      .then(drop)
+      .catch((err: unknown) => {
+        // A refused steer (the turn ended or sealed in between) is retried as
+        // the next turn when there is no turn left to steer into; while a turn
+        // still runs the message keeps waiting instead of being lost.
+        const current = get().sessions.find((s) => s.id === session.id);
+        if (current && !isBusy(current)) {
+          drop();
+          get().sendTurn(text, session.id);
+          return;
+        }
+        set({ initError: String(err) });
+      });
   },
 
   setModel: (model) => {
@@ -875,4 +959,24 @@ function closeTurn(sessionId: string, turnId: string, endReason: TurnEndReason, 
     }),
     ...(error ? { initError: error } : {}),
   }));
+  // A finished turn releases the first waiting follow-up as its own turn; that
+  // turn's close releases the next, so the queue drains in arrival order.
+  queueMicrotask(() => flushFollowups(sessionId));
+}
+
+// Hand the oldest waiting follow-up of a session to a new turn. One message per
+// turn: the rest stay queued until that turn closes.
+function flushFollowups(sessionId: string) {
+  const state = useSessionStore.getState();
+  const session = state.sessions.find((s) => s.id === sessionId);
+  if (!session) return;
+  const queue = session.followups ?? [];
+  if (queue.length === 0) return;
+  if (state.reopeningCount > 0 || isBusy(session)) return;
+  useSessionStore.setState((s) => ({
+    sessions: s.sessions.map((sess) =>
+      sess.id === sessionId ? { ...sess, followups: queue.slice(1) } : sess,
+    ),
+  }));
+  state.sendTurn(queue[0], sessionId);
 }
