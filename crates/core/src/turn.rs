@@ -357,6 +357,11 @@ async fn open(journal: &Journal<'_>, input: &TurnInput) -> Result<(), RecordErro
             .await?;
     }
 
+    // A steer the previous turn never got to — it was interrupted or failed
+    // first — was said before this input, so it is recorded ahead of it. Steers
+    // that arrive from here on wait for a boundary inside the turn instead.
+    drain_steers(journal).await?;
+
     // The user's input is recorded next so every later request carries it.
     journal
         .record(
@@ -367,6 +372,33 @@ async fn open(journal: &Journal<'_>, input: &TurnInput) -> Result<(), RecordErro
             }),
         )
         .await
+}
+
+/// Records the steered messages waiting for a boundary.
+///
+/// They are claimed as ordinary user entries — written to the log first, then
+/// pushed into history — which is what makes a steer a durable part of the
+/// conversation rather than a memory-only insert. The claim is silent: the
+/// steer was announced when it arrived, and announcing it again here would put
+/// the message on the wire twice.
+///
+/// A message that could not be recorded is put back at the head of the queue,
+/// ahead of any steer that arrived meanwhile, so the failure costs a turn
+/// rather than losing what the user said.
+///
+/// # Errors
+///
+/// Fails if the log refuses any of the records. Nothing is left half-claimed:
+/// the refused message and everything after it go back to waiting.
+async fn drain_steers(journal: &Journal<'_>) -> Result<(), RecordError> {
+    let steered = journal.session().take_steers();
+    for (index, text) in steered.iter().enumerate() {
+        if let Err(err) = journal.record(None, prompt::user_item(text), None).await {
+            journal.session().requeue_steers(steered[index..].to_vec());
+            return Err(err);
+        }
+    }
+    Ok(())
 }
 
 /// The loop proper, separated so the caller always emits a terminator.
@@ -382,13 +414,30 @@ async fn drive(
             return TurnEndReason::Interrupted;
         }
 
+        // Steered messages are claimed exactly here: at a boundary, after
+        // whatever the last step produced, so the request built below carries
+        // them behind the answer they respond to rather than ahead of it.
+        if drain_steers(journal).await.is_err() {
+            return TurnEndReason::Error;
+        }
+
         let request = {
             let state = journal.session.state();
             prompt::build_prompt(&state, tools.definitions(), Some(sections))
         };
 
         match run_step(journal, client, tools, cancel, request).await {
-            Ok(StepOutcome::Finished) => return TurnEndReason::Completed,
+            Ok(StepOutcome::Finished) => {
+                // The model is only done if nothing is waiting for it: a steer
+                // that arrived during this step is answered by another request
+                // instead of being left behind when the turn closes. Sealing
+                // refuses any steer that arrives after this point, so the caller
+                // is told to retry it as a turn of its own.
+                if journal.session().seal_turn() {
+                    return TurnEndReason::Completed;
+                }
+                continue;
+            }
             // Tool output is now in history, so another request is owed.
             Ok(StepOutcome::NeedsFollowUp) => continue,
             Err(reason) => return reason,
@@ -516,7 +565,10 @@ async fn run_step(
         if cancel.is_cancelled() {
             return Err(TurnEndReason::Interrupted);
         }
-        if run_tool_call(journal, tools, call, cancel.clone()).await.is_err() {
+        if run_tool_call(journal, tools, call, cancel.clone())
+            .await
+            .is_err()
+        {
             return Err(TurnEndReason::Error);
         }
     }

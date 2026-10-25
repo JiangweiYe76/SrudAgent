@@ -75,6 +75,13 @@ pub struct Session {
     cwd: PathBuf,
     state: Mutex<SessionState>,
     active_turn: Mutex<Option<ActiveTurn>>,
+    /// Steered messages waiting for the next boundary of the active turn.
+    ///
+    /// Separate from history on purpose: they are not part of the conversation
+    /// until the turn records them, which is what keeps them out of a request
+    /// that is already being built and puts them after whatever the current
+    /// step produces.
+    steers: Mutex<Vec<String>>,
 }
 
 impl Session {
@@ -92,6 +99,7 @@ impl Session {
             cwd: cwd.into(),
             state: Mutex::new(SessionState::new()),
             active_turn: Mutex::new(None),
+            steers: Mutex::new(Vec::new()),
         }
     }
 
@@ -109,6 +117,7 @@ impl Session {
             cwd: cwd.into(),
             state: Mutex::new(SessionState::restored(history)),
             active_turn: Mutex::new(None),
+            steers: Mutex::new(Vec::new()),
         }
     }
 
@@ -149,6 +158,7 @@ impl Session {
         let cancellation = CancellationToken::new();
         slot.replace(ActiveTurn {
             cancellation: cancellation.clone(),
+            closing: false,
         });
         Some(ActiveTurnGuard {
             session: self,
@@ -170,6 +180,72 @@ impl Session {
             None => false,
         }
     }
+    /// Queues `text` for the active turn's next boundary, if one is running.
+    ///
+    /// Returns `false` when no turn is active or the turn has already decided to
+    /// end — the caller is told the steer was refused and can retry it as a turn
+    /// of its own. Acceptance only means the message will be recorded and
+    /// answered by this turn: it becomes history when the loop claims it, after
+    /// whatever the current step produces, so it never lands ahead of the answer
+    /// it responds to. The caller announces it; the recording stays silent to
+    /// avoid announcing it twice.
+    ///
+    /// The queue is pushed while the turn slot is held, so a turn closing in
+    /// between cannot accept a message it will never read.
+    pub fn steer(&self, text: &str) -> bool {
+        let slot = self.active_turn.lock().expect("active turn lock poisoned");
+        let Some(turn) = slot.as_ref() else {
+            return false;
+        };
+        if turn.closing {
+            return false;
+        }
+        self.steers
+            .lock()
+            .expect("steer queue lock poisoned")
+            .push(text.to_owned());
+        true
+    }
+
+    /// Takes every steered message waiting for the next boundary.
+    #[must_use]
+    pub fn take_steers(&self) -> Vec<String> {
+        std::mem::take(&mut *self.steers.lock().expect("steer queue lock poisoned"))
+    }
+
+    /// Puts messages a boundary could not record back at the head of the queue.
+    ///
+    /// Head, not tail: they were said before anything that arrived while the
+    /// failure was being handled, and the order they were said in is the order
+    /// the model must see them.
+    pub fn requeue_steers(&self, texts: Vec<String>) {
+        let mut queue = self.steers.lock().expect("steer queue lock poisoned");
+        queue.splice(0..0, texts);
+    }
+
+    /// Marks the active turn as closed to steering.
+    ///
+    /// Returns `false` when steers are waiting, which tells the loop the turn may
+    /// not end yet: they are answered first. Returns `true` once the turn is
+    /// sealed. Both the check and the seal happen under the turn slot, so a steer
+    /// either lands before it and is answered, or is refused after it — there is
+    /// no state where an accepted message has no one to answer it.
+    #[must_use]
+    pub fn seal_turn(&self) -> bool {
+        let mut slot = self.active_turn.lock().expect("active turn lock poisoned");
+        if !self
+            .steers
+            .lock()
+            .expect("steer queue lock poisoned")
+            .is_empty()
+        {
+            return false;
+        }
+        if let Some(turn) = slot.as_mut() {
+            turn.closing = true;
+        }
+        true
+    }
 
     /// Returns whether a turn is currently running.
     #[must_use]
@@ -186,6 +262,9 @@ impl Session {
 pub struct ActiveTurn {
     /// Signalled to request cooperative cancellation.
     cancellation: CancellationToken,
+    /// Set once the turn has decided to end: later steers are refused rather
+    /// than accepted into a turn that will never read them.
+    closing: bool,
 }
 
 /// Holds the session's turn slot and releases it on drop.
@@ -236,6 +315,42 @@ mod tests {
         let cwd = std::env::temp_dir().join("srud-session-ws");
         let session = Session::new(cwd.clone());
         assert_eq!(session.cwd(), cwd.as_path());
+    }
+
+    #[test]
+    fn a_steer_is_refused_once_the_turn_has_sealed() {
+        let session = session();
+        assert!(!session.steer("nothing to steer into"), "no turn, no steer");
+
+        let turn = session.begin_turn();
+        assert!(session.steer("one"));
+        assert!(
+            !session.seal_turn(),
+            "a waiting steer keeps the turn open: it has not been answered"
+        );
+        assert_eq!(session.take_steers(), vec!["one".to_string()]);
+
+        assert!(session.seal_turn(), "an empty queue lets the turn end");
+        assert!(
+            !session.steer("two"),
+            "a sealed turn refuses instead of swallowing"
+        );
+
+        drop(turn);
+        assert!(!session.steer("three"), "a finished turn refuses too");
+    }
+
+    #[test]
+    fn requeued_steers_stay_ahead_of_newer_ones() {
+        let session = session();
+        let turn = session.begin_turn();
+        assert!(session.steer("newer"));
+        session.requeue_steers(vec!["older".into()]);
+        assert_eq!(
+            session.take_steers(),
+            vec!["older".to_string(), "newer".to_string()]
+        );
+        drop(turn);
     }
 
     #[test]
