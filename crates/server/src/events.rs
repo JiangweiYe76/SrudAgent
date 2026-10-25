@@ -14,9 +14,13 @@
 //! The turn id is not known when a turn is started — the runtime generates it
 //! and reports it in the first `TurnStarted` event. The sink captures it there
 //! and stamps it onto every later notification of the same turn under
-//! `_meta.srud.turnId`.
+//! `_meta.srud.turnId`. An event emitted before that — a steer announcement
+//! arriving between the turn starting and its id being reported — is held
+//! until the id arrives rather than dropped, since it belongs to the turn all
+//! the same and cannot be re-announced later.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use srud_core::types::{Event, EventSink, SessionId as CoreSessionId, TurnId};
@@ -77,6 +81,7 @@ impl EventHub {
             session_id: SessionId::new(session_id.to_string()),
             turn_id: Arc::new(OnceLock::new()),
             context_size,
+            pending: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -94,22 +99,19 @@ pub struct TurnSink {
     session_id: SessionId,
     turn_id: Arc<OnceLock<TurnId>>,
     context_size: Option<u64>,
+    /// Events emitted before the turn reported its id, in the order they came.
+    ///
+    /// A clone shares this with the sink the turn runs on, so an announcement
+    /// made from outside the turn — a steer — is kept until `TurnStarted`
+    /// names the turn, then sent under that id. Only events that cannot be
+    /// re-announced belong here, and there are few of them: everything the
+    /// turn itself emits follows its id.
+    pending: Arc<Mutex<Vec<Event>>>,
 }
 
-impl EventSink for TurnSink {
-    fn emit(&self, event: Event) {
-        let turn_id = match &event {
-            Event::TurnStarted { turn_id } => {
-                let _ = self.turn_id.set(*turn_id);
-                *turn_id
-            }
-            _ => match self.turn_id.get() {
-                Some(id) => *id,
-                // An event before TurnStarted cannot be attributed to a turn;
-                // the runtime never produces this ordering.
-                None => return,
-            },
-        };
+impl TurnSink {
+    /// Converts and broadcasts one event under a known turn id.
+    fn broadcast(&self, turn_id: TurnId, event: Event) {
         let Some(notification) = to_notification(
             &self.session_id,
             &turn_id.to_string(),
@@ -121,6 +123,34 @@ impl EventSink for TurnSink {
         // A send error only means there are no subscribers right now; the
         // turn must never block or fail because nobody is listening.
         let _ = self.tx.send(notification);
+    }
+}
+
+impl EventSink for TurnSink {
+    fn emit(&self, event: Event) {
+        if let Event::TurnStarted { turn_id } = event {
+            let _ = self.turn_id.set(turn_id);
+            // Held events were emitted before this one, so they go out first.
+            let held = std::mem::take(
+                &mut *self
+                    .pending
+                    .lock()
+                    .expect("pending sink lock poisoned"),
+            );
+            for earlier in held {
+                self.broadcast(turn_id, earlier);
+            }
+            // A turn start has no wire form; it only names the turn.
+            return;
+        }
+        match self.turn_id.get() {
+            Some(turn_id) => self.broadcast(*turn_id, event),
+            None => self
+                .pending
+                .lock()
+                .expect("pending sink lock poisoned")
+                .push(event),
+        }
     }
 }
 
@@ -147,15 +177,6 @@ mod tests {
         let mut rx = hub.subscribe();
         let sink = hub.sink_for(CoreSessionId::new(), None);
 
-        sink.emit(Event::AgentMessageDelta {
-            message_id: None,
-            delta: "hi".into(),
-        });
-        assert!(
-            rx.try_recv().is_err(),
-            "events before TurnStarted are not attributable"
-        );
-
         let turn_id = TurnId::new();
         sink.emit(Event::TurnStarted { turn_id });
         sink.emit(Event::AgentMessageDelta {
@@ -172,6 +193,38 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "turn start/complete are not broadcast"
+        );
+    }
+
+    #[test]
+    fn an_event_emitted_before_turn_started_is_sent_under_its_id() {
+        let hub = EventHub::new();
+        let mut rx = hub.subscribe();
+        let sink = hub.sink_for(CoreSessionId::new(), None);
+
+        // A steer can be announced from outside the turn while the turn is
+        // still opening, before the runtime has reported its id.
+        sink.emit(Event::UserMessage {
+            content: "steer".into(),
+        });
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing goes out before the turn has an id"
+        );
+
+        let turn_id = TurnId::new();
+        sink.emit(Event::TurnStarted { turn_id });
+
+        let received = rx.try_recv().expect("the held message is sent once named");
+        assert!(matches!(
+            received.params.as_ref().unwrap().update,
+            SessionUpdate::UserMessageChunk(_)
+        ));
+        let value = serde_json::to_value(&received).unwrap();
+        assert_eq!(
+            value["params"]["_meta"]["srud"]["turnId"],
+            serde_json::json!(turn_id.to_string()),
+            "the held event carries the id it waited for"
         );
     }
 

@@ -180,6 +180,7 @@ impl Session {
             None => false,
         }
     }
+
     /// Queues `text` for the active turn's next boundary, if one is running.
     ///
     /// Returns `false` when no turn is active or the turn has already decided to

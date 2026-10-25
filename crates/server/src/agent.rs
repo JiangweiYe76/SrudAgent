@@ -390,12 +390,6 @@ impl Agent {
             .sessions
             .get(&request.session_id)
             .ok_or_else(|| session_not_found(&request.session_id))?;
-        if !session.is_busy() {
-            return Err(AcpError::new(
-                SESSION_BUSY,
-                "session has no active turn to steer",
-            ));
-        }
         let text = prompt_with_validation(&request.prompt)?;
         if !session.steer(&text) {
             return Err(AcpError::new(
