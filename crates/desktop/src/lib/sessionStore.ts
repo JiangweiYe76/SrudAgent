@@ -242,7 +242,7 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
     // turn already knows what was sent.
     if (!turn.userInput) {
       turn.userInput = userText;
-    } else if (userText !== turn.userInput && !(turn.steeredInputs ?? []).includes(userText)) {
+    } else if (userText !== turn.userInput) {
       turn.steeredInputs = [...(turn.steeredInputs ?? []), userText];
     }
   } else {

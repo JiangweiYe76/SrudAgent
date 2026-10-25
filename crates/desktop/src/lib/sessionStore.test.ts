@@ -262,6 +262,7 @@ describe('sessionStore live path', () => {
       expect(promptsSoFar()).toBe(2);
     });
   });
+
   it('an accepted steer leaves the waiting area without starting a turn', async () => {
     const { useSessionStore, active, calls, prompt, waitForBackend } = await boot();
     const promptsSoFar = () => calls.filter((m) => m === 'session/prompt').length;

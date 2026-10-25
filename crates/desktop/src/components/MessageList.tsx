@@ -252,6 +252,10 @@ export const MessageList = memo(function MessageList({
                     className="opacity-0 transition-opacity group-hover:opacity-100"
                   />
                 </div>
+                {/* A steered message is known per turn, not per step: the store
+                    does not record which step was running when it arrived, so
+                    the group is drawn after the turn's own input and before
+                    its steps, and its meta carries the turn's start time. */}
                 {(turn.steeredInputs ?? []).map((text, index) => (
                   <div key={index} className="group flex w-full flex-col items-end gap-1">
                     <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
