@@ -101,6 +101,7 @@ export function ModelFormModal({ model, taken, onSave, onClose }: ModelFormModal
           </Field>
 
           <Field
+            as="div"
             label={t('providers.model.field.accepts')}
             hint={
               <span className="text-[11px] text-muted-foreground">

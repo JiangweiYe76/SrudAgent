@@ -1,8 +1,8 @@
 // A labelled control, the shape every form in the app uses.
 //
-// The `<label>` wraps its control rather than pointing at it by id, which is
-// what lets a click anywhere on the label — including the caption — land in the
-// field without either end needing a generated id.
+// By default the `<label>` wraps its control rather than pointing at it by id,
+// which is what lets a click anywhere on the label — including the caption —
+// land in the field without either end needing a generated id.
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
@@ -12,15 +12,20 @@ interface FieldProps {
   // left alone. Separate from the control so it can be a sentence.
   hint?: ReactNode;
   children: ReactNode;
+  // A label may only take one labelable descendant, and it forwards hover and
+  // clicks to that descendant. A field holding a set of buttons therefore has
+  // to render in a plain div, where the caption is no longer a label at all.
+  as?: 'label' | 'div';
 }
 
-export function Field({ label, hint, children }: FieldProps) {
+export function Field({ label, hint, children, as = 'label' }: FieldProps) {
+  const Tag = as;
   return (
-    <label className="flex min-w-0 flex-1 flex-col gap-1">
+    <Tag className="flex min-w-0 flex-1 flex-col gap-1">
       <span className="text-xs text-muted-foreground">{label}</span>
       {children}
       {hint}
-    </label>
+    </Tag>
   );
 }
 
