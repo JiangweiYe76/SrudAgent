@@ -16,6 +16,7 @@
 //! and stamps it onto every later notification of the same turn under
 //! `_meta.srud.turnId`.
 
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 use srud_core::types::{Event, EventSink, SessionId as CoreSessionId, TurnId};
@@ -74,7 +75,7 @@ impl EventHub {
         TurnSink {
             tx: self.tx.clone(),
             session_id: SessionId::new(session_id.to_string()),
-            turn_id: OnceLock::new(),
+            turn_id: Arc::new(OnceLock::new()),
             context_size,
         }
     }
@@ -87,10 +88,11 @@ impl Default for EventHub {
 }
 
 /// An [`EventSink`] that converts and broadcasts one session's events.
+#[derive(Clone)]
 pub struct TurnSink {
     tx: broadcast::Sender<Notification<SessionNotification>>,
     session_id: SessionId,
-    turn_id: OnceLock<TurnId>,
+    turn_id: Arc<OnceLock<TurnId>>,
     context_size: Option<u64>,
 }
 
