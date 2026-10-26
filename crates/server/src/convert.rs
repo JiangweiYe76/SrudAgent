@@ -8,18 +8,16 @@
 //!   interrupts and index by turn. `TurnStarted` and `TurnComplete` are not
 //!   updates — the former has no wire analogue, the latter closes the
 //!   `session/prompt` response instead of streaming.
-//! - **Inbound** ([`prompt_text`]): an ACP prompt is a `ContentBlock` array,
-//!   but the runtime takes plain text, so the blocks are concatenated and
-//!   non-text content is dropped (the agent declares text-only prompt
-//!   capabilities).
+//! - **Inbound** ([`crate::agent::prompt_parts`]): an ACP prompt is a
+//!   `ContentBlock` array, split into the text and images a turn can carry.
 
 use srud_core::client::TokenUsage;
 use srud_core::session_event::SessionEvent;
 use srud_core::types::{Event, ResponseItem, Role, TurnEndReason};
 use srud_protocol::acp::{
-    AcpError, ContentBlock, ContentChunk, Meta, Notification, SessionId, SessionNotification,
-    SessionUpdate, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, UsageUpdate, CLIENT_METHOD_NAMES,
+    AcpError, ContentBlock, ContentChunk, ImageContent, Meta, Notification, SessionId,
+    SessionNotification, SessionUpdate, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, UsageUpdate, CLIENT_METHOD_NAMES,
 };
 use srud_protocol::srud::meta::{SrudMeta, SrudUsage};
 use srud_protocol::srud::turn_end::{map_turn_end_reason, TurnEndWire};
@@ -173,7 +171,14 @@ fn tool_result(call_id: String, output: String, is_error: bool) -> SessionUpdate
 /// spelling, and the two are free to diverge — the log's format is frozen, the
 /// protocol's is not.
 fn chunk(delta: String, message_id: Option<srud_core::session_event::MessageId>) -> ContentChunk {
-    let chunk = ContentChunk::new(ContentBlock::Text(TextContent::new(delta)));
+    with_message_id(ContentBlock::Text(TextContent::new(delta)), message_id)
+}
+
+fn with_message_id(
+    content: ContentBlock,
+    message_id: Option<srud_core::session_event::MessageId>,
+) -> ContentChunk {
+    let chunk = ContentChunk::new(content);
     match message_id {
         Some(id) => chunk.message_id(srud_protocol::acp::MessageId::from(id.to_string())),
         None => chunk,
@@ -333,6 +338,10 @@ pub fn replay_notification(
             // call id a `Message` would need to be attributed to one.
             Role::Tool => return None,
         },
+        ResponseItem::Image { mime, data } => SessionUpdate::UserMessageChunk(with_message_id(
+            ContentBlock::Image(ImageContent::new(data.clone(), mime.clone())),
+            message_id.clone(),
+        )),
         ResponseItem::Reasoning { content } => {
             SessionUpdate::AgentThoughtChunk(chunk(content.clone(), message_id.clone()))
         }
@@ -354,25 +363,6 @@ pub fn replay_notification(
         method: CLIENT_METHOD_NAMES.session_update.into(),
         params: Some(notification),
     })
-}
-
-/// Concatenates the text of a prompt's content blocks.
-///
-/// Non-text blocks are dropped here; the dispatch layer validates the prompt
-/// against the declared capabilities before calling this, so dropping is a
-/// no-op for compliant clients.
-#[must_use]
-pub fn prompt_text(blocks: &[ContentBlock]) -> String {
-    let mut text = String::new();
-    for block in blocks {
-        if let ContentBlock::Text(content) = block {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(&content.text);
-        }
-    }
-    text
 }
 
 /// Maps a turn's end reason onto the `session/prompt` outcome.
@@ -493,6 +483,28 @@ mod tests {
         // Without a configured window the replayed record stays unshown, as
         // the live one would have.
         assert!(replay_notification(&session_id(), &event, None, None).is_none());
+    }
+
+    #[test]
+    fn a_replayed_image_becomes_a_user_message_chunk() {
+        let event = SessionEvent::item(
+            srud_core::types::TurnId::new(),
+            Some(srud_core::session_event::MessageId::new()),
+            ResponseItem::Image {
+                mime: "image/png".into(),
+                data: "AAAA".into(),
+            },
+        );
+        let n = replay_notification(&session_id(), &event, None, Some(128_000))
+            .expect("a replayed image is shown");
+        let SessionUpdate::UserMessageChunk(chunk) = &n.params.as_ref().unwrap().update else {
+            panic!("expected a user_message_chunk");
+        };
+        let ContentBlock::Image(image) = &chunk.content else {
+            panic!("expected an image block");
+        };
+        assert_eq!(image.mime_type, "image/png");
+        assert_eq!(image.data, "AAAA");
     }
 
     #[test]
@@ -642,16 +654,6 @@ mod tests {
             value["params"]["update"]["sessionUpdate"],
             json!("agent_message_chunk")
         );
-    }
-
-    #[test]
-    fn prompt_text_joins_text_blocks_only() {
-        let blocks = vec![
-            ContentBlock::Text(TextContent::new("a")),
-            ContentBlock::Text(TextContent::new("b")),
-        ];
-        assert_eq!(prompt_text(&blocks), "a\nb");
-        assert_eq!(prompt_text(&[]), "");
     }
 
     #[test]
