@@ -23,6 +23,8 @@ import {
   parseModelOptions,
   setSessionModel,
   type ListedSession,
+  type LoadedSession,
+  type LoadedTurnEnd,
   RpcFailure,
   sendPrompt,
   steerTurn as requestSteer,
@@ -116,19 +118,6 @@ function srudMeta(params: Json): Json {
 function turnIdOf(params: Json): string | null {
   const id = srudMeta(params).turnId;
   return typeof id === 'string' ? id : null;
-}
-
-// How a turn ended, when the update says. The wire names are the ones the UI
-// already uses for a turn it closed itself, so a replayed turn and a live one are
-// labelled the same.
-function endReasonOf(params: Json): TurnEndReason | null {
-  const reason = srudMeta(params).turnEndReason;
-  return reason === 'completed' ||
-    reason === 'interrupted' ||
-    reason === 'blocked' ||
-    reason === 'error'
-    ? reason
-    : null;
 }
 
 // Finds the turn an update belongs to, and opens one when there is none.
@@ -338,10 +327,6 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
   // mutated: the store compares by reference to decide what to re-render.
   const next = [...found.turns];
   next[index] = turn;
-  // A turn is closed by the update that ended it, which for a replayed one is the
-  // only place the reason is: there is no `session/prompt` response to carry it.
-  const end = endReasonOf(params);
-  if (end) next[index] = { ...turn, endReason: end, endedAt: Date.now() };
   return { ...session, turns: next, updatedAt: replaying ? session.updatedAt : Date.now() };
 }
 
@@ -690,12 +675,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sessions: s.sessions.map((sess) => (sess.id === id ? { ...sess, loaded: true } : sess)),
     }));
     beginReopen(backendId);
+    // How each replayed turn ended arrives on the response; the updates carry no
+    // turn boundary. Held here until the replay is on screen.
+    let loaded: LoadedSession | null = null;
     void loadSession(backendId, session.cwd)
-      .then((model) => {
+      .then((result) => {
+        loaded = result;
         // The reply says which model the replayed conversation was left on.
         // Written before the updates stop arriving, so the picker is right from
         // the moment the conversation appears.
-        if (model) setModelOf(id, model);
+        if (result.model) setModelOf(id, result.model);
       })
       .catch((err: unknown) => {
         // A session the agent will not name is one this app cannot show, and
@@ -710,6 +699,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       })
       .finally(() => {
         flushPendingReplayUpdates();
+        // After the flush: a turn exists in the store only once the update that
+        // opened it has been applied, and the replay is applied in batches.
+        if (loaded) closeReplayedTurns(id, loaded.turns);
         endReopen(backendId);
         // A turn that closed while the replay was in flight had its follow-up
         // refused; it is owed one now that the conversation is back.
@@ -1026,6 +1018,30 @@ function closeTurn(sessionId: string, turnId: string, endReason: TurnEndReason, 
   // A finished turn releases the first waiting follow-up as its own turn; that
   // turn's close releases the next, so the queue drains in arrival order.
   queueMicrotask(() => flushFollowups(sessionId));
+}
+
+// Applies the turn ends a `session/load` response reported, matched on the
+// agent's own turn ids. A turn the response leaves out is one the agent is still
+// running, so it stays open. The session's `updatedAt` is left alone: this is a
+// conversation from the past, and stamping it now would make a stale row read as
+// "just now".
+function closeReplayedTurns(sessionId: string, turns: LoadedTurnEnd[]) {
+  if (turns.length === 0) return;
+  const ended = new Map(turns.map((turn) => [turn.turnId, turn.endReason]));
+  useSessionStore.setState((s) => ({
+    sessions: s.sessions.map((session) => {
+      if (session.id !== sessionId) return session;
+      let changed = false;
+      const nextTurns = session.turns.map((turn) => {
+        const reason =
+          turn.backendTurnId === undefined ? undefined : ended.get(turn.backendTurnId);
+        if (reason === undefined || turn.endReason !== undefined) return turn;
+        changed = true;
+        return { ...turn, endReason: reason, endedAt: Date.now() };
+      });
+      return changed ? { ...session, turns: nextTurns } : session;
+    }),
+  }));
 }
 
 // Hand the oldest waiting follow-up of a session to a new turn. One message per

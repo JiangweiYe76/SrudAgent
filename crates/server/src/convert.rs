@@ -206,7 +206,7 @@ pub fn to_notification(
         Ok(update) => update,
         Err(_) => return None,
     };
-    let (update, outer_meta) = attach_turn_meta(update, turn_id, None, usage);
+    let (update, outer_meta) = attach_turn_meta(update, turn_id, usage);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -218,18 +218,15 @@ pub fn to_notification(
 ///
 /// The turn id goes on the **outer** `SessionNotification` rather than the inner
 /// update variant, because several `SessionUpdate` variants do not carry a `meta`
-/// field of their own, and a single placement keeps the reader uniform. The end
-/// reason and the usage breakdown ride with it, on the same placement, for the
-/// same reason.
+/// field of their own, and a single placement keeps the reader uniform. The usage
+/// breakdown rides with it, on the same placement, for the same reason.
 fn attach_turn_meta(
     update: SessionUpdate,
     turn_id: &str,
-    turn_end: Option<TurnEndReason>,
     usage: Option<SrudUsage>,
 ) -> (SessionUpdate, Meta) {
     let srud = SrudMeta {
         turn_id: Some(turn_id.to_string()),
-        turn_end_reason: turn_end.map(replay_reason_wire).map(str::to_string),
         usage,
         ..Default::default()
     };
@@ -250,13 +247,12 @@ fn srud_usage(usage: &TokenUsage) -> SrudUsage {
     }
 }
 
-/// The wire spelling of a reason a client is shown.
+/// The wire spelling of a turn-end reason.
 ///
-/// Spelled out rather than taken from the prompt response's mapping, which is how
-// a `StopReason` becomes a turn end — and a replay has no `StopReason` to
-// convert. These are the names a client already knows a turn end by, which is why
-// they are the variant names rather than ACP's stop reasons.
-fn replay_reason_wire(reason: TurnEndReason) -> &'static str {
+/// The names a client already knows a turn end by: the variant names, not ACP's
+/// stop reasons. The turns a `session/load` reports have no `StopReason` behind
+/// them.
+pub(crate) fn end_reason_wire(reason: TurnEndReason) -> &'static str {
     match reason {
         TurnEndReason::Completed => "completed",
         TurnEndReason::Interrupted => "interrupted",
@@ -270,11 +266,8 @@ fn replay_reason_wire(reason: TurnEndReason) -> &'static str {
 /// This is how `session/load` hands a client a conversation it was not there for.
 /// The mapping is deliberately the same as the live one: a replayed call and a
 /// live call go out as the same update through the same builders, so a client
-/// cannot end up handling two shapes for one thing.
-///
-/// `turn_end` closes the turn, on the last update of it. A client replaying a
-/// session has no `session/prompt` response to close its turns with, so the reason
-/// is carried here instead; live it arrives on that response and this is `None`.
+/// cannot end up handling two shapes for one thing. How each turn ended is not part
+/// of this stream; it rides on the `session/load` response.
 ///
 /// Returns `None` for a record a client is not shown. The env-context block is
 /// context the model reads — showing it would put the agent's own notes on screen
@@ -286,7 +279,6 @@ fn replay_reason_wire(reason: TurnEndReason) -> &'static str {
 pub fn replay_notification(
     session_id: &SessionId,
     event: &SessionEvent,
-    turn_end: Option<TurnEndReason>,
     context_size: Option<u64>,
 ) -> Option<Notification<SessionNotification>> {
     // A recorded usage report goes out exactly as the live one did, so a client
@@ -298,12 +290,8 @@ pub fn replay_notification(
             usage.input_tokens + usage.output_tokens,
             size,
         ));
-        let (update, outer_meta) = attach_turn_meta(
-            update,
-            &turn_id.to_string(),
-            turn_end,
-            Some(srud_usage(usage)),
-        );
+        let (update, outer_meta) =
+            attach_turn_meta(update, &turn_id.to_string(), Some(srud_usage(usage)));
         let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
         return Some(Notification {
             method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -357,7 +345,7 @@ pub fn replay_notification(
         } => tool_result(call_id.clone(), output.clone(), *is_error),
     };
 
-    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), turn_end, None);
+    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), None);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -464,7 +452,7 @@ mod tests {
                 reasoning_output_tokens: 0,
             },
         };
-        let n = replay_notification(&session_id(), &event, None, Some(128_000))
+        let n = replay_notification(&session_id(), &event, Some(128_000))
             .expect("a replayed usage record is shown");
         let SessionUpdate::UsageUpdate(update) = &n.params.as_ref().unwrap().update else {
             panic!("expected a usage_update");
@@ -482,7 +470,7 @@ mod tests {
         );
         // Without a configured window the replayed record stays unshown, as
         // the live one would have.
-        assert!(replay_notification(&session_id(), &event, None, None).is_none());
+        assert!(replay_notification(&session_id(), &event, None).is_none());
     }
 
     #[test]
@@ -495,7 +483,7 @@ mod tests {
                 data: "AAAA".into(),
             },
         );
-        let n = replay_notification(&session_id(), &event, None, Some(128_000))
+        let n = replay_notification(&session_id(), &event, Some(128_000))
             .expect("a replayed image is shown");
         let SessionUpdate::UserMessageChunk(chunk) = &n.params.as_ref().unwrap().update else {
             panic!("expected a user_message_chunk");

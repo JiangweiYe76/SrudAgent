@@ -72,6 +72,7 @@ use srud_protocol::error::{
     INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_BUSY,
     SESSION_NOT_FOUND,
 };
+use srud_protocol::srud::meta::{SrudMeta, SrudTurnEnd};
 use srud_protocol::srud::methods::{
     DeleteProviderRequest, DeleteProviderResponse, ListProvidersRequest, ListProvidersResponse,
     ProviderCatalog, SetDefaultProviderRequest, SetDefaultProviderResponse, SetProviderRequest,
@@ -80,7 +81,7 @@ use srud_protocol::srud::methods::{
 };
 use srud_protocol::srud::turn_end::TurnEndWire;
 
-use crate::convert::{prompt_outcome, replay_notification};
+use crate::convert::{end_reason_wire, prompt_outcome, replay_notification};
 use crate::events::{EventHub, TurnSink};
 use crate::providers::{self, ModelFactory, ProviderError, ProviderStore};
 use crate::sessions::{RestoreError, SessionManager};
@@ -461,22 +462,9 @@ impl Agent {
         // sent after would arrive as a change to a session the client already
         // believes it has.
         let context_size = self.context_size_for(&request.session_id);
-        let reasons: std::collections::HashMap<_, _> = loaded.turn_ends.iter().cloned().collect();
-        let mut replay = loaded.conversation.iter().peekable();
-        while let Some(event) = replay.next() {
-            // A turn is over once the next record belongs to another one, so its
-            // reason goes on the last update of it — which is the only place a
-            // replayed turn can be closed from.
-            let last_of_its_turn = replay
-                .peek()
-                .is_none_or(|next| next.turn_id() != event.turn_id());
-            let turn_end = if last_of_its_turn {
-                event.turn_id().and_then(|turn| reasons.get(&turn).copied())
-            } else {
-                None
-            };
+        for event in &loaded.conversation {
             if let Some(notification) =
-                replay_notification(&request.session_id, event, turn_end, context_size)
+                replay_notification(&request.session_id, event, context_size)
             {
                 self.hub.send(notification);
             }
@@ -488,7 +476,22 @@ impl Agent {
         if let Some(options) = self.config_options(&request.session_id) {
             response = response.config_options(options);
         }
-        Ok(response)
+        // How each turn ended travels here: a replayed item is the update live
+        // streaming sent, and none of those carries a turn boundary. A turn the log
+        // left open is absent from the list, which a client reads as still running.
+        let turns: Vec<SrudTurnEnd> = loaded
+            .turn_ends
+            .iter()
+            .map(|(turn_id, reason)| SrudTurnEnd {
+                turn_id: turn_id.to_string(),
+                end_reason: end_reason_wire(*reason).to_string(),
+            })
+            .collect();
+        let srud = SrudMeta {
+            turns: Some(turns),
+            ..Default::default()
+        };
+        Ok(response.meta(srud.to_meta()))
     }
 
     /// Brings a session back, or says why it could not be.
@@ -944,7 +947,7 @@ mod tests {
     use crate::test_env::{self, Guard};
     use futures::{stream, StreamExt};
     use serde_json::json;
-    use srud_core::client::{ModelEvent, ModelRequest, ModelStream};
+    use srud_core::client::{ModelEvent, ModelRequest, ModelStream, TokenUsage};
     use srud_protocol::acp::methods::{
         SESSION_LIST, SRUD_SESSION_FORK, SRUD_SESSION_ROLLOUT_READ, SRUD_SESSION_SET_TITLE,
     };
@@ -1140,8 +1143,9 @@ mod tests {
     /// Every `session/update` sent for a session, as `(turn id, turn end)`.
     ///
     /// The title update is left out, as in [`conversation`]: it belongs to the
-    /// session rather than to a turn.
-    fn replayed_turns(
+    /// session rather than to a turn. A replayed update carries no turn end — that
+    /// is on the `session/load` response — so the second half is always `None`.
+    fn replayed_updates(
         rx: &mut tokio::sync::broadcast::Receiver<Notification<SessionNotification>>,
     ) -> Vec<(String, Option<String>)> {
         let mut seen = Vec::new();
@@ -1486,18 +1490,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_replayed_turn_says_how_it_ended() {
+    async fn the_load_response_says_how_each_turn_ended() {
         // A client being shown a session has no `session/prompt` response to close
-        // its turns with, so each reason rides on the last update of its turn.
+        // its turns with, so the response to `session/load` lists them.
         let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
         std::env::set_var(
             crate::config::HOME_VAR,
             crate::test_env::unique_dir("srud-load-turn-ends"),
         );
 
-        let first = agent(scripted(vec![ModelEvent::TextDelta {
-            delta: "answer".into(),
-        }]));
+        // Each turn reports usage, so each one's log ends with a usage record.
+        let first = agent(scripted(vec![
+            ModelEvent::TextDelta {
+                delta: "answer".into(),
+            },
+            ModelEvent::Usage(TokenUsage {
+                input_tokens: 12,
+                output_tokens: 3,
+                ..Default::default()
+            }),
+        ]));
         initialize(&first).await;
         let (session_id, cwd) = session_with_a_home(&first).await;
         prompt_titles(&first, &session_id, "hello").await;
@@ -1506,7 +1518,7 @@ mod tests {
         let second = agent(scripted(vec![]));
         initialize(&second).await;
         let mut rx = second.subscribe();
-        result_of(
+        let response = result_of(
             second
                 .handle(request(
                     SESSION_LOAD,
@@ -1519,16 +1531,26 @@ mod tests {
                 .await,
         );
 
-        let updates = replayed_turns(&mut rx);
-        assert_eq!(updates.len(), 4, "{updates:?}");
-        assert_ne!(updates[2].0, updates[0].0, "each turn is its own");
-        for turn in [&updates[0..2], &updates[2..4]] {
-            assert_eq!(
-                turn[0].1, None,
-                "only the last update of a turn closes it: {turn:?}"
-            );
-            assert_eq!(turn[1].1, Some("completed".to_string()), "{turn:?}");
+        let turns = response["_meta"]["srud"]["turns"]
+            .as_array()
+            .expect("the load response lists the turns");
+        assert_eq!(turns.len(), 2, "{turns:?}");
+        assert_ne!(
+            turns[0]["turnId"], turns[1]["turnId"],
+            "each turn is its own"
+        );
+        for turn in turns {
+            assert_eq!(turn["endReason"], json!("completed"), "{turn:?}");
         }
+
+        // A replayed update is the update live streaming sent. The usage records
+        // are not among them: this agent configures no context window.
+        let updates = replayed_updates(&mut rx);
+        assert_eq!(updates.len(), 4, "{updates:?}");
+        assert!(
+            updates.iter().all(|(_, end)| end.is_none()),
+            "no update closes a turn: {updates:?}"
+        );
     }
 
     #[tokio::test]

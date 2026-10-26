@@ -9,6 +9,7 @@ import {
   attachmentsFor,
   displayTitle,
   draftFor,
+  isBusy,
   isReopening,
 } from './sessionStore';
 import { SESSION_NOT_FOUND } from './acp';
@@ -52,6 +53,12 @@ function deferred<T>(): Deferred<T> {
 
 const reply = (id: number, result: unknown) => ({ jsonrpc: '2.0', id, result });
 
+// The `_meta.srud` a `session/load` reply carries: every turn the session has
+// finished, and why.
+const turnsReply = (turns: Array<{ turnId: string; endReason: string }>) => ({
+  _meta: { srud: { turns } },
+});
+
 // Boots a fresh store with a scripted backend: handshake succeeds, `session/new`
 // hands out S1, S2, ... and `session/prompt` resolves only when the returned
 // deferred settles. `session/load` likewise stays open until its deferred
@@ -76,7 +83,10 @@ async function boot(
   vi.resetModules();
   mocks.notifyCb = null;
   const prompt = deferred<{ stopReason: string }>();
-  const load = deferred<null>();
+  // What the `session/load` reply carries beyond the model: how each replayed
+  // turn ended. Resolved last: it is the last thing the client hears about the
+  // conversation.
+  const load = deferred<Record<string, unknown> | null>();
   const del = deferred<null>();
   const calls: string[] = [];
   const requested: Array<{ method: string; params: unknown }> = [];
@@ -115,9 +125,10 @@ async function boot(
             const { RpcFailure } = await import('./acp');
             throw new RpcFailure(refusal.code, refusal.message);
           }
-          return load.promise.then(() =>
+          return load.promise.then((extra) =>
             reply(payload.id, {
               ...(options.loadModel === undefined ? {} : { configOptions: options.loadModel }),
+              ...(extra ?? {}),
             }),
           );
         }
@@ -830,24 +841,22 @@ describe('sessionStore live path', () => {
     });
   });
 
-  it('closes a turn on the update that says how it ended', async () => {
+  it('leaves a turn open until the prompt response closes it', async () => {
     const { useSessionStore, active, fire, prompt, waitForBackend } = await boot();
     useSessionStore.getState().sendTurn('go');
     await waitForBackend();
 
     fire({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'A' } }, { turnId: 'T1' });
-    fire(
-      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '!' } },
-      { turnId: 'T1', turnEndReason: 'interrupted' },
-    );
-    expect(active().turns[0].endReason).toBe('interrupted');
+    // The stream carries no turn boundary — a replayed chunk is the same update.
+    fire({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '!' } }, { turnId: 'T1' });
+    expect(active().turns[0].endReason).toBeUndefined();
     expect(active().turns[0].steps[0].assistantText).toBe('A!');
-    expect(active().turns[0].endedAt).toBeDefined();
 
     prompt.resolve({ stopReason: 'cancelled' });
     await vi.waitFor(() => {
       expect(active().turns[0].endReason).toBe('interrupted');
     });
+    expect(active().turns[0].endedAt).toBeDefined();
   });
 });
 
@@ -936,18 +945,85 @@ describe('sessionStore listing path', () => {
     );
     fire(
       { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'the answer' } },
-      { turnId: 'T1', turnEndReason: 'completed' },
+      { turnId: 'T1' },
     );
-    load.resolve(null);
+    load.resolve(turnsReply([{ turnId: 'T1', endReason: 'completed' }]));
     await vi.waitFor(() => {
-      expect(active().turns).toHaveLength(1);
+      expect(active().turns[0]?.endReason).toBe('completed');
     });
+    expect(active().turns).toHaveLength(1);
     expect(active().turns[0].userInput).toBe('the question');
-    expect(active().turns[0].endReason).toBe('completed');
     // The other one is untouched: what it holds is not on screen yet.
     const older = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-older');
     expect(older?.loaded).toBe(false);
     expect(older?.turns).toEqual([]);
+  });
+
+  it('closes a replayed turn whose last record is a usage report', async () => {
+    // A turn's usage report is recorded last, and a usage update is replayed only
+    // when the model's window is known.
+    const { fire, active, load } = await boot({ listed: [LISTED] });
+
+    fire(
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'hi' } },
+      { turnId: 'T1' },
+    );
+    fire(
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } },
+      { turnId: 'T1' },
+    );
+    fire({ sessionUpdate: 'usage_update', used: 900, size: 128_000 }, { turnId: 'T1' });
+    // Nothing in that stream says the turn is over.
+    expect(isBusy(active())).toBe(true);
+
+    load.resolve(turnsReply([{ turnId: 'T1', endReason: 'completed' }]));
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+    expect(isBusy(active())).toBe(false);
+  });
+
+  it('leaves a turn the response does not name open', async () => {
+    // A turn left out of the list is one the agent is still running — a session
+    // loaded while another client is mid-turn.
+    const { useSessionStore, fire, active, load } = await boot({ listed: [LISTED] });
+
+    fire(
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'go on' } },
+      { turnId: 'T2' },
+    );
+    load.resolve(turnsReply([{ turnId: 'T1', endReason: 'completed' }]));
+    await vi.waitFor(() => {
+      expect(isReopening(useSessionStore.getState())).toBe(false);
+    });
+    expect(active().turns[0].endReason).toBeUndefined();
+    expect(isBusy(active())).toBe(true);
+  });
+
+  it('applies the turn ends after the batched replay has landed', async () => {
+    // Outside tests a replay is applied in animation frames, not in one store write
+    // per update. The ends land after that flush: before it, the turns they name do
+    // not exist yet.
+    const { useSessionStore, fire, active, load } = await boot({ listed: [LISTED] });
+    const saved = { vitest: process.env.VITEST, nodeEnv: process.env.NODE_ENV };
+    delete process.env.VITEST;
+    process.env.NODE_ENV = 'production';
+    try {
+      fire(
+        { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'q' } },
+        { turnId: 'T1' },
+      );
+      load.resolve(turnsReply([{ turnId: 'T1', endReason: 'completed' }]));
+      await vi.waitFor(() => {
+        expect(isReopening(useSessionStore.getState())).toBe(false);
+      });
+      expect(active().turns[0].endReason).toBe('completed');
+    } finally {
+      if (saved.vitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = saved.vitest;
+      if (saved.nodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = saved.nodeEnv;
+    }
   });
 
   it('keeps the listed timestamp while the conversation replays', async () => {
@@ -964,12 +1040,18 @@ describe('sessionStore listing path', () => {
     );
     fire(
       { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'the answer' } },
-      { turnId: 'T1', turnEndReason: 'completed' },
+      { turnId: 'T1' },
     );
     expect(active().turns).toHaveLength(1);
     expect(active().updatedAt).toBe(listed);
 
-    load.resolve(null);
+    load.resolve(turnsReply([{ turnId: 'T1', endReason: 'interrupted' }]));
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('interrupted');
+    });
+    // Closing a replayed turn is not activity: the row keeps the timestamp it
+    // was listed with.
+    expect(active().updatedAt).toBe(listed);
   });
 
   it('stamps a live update once the replayed conversation has arrived', async () => {
@@ -1016,7 +1098,7 @@ describe('sessionStore listing path', () => {
     const listed = useSessionStore.getState().sessions.find((s) => s.backendId === 'S-previous');
     fire(
       { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'once' } },
-      { turnId: 'T1', turnEndReason: 'completed' },
+      { turnId: 'T1' },
     );
     load.resolve(null);
     await vi.waitFor(() => {
@@ -1497,9 +1579,9 @@ describe('sessionStore images', () => {
     );
     fire(
       { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'yes' } },
-      { turnId: 'T1', turnEndReason: 'completed' },
+      { turnId: 'T1' },
     );
-    load.resolve(null);
+    load.resolve(turnsReply([{ turnId: 'T1', endReason: 'completed' }]));
 
     await vi.waitFor(() => {
       expect(active().turns).toHaveLength(1);
