@@ -63,10 +63,20 @@ export interface Step {
   toolCalls: ToolCall[];
 }
 
+// An image attached to a message: pasted into the composer or restored from
+// the log, kept as base64.
+export interface Attachment {
+  id: string;
+  mime: string;
+  data: string;
+}
+
 // One user input and the full agent processing it triggers.
 export interface Turn {
   id: string;
   userInput: string;
+  // Images sent with the text above, in the order they were attached.
+  images?: Attachment[];
   // Steered messages injected into this turn while it was running. Each is a
   // distinct user message and is rendered as its own bubble, in arrival order,
   // after `userInput` — they are not merged into it.

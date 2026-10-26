@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
 import type {
+  Attachment,
   ModelOptions,
   Session,
   Step,
@@ -41,6 +42,14 @@ function mapStopReason(reason: string): TurnEndReason {
 function textOf(block: unknown): string | null {
   const b = block as Json | undefined;
   if (b && b.type === 'text' && typeof b.text === 'string') return b.text;
+  return null;
+}
+
+function imageOf(block: unknown): Attachment | null {
+  const b = block as Json | undefined;
+  if (b && b.type === 'image' && typeof b.data === 'string' && typeof b.mimeType === 'string') {
+    return { id: uid('img'), mime: b.mimeType, data: b.data };
+  }
   return null;
 }
 
@@ -223,7 +232,8 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
   // Read before a turn is located, so a turn is never opened for an update that
   // turns out to carry nothing.
   const userText = kind === 'user_message_chunk' ? textOf(update.content) : null;
-  if (kind === 'user_message_chunk' && userText === null) return null;
+  const userImage = kind === 'user_message_chunk' ? imageOf(update.content) : null;
+  if (kind === 'user_message_chunk' && userText === null && userImage === null) return null;
 
   const found = locateTurn(session.turns, turnIdOf(params));
   if (!found) return null;
@@ -231,19 +241,25 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
 
   const turn = { ...found.turns[index] };
 
-  if (userText !== null) {
-    // A user message is not a step — steps are what the agent did — so it settles
-    // the turn's text and nothing else. That text is what fills in a turn which
-    // came from the log; a turn this client opened already knows it, because it is
-    // what was sent.
-    // A steered message is a new user input arriving mid-turn: it is not the
-    // turn's original text, so it becomes its own bubble rather than being
-    // merged into the original one. The `||=` form would drop it, since the
-    // turn already knows what was sent.
-    if (!turn.userInput) {
-      turn.userInput = userText;
-    } else if (userText !== turn.userInput) {
-      turn.steeredInputs = [...(turn.steeredInputs ?? []), userText];
+  if (kind === 'user_message_chunk') {
+    // An image is recorded after the text it was sent with, so it extends the
+    // turn instead of opening anything of its own.
+    if (userImage !== null) {
+      turn.images = [...(turn.images ?? []), userImage];
+    }
+    if (userText !== null) {
+      // A user message is not a step — steps are what the agent did — so it
+      // settles the turn's text and nothing else. That text is what fills in a
+      // turn which came from the log; a turn this client opened already knows
+      // it, because it is what was sent.
+      // A steered message is a new user input arriving mid-turn. Text matching
+      // what the turn already holds is the sent message coming back, so it
+      // changes nothing; anything else is a steer and becomes its own bubble.
+      if (!turn.userInput) {
+        turn.userInput = userText;
+      } else if (userText !== turn.userInput) {
+        turn.steeredInputs = [...(turn.steeredInputs ?? []), userText];
+      }
     }
   } else {
     const steps = turn.steps.map((st) => ({ ...st, toolCalls: [...st.toolCalls] }));
@@ -408,12 +424,17 @@ interface SessionState {
   // What each session's input box holds, keyed by `draftKeyOf`.
   drafts: Record<string, string>;
   setDraft: (id: string, text: string) => void;
+  // Images pasted into each session's box, keyed like drafts. Memory only: an
+  // image is not kept across restarts, unlike the draft it was attached to.
+  attachments: Record<string, Attachment[]>;
+  setAttachments: (id: string, attachments: Attachment[]) => void;
   init: () => Promise<void>;
   select: (id: string) => void;
   addSession: () => void;
   // `sessionId` names the conversation to run in; the visible box leaves it
-  // out and the active session is used.
-  sendTurn: (userInput: string, sessionId?: string) => void;
+  // out and the active session is used. Images are sent with the text and
+  // cannot be queued: a turn already running takes text only.
+  sendTurn: (userInput: string, sessionId?: string, attachments?: Attachment[]) => void;
   queueFollowup: (text: string) => void;
   removeFollowup: (index: number) => void;
   steerFollowup: (index: number) => void;
@@ -432,6 +453,18 @@ export function isReopening(state: Pick<SessionState, 'reopeningCount'>): boolea
 // when it has none.
 export function draftFor(state: Pick<SessionState, 'sessions' | 'drafts'>, id: string): string {
   return state.drafts[draftKeyOf(state.sessions, id)] ?? '';
+}
+
+// A stable empty list, so a box holding no images keeps returning the same
+// reference and a selector on it does not re-render on every store write.
+const NO_ATTACHMENTS: Attachment[] = [];
+
+// The images a session's input box holds.
+export function attachmentsFor(
+  state: Pick<SessionState, 'sessions' | 'attachments'>,
+  id: string,
+): Attachment[] {
+  return state.attachments[draftKeyOf(state.sessions, id)] ?? NO_ATTACHMENTS;
 }
 
 // The backend sessions whose `session/load` is still in flight. The updates they
@@ -551,6 +584,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   reopeningCount: 0,
   deletingIds: [],
   drafts: {},
+  attachments: {},
 
   init: () => {
     starting ??= start();
@@ -632,6 +666,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     saveDrafts(drafts);
   },
 
+  setAttachments: (id, attachments) => {
+    const key = draftKeyOf(get().sessions, id);
+    const next = { ...get().attachments };
+    // An empty box leaves no entry behind.
+    if (attachments.length > 0) next[key] = attachments;
+    else delete next[key];
+    set({ attachments: next });
+  },
+
   select: (id) => {
     set({ activeId: id });
     // A session the agent listed has a conversation that is not on screen yet, so
@@ -686,32 +729,45 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => ({ sessions: [draft, ...s.sessions], activeId: draft.id }));
   },
 
-  sendTurn: (userInput, target) => {
+  sendTurn: (userInput, target, images) => {
     const state = get();
     const session = state.sessions.find((s) => s.id === (target ?? state.activeId));
     // A turn refused mid-replay would be written into a conversation that is only
     // half back, and the two would end up interleaved.
     if (!session || state.reopeningCount > 0) return;
+    const attachments = images?.length ? images : undefined;
     // While a turn is running, a submitted message is queued as a follow-up
     // rather than starting a second turn. A drain that finds the turn still busy
     // simply leaves its message waiting instead of queueing it twice.
     if (isBusy(session)) {
-      if (!target) get().queueFollowup(userInput);
+      // A running turn takes text only, so an image is never queued behind one.
+      if (!target && !attachments) get().queueFollowup(userInput);
       return;
     }
     const sessionId = session.id;
     const now = Date.now();
-    const turn: Turn = { id: uid('t'), userInput, steps: [], createdAt: now };
+    const turn: Turn = {
+      id: uid('t'),
+      userInput,
+      images: attachments ?? [],
+      steps: [],
+      createdAt: now,
+    };
 
-    // The draft goes with the turn it became. Cleared only once the turn is
-    // accepted: a refused send leaves the text in the box.
+    // The draft and its images go with the turn they became. Cleared only once
+    // the turn is accepted: a refused send leaves them in the box.
     const draftKey = draftKeyOf(state.sessions, sessionId);
-    set((s) => ({
-      sessions: s.sessions.map((sess) =>
-        sess.id === sessionId ? { ...sess, turns: [...sess.turns, turn], updatedAt: now } : sess,
-      ),
-      drafts: withoutDraft(s.drafts, draftKey),
-    }));
+    set((s) => {
+      const attachments = { ...s.attachments };
+      delete attachments[draftKey];
+      return {
+        sessions: s.sessions.map((sess) =>
+          sess.id === sessionId ? { ...sess, turns: [...sess.turns, turn], updatedAt: now } : sess,
+        ),
+        drafts: withoutDraft(s.drafts, draftKey),
+        attachments,
+      };
+    });
     saveDrafts(get().drafts);
 
     void (async () => {
@@ -731,6 +787,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             const text = drafts[key];
             delete drafts[key];
             if (text !== undefined) drafts[created.sessionId] = text;
+            const attachments = { ...s.attachments };
+            const images = attachments[key];
+            delete attachments[key];
+            if (images !== undefined) attachments[created.sessionId] = images;
             return {
               sessions: s.sessions.map((sess) =>
                 sess.id === sessionId
@@ -738,6 +798,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                   : sess,
               ),
               drafts,
+              attachments,
             };
           });
           saveDrafts(useSessionStore.getState().drafts);
@@ -756,7 +817,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       try {
-        const reason = await sendPrompt(backendId, userInput);
+        const reason = await sendPrompt(backendId, userInput, attachments ?? []);
         closeTurn(sessionId, turn.id, mapStopReason(reason));
       } catch (err) {
         closeTurn(sessionId, turn.id, 'error', String(err));
@@ -915,10 +976,13 @@ function removeSession(id: string) {
     removed = true;
     // The key is resolved before the row is filtered out: it comes from the
     // session itself, and the session is about to stop being there to ask.
-    const drafts = withoutDraft(s.drafts, draftKeyOf(s.sessions, id));
-    if (s.activeId !== id) return { sessions: remaining, drafts };
+    const key = draftKeyOf(s.sessions, id);
+    const drafts = withoutDraft(s.drafts, key);
+    const attachments = { ...s.attachments };
+    delete attachments[key];
+    if (s.activeId !== id) return { sessions: remaining, drafts, attachments };
     movedTo = remaining[0]?.id ?? '';
-    return { sessions: remaining, activeId: movedTo, drafts };
+    return { sessions: remaining, activeId: movedTo, drafts, attachments };
   });
   if (!removed) return;
   saveDrafts(useSessionStore.getState().drafts);

@@ -7,7 +7,14 @@ import { ChatInput } from './components/ChatInput';
 import { ModelSelect } from './components/ModelSelect';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
-import { useSessionStore, displayTitle, draftFor, isBusy, isReopening } from './lib/sessionStore';
+import {
+  useSessionStore,
+  attachmentsFor,
+  displayTitle,
+  draftFor,
+  isBusy,
+  isReopening,
+} from './lib/sessionStore';
 import { useProviderStore } from './lib/providers';
 import { useTheme, useThemeStore } from './lib/theme';
 import type { Provider } from './lib/acp';
@@ -32,7 +39,9 @@ function App() {
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
   const setDraft = useSessionStore((s) => s.setDraft);
+  const setAttachments = useSessionStore((s) => s.setAttachments);
   const draft = useSessionStore((s) => draftFor(s, activeId));
+  const attachments = useSessionStore((s) => attachmentsFor(s, activeId));
   const reopening = useSessionStore(isReopening);
   const providers = useProviderStore((s) => s.providers);
   const defaultModel = useProviderStore((s) => s.defaultModel);
@@ -132,7 +141,9 @@ function App() {
         <ChatInput
           value={draft}
           onValueChange={(text) => setDraft(activeId, text)}
-          onSend={sendTurn}
+          attachments={attachments}
+          onAttachmentsChange={(images) => setAttachments(activeId, images)}
+          onSend={(text, images) => sendTurn(text, undefined, images)}
           onQueue={queueFollowup}
           followups={active?.followups}
           onSteerFollowup={steerFollowup}

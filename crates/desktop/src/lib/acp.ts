@@ -118,10 +118,23 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await rpcRequest('session/delete', { sessionId });
 }
 
-export async function sendPrompt(sessionId: string, text: string): Promise<string> {
+// An image sent with a prompt, as its MIME type and base64 bytes.
+export interface PromptImage {
+  mime: string;
+  data: string;
+}
+
+export async function sendPrompt(
+  sessionId: string,
+  text: string,
+  images: PromptImage[] = [],
+): Promise<string> {
   const result = await rpcRequest('session/prompt', {
     sessionId,
-    prompt: [{ type: 'text', text }],
+    prompt: [
+      ...images.map((image) => ({ type: 'image', mimeType: image.mime, data: image.data })),
+      ...(text ? [{ type: 'text', text }] : []),
+    ],
   });
   return String(result.stopReason ?? 'end_turn');
 }
@@ -201,6 +214,33 @@ export async function cancelTurn(sessionId: string): Promise<void> {
 
 export function defaultCwd(): Promise<string> {
   return invoke<string>('default_cwd');
+}
+
+// An image the host read from a path the clipboard named, base64-encoded.
+export interface ClipboardImage {
+  mime: string;
+  data: string;
+}
+
+// Reads an image file the clipboard named by path. Some Linux clipboards copy
+// a file path rather than the picture itself, and a webview cannot open the
+// file behind that path. `limit` is the largest file worth sending, so an
+// oversized one is refused before it is read.
+export async function readImageFile(path: string, limit: number): Promise<ClipboardImage> {
+  return invoke<ClipboardImage>('read_image_file', { path, limit });
+}
+
+// What the system clipboard holds, when the webview cannot see it.
+export type ClipboardContent =
+  | { kind: 'image'; mime: string; data: string }
+  | { kind: 'text'; text: string }
+  | { kind: 'none' };
+
+// Reads the system clipboard from the host. Some platforms hand a pasted file
+// to the page as nothing at all, and the default paste then writes the path it
+// was copied from into the box; the host can read the clipboard itself.
+export async function readClipboard(limit: number): Promise<ClipboardContent> {
+  return invoke<ClipboardContent>('read_clipboard', { limit });
 }
 
 // ---------------------------------------------------------------------------

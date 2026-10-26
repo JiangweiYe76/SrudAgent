@@ -1,16 +1,28 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ClipboardEvent } from 'react';
 
-import { ArrowUp, Square, Trash2 } from 'lucide-react';
+import { ArrowUp, Square, Trash2, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { t } from '@/lib/i18n';
-import type { UsageState } from '@/lib/types';
+import { isTauri, readClipboard, readImageFile } from '@/lib/acp';
+import type { Attachment, UsageState } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { Modal, ModalContent } from '@/components/ui/modal';
 import { UsageModal } from '@/components/UsageModal';
+
+// Images are sent as base64 inside the prompt, so an oversized file is refused
+// at the paste rather than growing the session log without bound.
+const IMAGE_LIMIT_BYTES = 10 * 1024 * 1024;
+
+let attachmentCounter = 0;
 
 interface ChatInputProps {
   // The draft of the session on screen, and the way to change it.
   value: string;
   onValueChange: (text: string) => void;
-  onSend: (text: string) => void;
+  // Images pasted into the box, waiting for the next message.
+  attachments: Attachment[];
+  onAttachmentsChange: (attachments: Attachment[]) => void;
+  onSend: (text: string, attachments: Attachment[]) => void;
   // Takes a message typed while a turn runs, moving it to the waiting list
   // instead of dropping it or opening a second turn.
   onQueue?: (text: string) => void;
@@ -36,6 +48,8 @@ interface ChatInputProps {
 export function ChatInput({
   value,
   onValueChange,
+  attachments,
+  onAttachmentsChange,
   onSend,
   onQueue,
   followups,
@@ -49,7 +63,17 @@ export function ChatInput({
   // The detail view behind the ring. It lives here so the indicator and its
   // modal come and go together with the usage data itself.
   const [usageOpen, setUsageOpen] = useState(false);
+  const [preview, setPreview] = useState<Attachment | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Reads started by a paste resolve after the event, so the list they append
+  // to is the latest one rather than the one captured when the paste fired.
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  // The draft as it stands when a host read resolves, so text is written into
+  // what the box holds now rather than what it held at the paste.
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   useEffect(() => {
     const root = rootRef.current;
@@ -65,7 +89,9 @@ export function ChatInput({
 
   const submit = () => {
     const text = value.trim();
-    if (!text) return;
+    if (!text && attachments.length === 0) return;
+    // A running turn takes text only: images wait in the box until it ends.
+    if (busy && attachments.length > 0) return;
     // A message typed mid-turn joins the waiting list and leaves the box, so
     // the queue shows what is coming rather than the box holding it back.
     if (busy && onQueue) {
@@ -74,9 +100,86 @@ export function ChatInput({
       return;
     }
     if (busy) return;
-    // The store clears the draft when it takes the turn; a refused send leaves
-    // the text in the box.
-    onSend(text);
+    // The store clears the draft and the images when it takes the turn; a
+    // refused send leaves them in the box.
+    onSend(text, attachments);
+  };
+
+  // Writes text the host read back into the box at the caret. Used only for a
+  // paste the webview handed over empty and the composer had to take over.
+  const insertText = (text: string) => {
+    const textarea = textareaRef.current;
+    const draft = valueRef.current;
+    const start = Math.min(textarea?.selectionStart ?? draft.length, draft.length);
+    const end = Math.min(textarea?.selectionEnd ?? start, draft.length);
+    onValueChange(`${draft.slice(0, start)}${text}${draft.slice(end)}`);
+    const caret = start + text.length;
+    // The draft owns the value, so the caret is placed once React has written
+    // the new text into the box.
+    requestAnimationFrame(() => textarea?.setSelectionRange(caret, caret));
+  };
+
+  const pasteImages = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const fromItems = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    // Some clipboards expose the files only through `files`, with no item for
+    // each one.
+    const files =
+      fromItems.length > 0
+        ? fromItems
+        : Array.from(event.clipboardData.files).filter((file) =>
+            file.type.startsWith('image/'),
+          );
+    if (files.length > 0) {
+      // Only a clipboard carrying an image is taken over, so pasting text keeps
+      // the browser's own handling.
+      event.preventDefault();
+      const accepted = files.filter((file) => {
+        if (file.size <= IMAGE_LIMIT_BYTES) return true;
+        toast.error(t('chat.image.tooLarge'));
+        return false;
+      });
+      void Promise.all(accepted.map(readAttachment))
+        .then((loaded) => {
+          onAttachmentsChange([...attachmentsRef.current, ...loaded]);
+        })
+        .catch(() => toast.error(t('chat.image.unreadable')));
+      return;
+    }
+    // File managers on Linux put a path on the clipboard instead of the bytes,
+    // and the webview cannot open that path itself, so the host reads it.
+    const path = clipboardImagePath(event.clipboardData);
+    if (path && isTauri()) {
+      event.preventDefault();
+      void readImageFile(path, IMAGE_LIMIT_BYTES)
+        .then((image) => {
+          onAttachmentsChange([...attachmentsRef.current, attachmentOf(image)]);
+        })
+        .catch((error: unknown) => {
+          const kind = (error as { kind?: string } | null)?.kind;
+          toast.error(kind === 'tooLarge' ? t('chat.image.tooLarge') : t('chat.image.unreadable'));
+        });
+      return;
+    }
+    // A paste can also reach the page with nothing usable on it — no image
+    // bytes and no path — and the default handling then writes the path the
+    // file was copied from into the box. The host reads the clipboard instead.
+    if (!isTauri() || event.clipboardData.getData('text/plain')) return;
+    event.preventDefault();
+    void readClipboard(IMAGE_LIMIT_BYTES)
+      .then((content) => {
+        if (content.kind === 'image') {
+          onAttachmentsChange([...attachmentsRef.current, attachmentOf(content)]);
+        } else if (content.kind === 'text') {
+          insertText(content.text);
+        }
+      })
+      .catch((error: unknown) => {
+        const kind = (error as { kind?: string } | null)?.kind;
+        toast.error(kind === 'tooLarge' ? t('chat.image.tooLarge') : t('chat.image.unreadable'));
+      });
   };
 
   const queued = !!followups && followups.length > 0;
@@ -84,15 +187,48 @@ export function ChatInput({
   // The composer itself: box, controls, and usage modal on one surface.
   const composer = (
     <div className="rounded-2xl border border-border bg-background p-[14px_16px_10px] shadow-[0_2px_12px_rgba(0,0,0,0.10)] focus-within:border-accent dark:shadow-[0_2px_12px_rgba(0,0,0,0.55)]">
+      {attachments.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {attachments.map((image) => (
+            <div
+              key={image.id}
+              className="group relative h-16 w-16 overflow-hidden rounded-lg border border-border"
+            >
+              <button
+                type="button"
+                onClick={() => setPreview(image)}
+                title={t('chat.image.preview')}
+                aria-label={t('chat.image.preview')}
+                className="block h-full w-full cursor-zoom-in"
+              >
+                <img src={imageSrc(image)} alt="" className="h-full w-full object-cover" />
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onAttachmentsChange(attachments.filter((item) => item.id !== image.id))
+                }
+                title={t('chat.image.remove')}
+                aria-label={t('chat.image.remove')}
+                className="absolute right-1 top-1 flex cursor-pointer items-center justify-center rounded-full bg-black/60 p-0.5 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/80"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {/* A textarea defaults to its intrinsic `size=20` width, where the
           placeholder wraps to three lines and clips; `block w-full` stretches it
           to the card so the text lays out on its own terms. */}
       <textarea
+        ref={textareaRef}
         className="block w-full min-h-[44px] max-h-[200px] resize-none border-none bg-transparent text-sm leading-normal text-foreground outline-none placeholder:text-muted-foreground"
         value={value}
         placeholder={t('chat.placeholder')}
         rows={2}
         onChange={(e) => onValueChange(e.target.value)}
+        onPaste={pasteImages}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -120,7 +256,7 @@ export function ChatInput({
         <Button
           size="icon"
           onClick={submit}
-          disabled={!value.trim() || busy}
+          disabled={(!value.trim() && attachments.length === 0) || busy}
           title={t('chat.send')}
           aria-label={t('chat.send')}
           className="disabled:bg-border disabled:text-muted-foreground"
@@ -129,6 +265,26 @@ export function ChatInput({
         </Button>
       </div>
       {usage && <UsageModal usage={usage} open={usageOpen} onOpenChange={setUsageOpen} />}
+      <Modal
+        open={preview !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreview(null);
+        }}
+      >
+        <ModalContent
+          title={t('chat.image.preview')}
+          className="max-h-[90vh] max-w-[90vw]"
+          overlayClassName="bg-black/70"
+        >
+          {preview && (
+            <img
+              src={imageSrc(preview)}
+              alt={t('chat.image.preview')}
+              className="max-h-[80vh] max-w-[80vw] object-contain"
+            />
+          )}
+        </ModalContent>
+      </Modal>
     </div>
   );
 
@@ -180,6 +336,77 @@ export function ChatInput({
       )}
     </div>
   );
+}
+
+function imageSrc(image: Attachment): string {
+  return `data:${image.mime};base64,${image.data}`;
+}
+
+// An attachment out of image bytes the host read off the clipboard.
+function attachmentOf(image: { mime: string; data: string }): Attachment {
+  return { id: `img${attachmentCounter++}`, mime: image.mime, data: image.data };
+}
+
+// The extensions the host will read off a path the clipboard named.
+const IMAGE_PATH = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
+
+// The image file a clipboard names instead of carrying.
+//
+// A file manager copies a `text/uri-list` of `file://` entries, and some
+// clipboards also offer the path as plain text, while the bytes are not
+// available to the page. Only an entry naming an image is taken, so copying a
+// folder or a document still pastes as the browser would.
+function clipboardImagePath(data: DataTransfer): string | null {
+  for (const line of data.getData('text/uri-list').split('\n')) {
+    const uri = line.trim();
+    if (!uri || uri.startsWith('#')) continue;
+    const path = filePathOf(uri);
+    if (path) return path;
+  }
+  for (const line of data.getData('text/plain').split('\n')) {
+    const text = line.trim();
+    const uriPath = filePathOf(text);
+    if (uriPath) return uriPath;
+    // An absolute path, so a sentence that happens to end in `.png` is left
+    // alone.
+    if (/^(\/|[A-Za-z]:[\\/])/.test(text) && IMAGE_PATH.test(text)) return text;
+  }
+  return null;
+}
+
+function filePathOf(uri: string): string | null {
+  if (!uri.startsWith('file://')) return null;
+  try {
+    const path = decodeURIComponent(new URL(uri).pathname);
+    // `file:///C:/x` names a drive path on Windows, where the leading slash
+    // belongs to the URL rather than to the path.
+    const local = /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path;
+    return IMAGE_PATH.test(local) ? local : null;
+  } catch {
+    return null;
+  }
+}
+
+// Reads a pasted file as base64, which is what the prompt carries.
+function readAttachment(file: File): Promise<Attachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      const url = String(reader.result ?? '');
+      const comma = url.indexOf(',');
+      if (comma < 0) {
+        reject(new Error('the file was not read as a data URL'));
+        return;
+      }
+      resolve({
+        id: `img${attachmentCounter++}`,
+        mime: file.type || 'image/png',
+        data: url.slice(comma + 1),
+      });
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 // Context pressure, beside the stop button.

@@ -4,8 +4,13 @@
 // creation, streaming updates folded into turns/steps, turn completion) and the
 // reopen path (a remembered session's log replayed back into turns).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Session } from './types';
-import { displayTitle, draftFor, isReopening } from './sessionStore';
+import type { Attachment, Session } from './types';
+import {
+  attachmentsFor,
+  displayTitle,
+  draftFor,
+  isReopening,
+} from './sessionStore';
 import { SESSION_NOT_FOUND } from './acp';
 
 const mocks = vi.hoisted(() => ({
@@ -1401,5 +1406,107 @@ describe('sessionStore drafts', () => {
     expect(draftFor(useSessionStore.getState(), active().id)).toBe('leftover from last run');
     // Storage is rewritten with the live drafts.
     expect(stored()).toEqual({ 'S-previous': 'leftover from last run' });
+  });
+});
+
+describe('sessionStore images', () => {
+  const LISTED = {
+    sessionId: 'S-previous',
+    cwd: '/work/previous',
+    title: 'A picture',
+    updatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+  };
+  const SHOT: Attachment = { id: 'img1', mime: 'image/png', data: 'YWJj' };
+
+  it('sends a pasted image with the prompt and takes it out of the box', async () => {
+    const { useSessionStore, active, requested, waitForBackend } = await boot();
+    useSessionStore.getState().setAttachments(active().id, [SHOT]);
+    useSessionStore.getState().sendTurn('look at this', undefined, [SHOT]);
+
+    // The image joins the turn, and the box it was pasted into is empty again.
+    expect(active().turns[0].images).toEqual([SHOT]);
+    expect(attachmentsFor(useSessionStore.getState(), active().id)).toEqual([]);
+
+    await waitForBackend();
+    await vi.waitFor(() => {
+      const req = requested.find((r) => r.method === 'session/prompt');
+      expect(req?.params).toMatchObject({
+        prompt: [
+          { type: 'image', mimeType: 'image/png', data: 'YWJj' },
+          { type: 'text', text: 'look at this' },
+        ],
+      });
+    });
+  });
+
+  it('sends an image on its own, with no text to carry it', async () => {
+    const { useSessionStore, active, requested, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('', undefined, [SHOT]);
+    expect(active().turns[0].images).toEqual([SHOT]);
+
+    await waitForBackend();
+    await vi.waitFor(() => {
+      const req = requested.find((r) => r.method === 'session/prompt');
+      expect(req?.params).toMatchObject({
+        prompt: [{ type: 'image', mimeType: 'image/png', data: 'YWJj' }],
+      });
+    });
+  });
+
+  it('keeps each session its own images', async () => {
+    const { useSessionStore, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    useSessionStore.getState().addSession();
+
+    const state = () => useSessionStore.getState();
+    const spokenIn = state().sessions[1];
+    const draft = state().sessions[0];
+    state().setAttachments(draft.id, [SHOT]);
+
+    expect(attachmentsFor(state(), draft.id)).toEqual([SHOT]);
+    // The other session's box is untouched by what was pasted here.
+    expect(attachmentsFor(state(), spokenIn.id)).toEqual([]);
+  });
+
+  it('files images under the backend id once the session has one', async () => {
+    const { useSessionStore, active, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    // Pasted while the backend session is still being created, so the images
+    // start under the local id and follow the session when it gets its own.
+    useSessionStore.getState().setAttachments(active().id, [SHOT]);
+
+    await waitForBackend();
+    expect(active().backendId).toBe('S1');
+    expect(Object.keys(useSessionStore.getState().attachments)).toEqual(['S1']);
+    expect(attachmentsFor(useSessionStore.getState(), active().id)).toEqual([SHOT]);
+  });
+
+  it('replays a sent image onto the turn it was sent with', async () => {
+    const { active, fire, load } = await boot({ listed: [LISTED] });
+    fire(
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'see this' } },
+      { turnId: 'T1' },
+    );
+    fire(
+      {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'image', mimeType: 'image/png', data: 'YWJj' },
+      },
+      { turnId: 'T1' },
+    );
+    fire(
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'yes' } },
+      { turnId: 'T1', turnEndReason: 'completed' },
+    );
+    load.resolve(null);
+
+    await vi.waitFor(() => {
+      expect(active().turns).toHaveLength(1);
+    });
+    expect(active().turns[0].userInput).toBe('see this');
+    expect(active().turns[0].images).toEqual([
+      expect.objectContaining({ mime: 'image/png', data: 'YWJj' }),
+    ]);
   });
 });
