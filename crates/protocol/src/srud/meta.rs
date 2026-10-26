@@ -27,7 +27,7 @@ pub const RESERVED_TRACE_KEYS: &[&str] = &["traceparent", "tracestate", "baggage
 
 /// SrudAgent's turn/step metadata, serialised under `_meta.srud`.
 ///
-/// Every field is optional: a chunk only carries what the current step needs.
+/// Every field is optional: a payload carries only what its message needs.
 /// Keys are camelCase on the wire (ACP convention).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,10 +50,7 @@ pub struct SrudMeta {
     pub interrupted: Option<bool>,
     /// The SrudAgent turn-end reason when the standard `stopReason` does not carry
     /// it — currently only `"blocked"` (approval denied), which maps to
-    /// `stopReason: "end_turn"` plus this marker — or when there is no `stopReason`
-    /// at all. A replayed turn is the second case: the client is shown the log and
-    /// gets no prompt response, so the reason of each turn rides on the last
-    /// update of that turn.
+    /// `stopReason: "end_turn"` plus this marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_end_reason: Option<String>,
     /// A limit that ended the turn, when `stopReason` is `max_tokens` /
@@ -68,6 +65,21 @@ pub struct SrudMeta {
     /// `usage` fields aggregate. Absent when the provider reported no usage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<SrudUsage>,
+    /// Every turn the session has finished and why. Carried on the `session/load`
+    /// response, which is where a client learns how each turn of a replayed
+    /// conversation ended. A turn the list leaves out is one still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns: Option<Vec<SrudTurnEnd>>,
+}
+
+/// One finished turn, as `_meta.srud.turns` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SrudTurnEnd {
+    /// The turn's id, the same one every update of it carried.
+    pub turn_id: String,
+    /// `completed`, `interrupted`, `blocked` or `error`.
+    pub end_reason: String,
 }
 
 /// Per-step token counts carried under `_meta.srud.usage`.
@@ -107,6 +119,7 @@ impl SrudMeta {
             && self.limit.is_none()
             && self.refusal.is_none()
             && self.usage.is_none()
+            && self.turns.is_none()
     }
 
     /// Wraps this payload as a standalone `_meta` object: `{"srud": {...}}`.
@@ -215,6 +228,35 @@ mod tests {
         let meta = original.to_meta().unwrap();
         let parsed = SrudMeta::from_meta(&meta).unwrap();
         assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn a_turn_list_survives_the_wrapper() {
+        let meta = SrudMeta {
+            turns: Some(vec![
+                SrudTurnEnd {
+                    turn_id: "t1".into(),
+                    end_reason: "completed".into(),
+                },
+                SrudTurnEnd {
+                    turn_id: "t2".into(),
+                    end_reason: "interrupted".into(),
+                },
+            ]),
+            ..Default::default()
+        };
+
+        // Only `turns` is set: the list alone makes the payload worth wrapping.
+        let wrapped = meta.to_meta().expect("a turn list is not empty");
+        let value = serde_json::to_value(&wrapped).unwrap();
+        assert_eq!(
+            value,
+            json!({ "srud": { "turns": [
+                { "turnId": "t1", "endReason": "completed" },
+                { "turnId": "t2", "endReason": "interrupted" },
+            ] } })
+        );
+        assert_eq!(SrudMeta::from_meta(&wrapped), Some(meta));
     }
 
     #[test]
