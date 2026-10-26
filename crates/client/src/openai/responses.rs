@@ -5,11 +5,11 @@
 
 use async_openai::types::responses::{
     CreateResponse, CreateResponseArgs, EasyInputContent, EasyInputMessage, FunctionCallOutput,
-    FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, InputItem, InputParam, Item,
-    MessageType, OutputItem, ResponseStreamEvent, ResponseTextDeltaEvent, ResponseUsage,
-    Role as ApiRole, Tool,
+    FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, ImageDetail, InputContent,
+    InputImageContent, InputItem, InputParam, InputTextContent, Item, MessageType, OutputItem,
+    ResponseStreamEvent, ResponseTextDeltaEvent, ResponseUsage, Role as ApiRole, Tool,
 };
-use async_openai::{config::OpenAIConfig, Client};
+use async_openai::{Client, config::OpenAIConfig};
 use futures::StreamExt;
 use srud_core::client::{
     ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream, TokenUsage,
@@ -18,7 +18,7 @@ use srud_core::tools::ToolDefinition;
 use srud_core::types::Role;
 use tokio_util::sync::CancellationToken;
 
-use super::{connect, ClientConfig};
+use super::{ClientConfig, connect};
 
 /// A client for the Responses API.
 ///
@@ -131,7 +131,7 @@ enum Translated {
 /// Builds the SDK request from a core request.
 #[must_use]
 pub fn to_request(model: &str, request: &ModelRequest) -> CreateResponse {
-    let items = request.items.iter().map(to_input_item).collect();
+    let items = to_input_items(&request.items);
 
     CreateResponseArgs::default()
         .model(model)
@@ -145,6 +145,72 @@ pub fn to_request(model: &str, request: &ModelRequest) -> CreateResponse {
         .unwrap_or_default()
 }
 
+/// Maps recorded request items onto API input items.
+///
+/// A user's text and the images sent with it are recorded as separate items,
+/// but the API reads them as one message, so consecutive user items are folded
+/// into a single message whose content is a part list.
+fn to_input_items(items: &[ModelRequestItem]) -> Vec<InputItem> {
+    let mut input = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            ModelRequestItem::Message {
+                role: Role::User | Role::Tool,
+                content,
+            } => {
+                push_user_content(&mut input, text_content(content));
+            }
+            ModelRequestItem::Image { mime, data } => {
+                push_user_content(&mut input, image_content(mime, data));
+            }
+            item => input.push(to_input_item(item)),
+        }
+    }
+    input
+}
+
+/// Appends a part to the trailing user message, starting one if the last
+/// message belongs to another role.
+fn push_user_content(input: &mut Vec<InputItem>, content: InputContent) {
+    if let Some(InputItem::EasyMessage(message)) = input.last_mut() {
+        if message.role == ApiRole::User {
+            let mut parts = match std::mem::replace(
+                &mut message.content,
+                EasyInputContent::Text(String::new()),
+            ) {
+                EasyInputContent::Text(text) if text.is_empty() => Vec::new(),
+                EasyInputContent::Text(text) => vec![text_content(&text)],
+                EasyInputContent::ContentList(parts) => parts,
+            };
+            parts.push(content);
+            message.content = EasyInputContent::ContentList(parts);
+            return;
+        }
+    }
+    input.push(InputItem::EasyMessage(EasyInputMessage {
+        r#type: MessageType::Message,
+        role: ApiRole::User,
+        content: EasyInputContent::ContentList(vec![content]),
+        phase: None,
+    }));
+}
+
+fn text_content(text: &str) -> InputContent {
+    InputContent::InputText(InputTextContent {
+        text: text.to_owned(),
+        prompt_cache_breakpoint: None,
+    })
+}
+
+fn image_content(mime: &str, data: &str) -> InputContent {
+    InputContent::InputImage(InputImageContent {
+        detail: ImageDetail::default(),
+        file_id: None,
+        image_url: Some(format!("data:{mime};base64,{data}")),
+        prompt_cache_breakpoint: None,
+    })
+}
+
 /// Maps one recorded request item onto an API input item.
 fn to_input_item(item: &ModelRequestItem) -> InputItem {
     match item {
@@ -152,6 +218,12 @@ fn to_input_item(item: &ModelRequestItem) -> InputItem {
             r#type: MessageType::Message,
             role: to_api_role(*role),
             content: EasyInputContent::Text(content.clone()),
+            phase: None,
+        }),
+        ModelRequestItem::Image { mime, data } => InputItem::EasyMessage(EasyInputMessage {
+            r#type: MessageType::Message,
+            role: ApiRole::User,
+            content: EasyInputContent::ContentList(vec![image_content(mime, data)]),
             phase: None,
         }),
         ModelRequestItem::FunctionCall {
@@ -385,6 +457,42 @@ mod tests {
                 arguments: arguments.into(),
             },
         )
+    }
+
+    #[test]
+    fn user_text_and_images_fold_into_one_input_message() {
+        let items = vec![
+            ModelRequestItem::Message {
+                role: Role::User,
+                content: "look at this".into(),
+            },
+            ModelRequestItem::Image {
+                mime: "image/png".into(),
+                data: "AAAA".into(),
+            },
+            ModelRequestItem::Message {
+                role: Role::Assistant,
+                content: "I see it".into(),
+            },
+            ModelRequestItem::Message {
+                role: Role::User,
+                content: "thanks".into(),
+            },
+        ];
+
+        let input = to_input_items(&items);
+        assert_eq!(input.len(), 3);
+        let value = serde_json::to_value(&input).expect("input serializes");
+        assert_eq!(value[0]["role"], "user");
+        assert_eq!(value[0]["content"][0]["type"], "input_text");
+        assert_eq!(value[0]["content"][0]["text"], "look at this");
+        assert_eq!(value[0]["content"][1]["type"], "input_image");
+        assert_eq!(
+            value[0]["content"][1]["image_url"],
+            "data:image/png;base64,AAAA"
+        );
+        assert_eq!(value[1]["role"], "assistant");
+        assert_eq!(value[2]["content"][0]["text"], "thanks");
     }
 
     #[test]

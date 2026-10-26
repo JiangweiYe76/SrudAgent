@@ -19,18 +19,20 @@
 
 use std::collections::BTreeMap;
 
+use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::{
     ChatCompletionMessageToolCall, ChatCompletionMessageToolCallChunk,
     ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessage,
     ChatCompletionRequestAssistantMessageContent, ChatCompletionRequestMessage,
+    ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
     ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
     ChatCompletionRequestToolMessage, ChatCompletionRequestToolMessageContent,
     ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    ChatCompletionStreamOptions, ChatCompletionTool, ChatCompletionTools, CompletionUsage,
-    CreateChatCompletionRequest, CreateChatCompletionRequestArgs, FunctionCall, FunctionObject,
+    ChatCompletionRequestUserMessageContentPart, ChatCompletionStreamOptions, ChatCompletionTool,
+    ChatCompletionTools, CompletionUsage, CreateChatCompletionRequest,
+    CreateChatCompletionRequestArgs, FunctionCall, FunctionObject, ImageUrl,
 };
-use async_openai::Client;
 use futures::StreamExt;
 use srud_core::client::{
     ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream, TokenUsage,
@@ -39,7 +41,7 @@ use srud_core::tools::ToolDefinition;
 use srud_core::types::Role;
 use tokio_util::sync::CancellationToken;
 
-use super::{connect, ClientConfig};
+use super::{ClientConfig, connect};
 
 /// A client for the Chat Completions endpoint.
 ///
@@ -329,7 +331,7 @@ pub fn to_request(model: &str, request: &ModelRequest) -> CreateChatCompletionRe
             },
         ));
     }
-    messages.extend(request.items.iter().map(to_message));
+    messages.extend(to_messages(&request.items));
 
     CreateChatCompletionRequestArgs::default()
         .model(model)
@@ -346,6 +348,76 @@ pub fn to_request(model: &str, request: &ModelRequest) -> CreateChatCompletionRe
         })
         .build()
         .unwrap_or_default()
+}
+
+/// Maps recorded request items onto API messages.
+///
+/// A user's text and the images sent with it are recorded as separate items,
+/// but the API reads them as one message, so consecutive user items are folded
+/// into a single message whose content is a part list.
+fn to_messages(items: &[ModelRequestItem]) -> Vec<ChatCompletionRequestMessage> {
+    let mut messages: Vec<ChatCompletionRequestMessage> = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            ModelRequestItem::Message {
+                role: Role::User | Role::Tool,
+                content,
+            } => {
+                push_user_part(&mut messages, text_part(content));
+            }
+            ModelRequestItem::Image { mime, data } => {
+                push_user_part(&mut messages, image_part(mime, data));
+            }
+            item => messages.push(to_message(item)),
+        }
+    }
+    messages
+}
+
+/// Appends a part to the trailing user message, starting one if the last
+/// message belongs to another role.
+fn push_user_part(
+    messages: &mut Vec<ChatCompletionRequestMessage>,
+    part: ChatCompletionRequestUserMessageContentPart,
+) {
+    if let Some(ChatCompletionRequestMessage::User(user)) = messages.last_mut() {
+        let mut parts = match std::mem::replace(
+            &mut user.content,
+            ChatCompletionRequestUserMessageContent::Text(String::new()),
+        ) {
+            ChatCompletionRequestUserMessageContent::Text(text) if text.is_empty() => Vec::new(),
+            ChatCompletionRequestUserMessageContent::Text(text) => vec![text_part(&text)],
+            ChatCompletionRequestUserMessageContent::Array(parts) => parts,
+        };
+        parts.push(part);
+        user.content = ChatCompletionRequestUserMessageContent::Array(parts);
+        return;
+    }
+    messages.push(ChatCompletionRequestMessage::User(
+        ChatCompletionRequestUserMessage {
+            content: ChatCompletionRequestUserMessageContent::Array(vec![part]),
+            name: None,
+        },
+    ));
+}
+
+fn text_part(text: &str) -> ChatCompletionRequestUserMessageContentPart {
+    ChatCompletionRequestUserMessageContentPart::Text(ChatCompletionRequestMessageContentPartText {
+        text: text.to_owned(),
+        prompt_cache_breakpoint: None,
+    })
+}
+
+fn image_part(mime: &str, data: &str) -> ChatCompletionRequestUserMessageContentPart {
+    ChatCompletionRequestUserMessageContentPart::ImageUrl(
+        ChatCompletionRequestMessageContentPartImage {
+            image_url: ImageUrl {
+                url: format!("data:{mime};base64,{data}"),
+                detail: None,
+            },
+            prompt_cache_breakpoint: None,
+        },
+    )
 }
 
 /// Maps one recorded request item onto an API message.
@@ -372,6 +444,14 @@ fn to_message(item: &ModelRequestItem) -> ChatCompletionRequestMessage {
                 })
             }
         },
+        ModelRequestItem::Image { mime, data } => {
+            ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                content: ChatCompletionRequestUserMessageContent::Array(vec![image_part(
+                    mime, data,
+                )]),
+                name: None,
+            })
+        }
         ModelRequestItem::FunctionCall {
             call_id,
             name,
@@ -865,6 +945,54 @@ mod tests {
         assert_eq!(messages[2]["tool_calls"][0]["id"], "c1");
         assert_eq!(messages[3]["role"], "tool");
         assert_eq!(messages[3]["tool_call_id"], "c1");
+    }
+
+    #[test]
+    fn user_text_and_images_fold_into_one_multipart_message() {
+        let request = ModelRequest {
+            items: vec![
+                ModelRequestItem::Message {
+                    role: Role::User,
+                    content: "look at this".into(),
+                },
+                ModelRequestItem::Image {
+                    mime: "image/png".into(),
+                    data: "AAAA".into(),
+                },
+                ModelRequestItem::Image {
+                    mime: "image/jpeg".into(),
+                    data: "BBBB".into(),
+                },
+                ModelRequestItem::Message {
+                    role: Role::Assistant,
+                    content: "I see it".into(),
+                },
+                ModelRequestItem::Message {
+                    role: Role::User,
+                    content: "thanks".into(),
+                },
+            ],
+            tools: Vec::new(),
+            instructions: None,
+        };
+
+        let messages = serde_json::to_value(to_request("gpt-x", &request).messages)
+            .expect("messages serialize");
+        assert_eq!(messages.as_array().unwrap().len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"][0]["type"], "text");
+        assert_eq!(messages[0]["content"][0]["text"], "look at this");
+        assert_eq!(messages[0]["content"][1]["type"], "image_url");
+        assert_eq!(
+            messages[0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
+        assert_eq!(
+            messages[0]["content"][2]["image_url"]["url"],
+            "data:image/jpeg;base64,BBBB"
+        );
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["content"][0]["text"], "thanks");
     }
 
     #[test]
