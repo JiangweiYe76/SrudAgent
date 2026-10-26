@@ -16,7 +16,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 
-import { listProviders, parseModelOptions, UNAVAILABLE_GROUP } from './acp';
+import { listProviders, loadSession, parseModelOptions, UNAVAILABLE_GROUP } from './acp';
 
 /** One `providerId/modelId` select option, as the agent builds it. */
 const choice = (value: string, name: string) => ({ value, name });
@@ -179,6 +179,51 @@ describe('parseModelOptions', () => {
     expect(parsed?.groups[0].choices).toEqual([
       { value: 'openai/gpt-4o', name: 'openai/gpt-4o' },
     ]);
+  });
+});
+
+describe('loadSession', () => {
+  it('reads how each replayed turn ended off the response', async () => {
+    bridge.reply = {
+      _meta: {
+        srud: {
+          turns: [
+            { turnId: 'T1', endReason: 'completed' },
+            { turnId: 'T2', endReason: 'interrupted' },
+          ],
+        },
+      },
+    };
+
+    const loaded = await loadSession('S1', '/work');
+    expect(loaded.turns).toEqual([
+      { turnId: 'T1', endReason: 'completed' },
+      { turnId: 'T2', endReason: 'interrupted' },
+    ]);
+  });
+
+  it('drops a turn end it cannot read rather than guessing at one', async () => {
+    // A dropped entry leaves its turn open, which reads as running.
+    bridge.reply = {
+      _meta: {
+        srud: {
+          turns: [
+            { turnId: 'T1', endReason: 'completed' },
+            { turnId: 7, endReason: 'completed' },
+            { turnId: 'T2', endReason: 'vanished' },
+          ],
+        },
+      },
+    };
+
+    expect((await loadSession('S1')).turns).toEqual([
+      { turnId: 'T1', endReason: 'completed' },
+    ]);
+  });
+
+  it('reports no turn ends when the response carries none', async () => {
+    bridge.reply = {};
+    expect((await loadSession('S1')).turns).toEqual([]);
   });
 });
 

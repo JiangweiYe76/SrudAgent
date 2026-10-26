@@ -3,7 +3,7 @@
 // outside Tauri (plain `vite dev` in a browser), where the app has no backend.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { ModelChoice, ModelGroup, ModelOptions } from './types';
+import type { ModelChoice, ModelGroup, ModelOptions, TurnEndReason } from './types';
 
 export type Json = Record<string, unknown>;
 
@@ -150,20 +150,55 @@ export async function steerTurn(sessionId: string, text: string): Promise<void> 
 }
 
 // Hands a client the session's whole conversation as `session/update`
-// notifications, arriving before the response. The updates carry the turn each
-// belongs to and how each turn ended, since there is no `session/prompt`
-// response here to say either.
+// notifications, arriving before the response. Each update names the turn it
+// belongs to; how each turn ended comes back on the response.
 //
 // `cwd` is how ACP has a client confirm the session's directory. It comes from
 // `session/list`, which reports the directory of every session it names; an empty
 // one means "not chosen", the same word `session/new` accepts, for a client that
 // has none of its own.
-//
-// Returns the model the session was left on, which is what the replayed
-// conversation ended with — not necessarily what a fresh session would start on.
-export async function loadSession(sessionId: string, cwd = ''): Promise<ModelOptions | null> {
+export interface LoadedTurnEnd {
+  turnId: string;
+  endReason: TurnEndReason;
+}
+
+export interface LoadedSession {
+  // The model the session was left on, which is what the replayed conversation
+  // ended with — not necessarily what a fresh session would start on.
+  model: ModelOptions | null;
+  // Every turn the session has finished. A turn this leaves out is one still
+  // running.
+  turns: LoadedTurnEnd[];
+}
+
+function isTurnEndReason(value: unknown): value is TurnEndReason {
+  return (
+    value === 'completed' || value === 'interrupted' || value === 'blocked' || value === 'error'
+  );
+}
+
+// The turn ends the response reports. An entry that cannot be read is left out,
+// which leaves that turn open: a client shows a session as running when it cannot
+// tell.
+function parseTurnEnds(meta: unknown): LoadedTurnEnd[] {
+  const srud = (meta as Json | undefined)?.srud as Json | undefined;
+  const turns = srud?.turns;
+  if (!Array.isArray(turns)) return [];
+  return turns.flatMap((entry) => {
+    const turn = entry as Json | undefined;
+    const turnId = turn?.turnId;
+    const endReason = turn?.endReason;
+    if (typeof turnId !== 'string' || !isTurnEndReason(endReason)) return [];
+    return [{ turnId, endReason }];
+  });
+}
+
+export async function loadSession(sessionId: string, cwd = ''): Promise<LoadedSession> {
   const result = await rpcRequest('session/load', { sessionId, cwd, mcpServers: [] });
-  return parseModelOptions(result.configOptions);
+  return {
+    model: parseModelOptions(result.configOptions),
+    turns: parseTurnEnds(result._meta),
+  };
 }
 
 // Renames a session. ACP lets the agent name a session but defines no
