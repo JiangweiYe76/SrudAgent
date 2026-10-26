@@ -194,7 +194,10 @@ async fn a_steer_is_recorded_at_a_boundary_and_answered_in_the_same_turn() {
 
     let result = run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &model,
         &tools(),
         &log,
@@ -271,7 +274,10 @@ async fn a_steer_a_dead_turn_never_read_is_answered_before_the_next_input() {
     let dying = SteersWhileAnswering::new(&session, Some("left waiting".into()), vec![]);
     let first = run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &dying,
         &tools(),
         &log,
@@ -292,6 +298,7 @@ async fn a_steer_a_dead_turn_never_read_is_answered_before_the_next_input() {
         &session,
         TurnInput {
             text: "second question".into(),
+            images: Vec::new(),
         },
         &answering,
         &tools(),

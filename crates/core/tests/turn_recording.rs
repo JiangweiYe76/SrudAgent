@@ -153,6 +153,7 @@ fn describe(entry: &SessionEvent) -> String {
                 }
             }
             ResponseItem::Message { .. } => "assistant_message".into(),
+            ResponseItem::Image { .. } => "image".into(),
             ResponseItem::Reasoning { .. } => "reasoning".into(),
             ResponseItem::FunctionCall { .. } => "tool_call".into(),
             ResponseItem::FunctionCallOutput { .. } => "tool_result".into(),
@@ -321,7 +322,10 @@ async fn a_record_is_written_before_the_event_that_announces_it() {
 
     run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Silent,
         &tools(),
         &log,
@@ -349,7 +353,10 @@ async fn the_turn_opens_and_closes_in_the_log() {
 
     let result = run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Silent,
         &tools(),
         &log,
@@ -387,7 +394,10 @@ async fn every_announcement_has_a_record_written_first() {
 
     run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Scripted::new(vec![vec![
             ModelEvent::TextDelta { delta: "he".into() },
             ModelEvent::TextDelta {
@@ -446,7 +456,10 @@ async fn a_tool_call_is_recorded_before_it_runs() {
 
     run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         // The second round is what ends the turn: the first asks for a tool, the
         // loop runs it and asks again, and this round answers with nothing to do.
         &Scripted::new(vec![
@@ -493,7 +506,10 @@ async fn one_message_carries_one_id_across_its_chunks() {
 
     run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Scripted::new(vec![vec![
             ModelEvent::TextDelta { delta: "he".into() },
             ModelEvent::TextDelta {
@@ -526,7 +542,10 @@ async fn reasoning_is_ided_apart_from_the_answer() {
 
     run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Scripted::new(vec![vec![
             ModelEvent::ThoughtDelta {
                 delta: "think".into(),
@@ -574,7 +593,10 @@ async fn the_recorded_message_carries_the_id_that_was_announced() {
 
     run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Scripted::new(vec![vec![
             ModelEvent::TextDelta {
                 delta: "hello".into(),
@@ -629,7 +651,10 @@ async fn the_reasoning_is_recorded_before_the_message_it_produced() {
 
     run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Scripted::new(vec![vec![
             ModelEvent::ThoughtDelta {
                 delta: "think".into(),
@@ -682,7 +707,10 @@ async fn a_turn_that_cannot_record_stops_rather_than_announcing() {
 
     let error = run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Silent,
         &tools(),
         &Refusing,
@@ -726,7 +754,10 @@ async fn a_refused_turn_end_still_announces_the_ending() {
 
     let result = run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Silent,
         &tools(),
         &RefusesOnlyTheEnd,
@@ -754,7 +785,10 @@ async fn a_message_id_survives_a_round_trip_through_the_log() {
 
     run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &Scripted::new(vec![vec![
             ModelEvent::TextDelta {
                 delta: "hello".into(),
@@ -811,7 +845,10 @@ async fn the_instruction_is_written_once_and_not_again_per_turn() {
     for text in ["first", "second", "third"] {
         run_turn(
             &session,
-            TurnInput { text: text.into() },
+            TurnInput {
+                text: text.into(),
+                images: Vec::new(),
+            },
             &Silent,
             &tools(),
             &log,
@@ -840,7 +877,10 @@ async fn the_context_block_is_written_once_and_not_again_per_turn() {
     for text in ["first", "second", "third"] {
         run_turn(
             &session,
-            TurnInput { text: text.into() },
+            TurnInput {
+                text: text.into(),
+                images: Vec::new(),
+            },
             &Silent,
             &tools(),
             &log,
@@ -877,7 +917,10 @@ async fn the_context_block_leads_the_first_turn_and_not_the_later_ones() {
     for text in ["first", "second"] {
         run_turn(
             &session,
-            TurnInput { text: text.into() },
+            TurnInput {
+                text: text.into(),
+                images: Vec::new(),
+            },
             &Silent,
             &tools(),
             &log,
@@ -937,7 +980,10 @@ async fn the_instruction_recorded_is_the_one_the_request_carries() {
 
     run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         &client,
         &tools(),
         &log,
@@ -988,7 +1034,10 @@ async fn a_failed_tool_is_recorded_as_failed() {
 
     run_turn(
         &session,
-        TurnInput { text: "go".into() },
+        TurnInput {
+            text: "go".into(),
+            images: Vec::new(),
+        },
         &client,
         &tools,
         &log,

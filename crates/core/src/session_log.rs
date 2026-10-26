@@ -144,6 +144,7 @@ fn describe(entry: &SessionEvent) -> String {
         SessionEvent::Item { turn_id, item, .. } => {
             let kind = match item {
                 ResponseItem::Message { .. } => "message",
+                ResponseItem::Image { .. } => "image",
                 ResponseItem::FunctionCall { .. } => "tool call",
                 ResponseItem::FunctionCallOutput { .. } => "tool result",
                 ResponseItem::Reasoning { .. } => "reasoning",

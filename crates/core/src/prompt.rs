@@ -8,7 +8,7 @@
 
 use crate::client::{ModelRequest, ModelRequestItem};
 use crate::session::SessionState;
-use crate::types::{ResponseItem, Role};
+use crate::types::{ImagePart, ResponseItem, Role};
 
 /// One titled block of the system instruction.
 ///
@@ -112,6 +112,10 @@ fn to_request_item(item: &ResponseItem) -> Option<ModelRequestItem> {
             role: *role,
             content: content.clone(),
         }),
+        ResponseItem::Image { mime, data } => Some(ModelRequestItem::Image {
+            mime: mime.clone(),
+            data: data.clone(),
+        }),
         ResponseItem::FunctionCall {
             call_id,
             name,
@@ -152,6 +156,15 @@ pub fn user_item(text: &str) -> ResponseItem {
     }
 }
 
+/// Builds the item recorded for an image submitted with user input.
+#[must_use]
+pub fn image_item(image: &ImagePart) -> ResponseItem {
+    ResponseItem::Image {
+        mime: image.mime.clone(),
+        data: image.data.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +201,23 @@ mod tests {
         assert!(matches!(
             request.items[3],
             ModelRequestItem::FunctionCallOutput { .. }
+        ));
+    }
+
+    #[test]
+    fn images_project_after_the_text_they_were_sent_with() {
+        let mut state = SessionState::new();
+        state.push(user_item("what is this?"));
+        state.push(image_item(&ImagePart {
+            mime: "image/png".into(),
+            data: "AAAA".into(),
+        }));
+
+        let request = build_prompt(&state, Vec::new(), None);
+        assert_eq!(request.items.len(), 2);
+        assert!(matches!(
+            &request.items[1],
+            ModelRequestItem::Image { mime, data } if mime == "image/png" && data == "AAAA"
         ));
     }
 

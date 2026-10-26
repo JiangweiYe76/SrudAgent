@@ -72,11 +72,22 @@ pub enum Op {
     Shutdown,
 }
 
+/// An image attached to a user turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImagePart {
+    /// MIME type of the encoded bytes, such as `image/png`.
+    pub mime: String,
+    /// Base64-encoded bytes, without the `data:` URL prefix.
+    pub data: String,
+}
+
 /// A single unit of user input.
 #[derive(Debug, Clone)]
 pub struct TurnInput {
     /// The user's text.
     pub text: String,
+    /// Images sent alongside the text, in the order the user attached them.
+    pub images: Vec<ImagePart>,
 }
 
 /// Why a turn stopped.
@@ -195,6 +206,8 @@ pub enum Role {
 pub enum ResponseItem {
     /// A conversational message.
     Message { role: Role, content: String },
+    /// An image the user attached, recorded next to the message it belongs to.
+    Image { mime: String, data: String },
     /// The model asking for a tool to run.
     FunctionCall {
         call_id: String,
@@ -243,7 +256,7 @@ impl ResponseItem {
             Self::FunctionCall { call_id, .. } | Self::FunctionCallOutput { call_id, .. } => {
                 Some(call_id)
             }
-            Self::Message { .. } | Self::Reasoning { .. } => None,
+            Self::Message { .. } | Self::Image { .. } | Self::Reasoning { .. } => None,
         }
     }
 }
