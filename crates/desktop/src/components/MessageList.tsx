@@ -1,9 +1,10 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { Brain, Check, ChevronDown, Copy, Loader2, Wrench } from 'lucide-react';
-import type { Step, Turn } from '@/lib/types';
+import type { Attachment, Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
 import { JsonBlock } from '@/components/JsonBlock';
+import { Modal, ModalContent } from '@/components/ui/modal';
 import {
   Collapsible,
   CollapsibleContent,
@@ -150,6 +151,8 @@ export const MessageList = memo(function MessageList({
   const listRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
+  // The image opened from a message, shown large over the transcript.
+  const [preview, setPreview] = useState<Attachment | null>(null);
 
   // Whether the reader is at the bottom, tracked from their scrolling rather than
   // from the content growing. Somebody reading back through a long answer would
@@ -242,9 +245,31 @@ export const MessageList = memo(function MessageList({
                   its own meta row and wrap short messages. */}
               <div className="flex flex-col items-end gap-2">
                 <div className="group flex w-full flex-col items-end gap-1">
-                  <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
-                    {turn.userInput}
-                  </div>
+                  {turn.images && turn.images.length > 0 && (
+                    <div className="flex max-w-[80%] flex-wrap justify-end gap-2">
+                      {turn.images.map((image) => (
+                        <button
+                          key={image.id}
+                          type="button"
+                          onClick={() => setPreview(image)}
+                          title={t('chat.image.preview')}
+                          aria-label={t('chat.image.preview')}
+                          className="h-24 w-24 cursor-zoom-in overflow-hidden rounded-lg border border-border"
+                        >
+                          <img
+                            src={`data:${image.mime};base64,${image.data}`}
+                            alt=""
+                            className="h-full w-full object-cover"
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {turn.userInput && (
+                    <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
+                      {turn.userInput}
+                    </div>
+                  )}
                   {/* User msg meta appears only on hover. */}
                   <MetaRow
                     text={turn.userInput}
@@ -354,6 +379,26 @@ export const MessageList = memo(function MessageList({
           );
         })}
       </div>
+      <Modal
+        open={preview !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreview(null);
+        }}
+      >
+        <ModalContent
+          title={t('chat.image.preview')}
+          className="max-h-[90vh] max-w-[90vw]"
+          overlayClassName="bg-black/70"
+        >
+          {preview && (
+            <img
+              src={`data:${preview.mime};base64,${preview.data}`}
+              alt={t('chat.image.preview')}
+              className="max-h-[80vh] max-w-[80vw] object-contain"
+            />
+          )}
+        </ModalContent>
+      </Modal>
     </div>
   );
 });

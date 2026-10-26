@@ -207,7 +207,10 @@ async fn run(client: &dyn ModelClient, text: &str, with_tool: bool) -> Outcome {
 
     let result = srud_core::run_turn(
         &session,
-        TurnInput { text: text.into() },
+        TurnInput {
+            text: text.into(),
+            images: Vec::new(),
+        },
         client,
         &tools,
         &log,

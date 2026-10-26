@@ -36,6 +36,8 @@ pub enum ModelRequestItem {
         role: crate::types::Role,
         content: String,
     },
+    /// An image the user attached to a message.
+    Image { mime: String, data: String },
     /// A tool call the model previously made.
     FunctionCall {
         call_id: String,

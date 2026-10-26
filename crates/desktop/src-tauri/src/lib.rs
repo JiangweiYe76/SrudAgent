@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use serde_json::Value;
 use srud_client::openai::{ChatClient, ClientConfig};
 use srud_core::client::{ModelClient, ModelError};
@@ -251,6 +252,196 @@ fn default_cwd() -> String {
         .unwrap_or_else(|| ".".to_owned())
 }
 
+/// An image read from disk, base64-encoded for the prompt.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageFile {
+    mime: String,
+    data: String,
+}
+
+/// Why an image the clipboard offered could not be read.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageReadError {
+    kind: &'static str,
+}
+
+impl ImageReadError {
+    fn unreadable() -> Self {
+        Self { kind: "unreadable" }
+    }
+
+    fn too_large() -> Self {
+        Self { kind: "tooLarge" }
+    }
+}
+
+/// The MIME type an image file's extension names, if it names one.
+fn image_mime(path: &std::path::Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg" | "jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        Some("bmp") => Some("image/bmp"),
+        Some("svg") => Some("image/svg+xml"),
+        Some("avif") => Some("image/avif"),
+        _ => None,
+    }
+}
+
+/// Whether a path names an image worth reading off the clipboard.
+fn is_image_path(path: &std::path::Path) -> bool {
+    path.is_absolute() && image_mime(path).is_some()
+}
+
+/// Reads an image the clipboard named by path.
+///
+/// Some Linux clipboards carry a file path rather than the image bytes, and a
+/// webview cannot open the file behind a `file://` path on its own. Only image
+/// extensions are read, and only up to `limit` bytes, which is the size the
+/// composer is willing to send.
+#[tauri::command]
+fn read_image_file(path: String, limit: u64) -> Result<ImageFile, ImageReadError> {
+    let path = std::path::PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(ImageReadError::unreadable());
+    }
+    let Some(mime) = image_mime(&path) else {
+        return Err(ImageReadError::unreadable());
+    };
+    let size = std::fs::metadata(&path)
+        .map_err(|_| ImageReadError::unreadable())?
+        .len();
+    if size > limit {
+        return Err(ImageReadError::too_large());
+    }
+    let bytes = std::fs::read(&path).map_err(|_| ImageReadError::unreadable())?;
+    Ok(ImageFile {
+        mime: mime.to_owned(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+/// What the system clipboard holds, as far as the composer can take it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+enum ClipboardContent {
+    /// An image, whichever way the clipboard offered it.
+    Image { mime: String, data: String },
+    /// Plain text, which the composer writes back into the box itself.
+    Text { text: String },
+    /// Nothing the composer takes.
+    None,
+}
+
+/// Reads the system clipboard on the thread that owns it.
+///
+/// A paste can reach the webview with nothing on it: the platform hands WebKit
+/// a file the page may not read, and the default handling then puts the path it
+/// was copied from into the box. This is the fallback for that, and it runs on
+/// the main thread because GTK's clipboard belongs to it.
+#[tauri::command]
+async fn read_clipboard(app: AppHandle, limit: u64) -> Result<ClipboardContent, ImageReadError> {
+    #[cfg(target_os = "linux")]
+    {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            let _ = sender.send(linux_clipboard(limit));
+        })
+        .map_err(|_| ImageReadError::unreadable())?;
+        receiver.await.map_err(|_| ImageReadError::unreadable())?
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, limit);
+        Err(ImageReadError::unreadable())
+    }
+}
+
+/// Reads the clipboard through GTK, trying the shapes a paste can take.
+///
+/// A file manager offers the picture as a `file://` URI, an image viewer or a
+/// browser offers it as an image target, and everything else is text. Files are
+/// tried first because a copied file would otherwise arrive as its path.
+#[cfg(target_os = "linux")]
+fn linux_clipboard(limit: u64) -> Result<ClipboardContent, ImageReadError> {
+    let Some(display) = gtk::gdk::Display::default() else {
+        return Ok(ClipboardContent::None);
+    };
+    let Some(clipboard) = gtk::Clipboard::default(&display) else {
+        return Ok(ClipboardContent::None);
+    };
+
+    for uri in clipboard.wait_for_uris() {
+        let Some(path) = path_of_uri(uri.as_str()) else {
+            continue;
+        };
+        match read_image_file(path, limit) {
+            Ok(image) => {
+                return Ok(ClipboardContent::Image {
+                    mime: image.mime,
+                    data: image.data,
+                });
+            }
+            // A file that is merely too big is reported; one that is not an
+            // image is left to the text and image targets below.
+            Err(error) if error.kind == "tooLarge" => return Err(error),
+            Err(_) => continue,
+        }
+    }
+
+    if clipboard.wait_is_image_available() {
+        if let Some(pixbuf) = clipboard.wait_for_image() {
+            let bytes = pixbuf
+                .save_to_bufferv("png", &[])
+                .map_err(|_| ImageReadError::unreadable())?;
+            if bytes.len() as u64 > limit {
+                return Err(ImageReadError::too_large());
+            }
+            return Ok(ClipboardContent::Image {
+                mime: "image/png".to_owned(),
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            });
+        }
+    }
+
+    let Some(text) = clipboard.wait_for_text() else {
+        return Ok(ClipboardContent::None);
+    };
+    if text.is_empty() {
+        return Ok(ClipboardContent::None);
+    }
+    // A path the webview could not see either: read it rather than paste it.
+    let path = path_of_uri(&text).unwrap_or_else(|| text.to_string());
+    if is_image_path(std::path::Path::new(&path)) {
+        let image = read_image_file(path, limit)?;
+        return Ok(ClipboardContent::Image {
+            mime: image.mime,
+            data: image.data,
+        });
+    }
+    Ok(ClipboardContent::Text {
+        text: text.to_string(),
+    })
+}
+
+/// The local path a `file://` URI names, if it names one.
+#[cfg(target_os = "linux")]
+fn path_of_uri(uri: &str) -> Option<String> {
+    let url = url::Url::parse(uri).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    Some(url.to_file_path().ok()?.display().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Reported, not fatal: the app still runs without it, and the first session
@@ -289,7 +480,12 @@ pub fn run() {
             app.manage(AgentState(agent));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![rpc_request, default_cwd])
+        .invoke_handler(tauri::generate_handler![
+            rpc_request,
+            default_cwd,
+            read_image_file,
+            read_clipboard
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -544,6 +740,24 @@ mod tests {
             srud_protocol::error::INVALID_PARAMS,
             "the session is told to choose a model, not left without an answer"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_file_uri_becomes_a_decoded_local_path() {
+        assert_eq!(
+            path_of_uri("file:///home/me/a%20shot.png").as_deref(),
+            Some("/home/me/a shot.png")
+        );
+        assert_eq!(path_of_uri("https://example.test/a.png"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_an_absolute_image_path_is_read_off_the_clipboard() {
+        assert!(is_image_path(std::path::Path::new("/home/me/a.PNG")));
+        assert!(!is_image_path(std::path::Path::new("/home/me/notes.txt")));
+        assert!(!is_image_path(std::path::Path::new("a.png")));
     }
 
     /// The real end-to-end path with live model credentials from the

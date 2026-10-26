@@ -371,7 +371,17 @@ async fn open(journal: &Journal<'_>, input: &TurnInput) -> Result<(), RecordErro
                 content: input.text.clone(),
             }),
         )
-        .await
+        .await?;
+
+    // Images follow the text they were sent with and stay silent: the client
+    // already holds them, and a second announcement would render them twice.
+    for image in &input.images {
+        journal
+            .record(None, prompt::image_item(image), None)
+            .await?;
+    }
+
+    Ok(())
 }
 
 /// Records the steered messages waiting for a boundary.
@@ -565,7 +575,10 @@ async fn run_step(
         if cancel.is_cancelled() {
             return Err(TurnEndReason::Interrupted);
         }
-        if run_tool_call(journal, tools, call, cancel.clone()).await.is_err() {
+        if run_tool_call(journal, tools, call, cancel.clone())
+            .await
+            .is_err()
+        {
             return Err(TurnEndReason::Error);
         }
     }

@@ -80,7 +80,7 @@ use srud_protocol::srud::methods::{
 };
 use srud_protocol::srud::turn_end::TurnEndWire;
 
-use crate::convert::{prompt_outcome, prompt_text, replay_notification};
+use crate::convert::{prompt_outcome, replay_notification};
 use crate::events::{EventHub, TurnSink};
 use crate::providers::{self, ModelFactory, ProviderError, ProviderStore};
 use crate::sessions::{RestoreError, SessionManager};
@@ -312,7 +312,7 @@ impl Agent {
         // after a message that never ran.
         let client = self.client_for(&request.session_id)?;
 
-        let text = prompt_with_validation(&request.prompt)?;
+        let parts = prompt_parts(&request.prompt)?;
 
         let sink = self
             .hub
@@ -335,12 +335,15 @@ impl Agent {
             sinks.insert(request.session_id.clone(), sink.clone());
         }
 
-        self.name_from_first_prompt(&request.session_id, &text)
+        self.name_from_first_prompt(&request.session_id, &parts.text)
             .await;
 
         let result = srud_core::turn::run_turn(
             &session,
-            srud_core::types::TurnInput { text },
+            srud_core::types::TurnInput {
+                text: parts.text,
+                images: parts.images,
+            },
             client.as_ref(),
             self.tools.as_ref(),
             log.as_ref(),
@@ -390,8 +393,14 @@ impl Agent {
             .sessions
             .get(&request.session_id)
             .ok_or_else(|| session_not_found(&request.session_id))?;
-        let text = prompt_with_validation(&request.prompt)?;
-        if !session.steer(&text) {
+        let parts = prompt_parts(&request.prompt)?;
+        if !parts.images.is_empty() {
+            return Err(AcpError::new(
+                INVALID_PARAMS,
+                "steering accepts text prompts only",
+            ));
+        }
+        if !session.steer(&parts.text) {
             return Err(AcpError::new(
                 SESSION_BUSY,
                 "session has no active turn to steer",
@@ -406,7 +415,7 @@ impl Agent {
             .cloned()
         {
             sink.emit(srud_core::types::Event::UserMessage {
-                content: text.clone(),
+                content: parts.text.clone(),
             });
         }
         Ok(SteerResponse::default())
@@ -876,35 +885,55 @@ fn serialize<T: serde::Serialize>(value: T) -> Value {
 /// A prompt block that the declared capabilities do not accept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsupportedContent {
-    /// An image block, refused while `promptCapabilities.image` is false.
-    Image,
     /// An audio block, refused while `promptCapabilities.audio` is false.
     Audio,
-    /// Any other non-text block (resources, links, tool references).
+    /// Any other block the agent does not read, such as a resource or a link.
     Other(&'static str),
 }
 
-/// Validates a prompt against the declared text-only capabilities.
+/// The parts of a prompt the agent accepts.
+#[derive(Debug, Default)]
+pub struct PromptParts {
+    /// The text blocks, joined in the order they arrived.
+    pub text: String,
+    /// The image blocks, in the order they arrived.
+    pub images: Vec<srud_core::types::ImagePart>,
+}
+
+/// Splits a prompt into the text and images the agent accepts.
 ///
-/// Returns the concatenated text, or an error naming the first block the
-/// agent cannot accept — dropping multimodal input silently would make the
-/// model answer a prompt the user never sent.
-pub fn prompt_with_validation(blocks: &[ContentBlock]) -> Result<String, AcpError> {
+/// Returns an error naming the first block the agent cannot accept — dropping
+/// multimodal input silently would make the model answer a prompt the user
+/// never sent.
+pub fn prompt_parts(blocks: &[ContentBlock]) -> Result<PromptParts, AcpError> {
+    let mut parts = PromptParts::default();
     for block in blocks {
-        let kind = match block {
-            ContentBlock::Text(_) => continue,
-            ContentBlock::Image(_) => UnsupportedContent::Image,
-            ContentBlock::Audio(_) => UnsupportedContent::Audio,
-            ContentBlock::Resource(_) => UnsupportedContent::Other("resource"),
-            ContentBlock::ResourceLink(_) => UnsupportedContent::Other("resource_link"),
-            _ => UnsupportedContent::Other("unknown"),
-        };
-        return Err(AcpError::new(
-            INVALID_PARAMS,
-            format!("this agent accepts text prompts only, got {kind:?}"),
-        ));
+        match block {
+            ContentBlock::Text(content) => {
+                if !parts.text.is_empty() {
+                    parts.text.push('\n');
+                }
+                parts.text.push_str(&content.text);
+            }
+            ContentBlock::Image(content) => parts.images.push(srud_core::types::ImagePart {
+                mime: content.mime_type.clone(),
+                data: content.data.clone(),
+            }),
+            block => {
+                let kind = match block {
+                    ContentBlock::Audio(_) => UnsupportedContent::Audio,
+                    ContentBlock::Resource(_) => UnsupportedContent::Other("resource"),
+                    ContentBlock::ResourceLink(_) => UnsupportedContent::Other("resource_link"),
+                    _ => UnsupportedContent::Other("unknown"),
+                };
+                return Err(AcpError::new(
+                    INVALID_PARAMS,
+                    format!("this agent cannot accept {kind:?} prompts"),
+                ));
+            }
+        }
     }
-    Ok(prompt_text(blocks))
+    Ok(parts)
 }
 
 #[cfg(test)]
@@ -1909,13 +1938,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_text_prompt_is_invalid_params() {
+    async fn audio_prompt_is_invalid_params() {
         let agent = agent(scripted(vec![ModelEvent::TextDelta { delta: "ok".into() }]));
         initialize(&agent).await;
         let session_id = new_session(&agent).await;
         let blocks = vec![
             ContentBlock::Text(TextContent::new("a")),
-            ContentBlock::Image(srud_protocol::acp::ImageContent::new("data", "image/png")),
+            ContentBlock::Audio(srud_protocol::acp::AudioContent::new("data", "audio/wav")),
         ];
         let params = json!({
             "sessionId": session_id.0.as_ref(),
@@ -1926,17 +1955,28 @@ mod tests {
     }
 
     #[test]
-    fn prompt_validation_rejects_images_and_accepts_text() {
-        let blocks = vec![ContentBlock::Text(TextContent::new("hello"))];
-        assert_eq!(prompt_with_validation(&blocks).unwrap(), "hello");
+    fn prompt_parts_accepts_text_and_images_and_rejects_audio() {
+        let blocks = vec![
+            ContentBlock::Text(TextContent::new("hello")),
+            ContentBlock::Image(srud_protocol::acp::ImageContent::new("d", "image/png")),
+        ];
+        let parts = prompt_parts(&blocks).unwrap();
+        assert_eq!(parts.text, "hello");
+        assert_eq!(
+            parts.images,
+            vec![srud_core::types::ImagePart {
+                mime: "image/png".into(),
+                data: "d".into(),
+            }]
+        );
 
-        let blocks = vec![ContentBlock::Image(srud_protocol::acp::ImageContent::new(
-            "d",
-            "image/png",
-        ))];
-        let err = prompt_with_validation(&blocks).unwrap_err();
+        let blocks = vec![
+            ContentBlock::Text(TextContent::new("a")),
+            ContentBlock::Audio(srud_protocol::acp::AudioContent::new("d", "audio/wav")),
+        ];
+        let err = prompt_parts(&blocks).unwrap_err();
         assert_eq!(i32::from(err.code), INVALID_PARAMS);
-        assert!(err.message.contains("text prompts only"));
+        assert!(err.message.contains("Audio"));
     }
 
     #[test]

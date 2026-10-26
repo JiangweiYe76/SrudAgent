@@ -7,8 +7,9 @@
 //! - `fs/*` and `terminal/*` are **false**: the agent and client are
 //!   same-machine, so the agent reads disk and executes locally instead of
 //!   reverse-calling the editor.
-//! - Prompt input is **text only**: `image`, `audio`, and `embeddedContext`
-//!   are off because the runtime's turn input is a plain string.
+//! - Prompt input is text plus images: `image` is on because a turn carries
+//!   attached images alongside its text; `audio` and `embeddedContext` stay
+//!   off because a turn has no place for them.
 //! - Session lifecycle: `close` and `list` are on, and so are `loadSession`
 //!   and `resume`, now that a session's log can rebuild it. `loadSession`
 //!   replays the conversation; `resume` restores it without replaying.
@@ -43,7 +44,7 @@ pub fn agent_capabilities() -> AgentCapabilities {
         .load_session(true)
         .prompt_capabilities(
             PromptCapabilities::new()
-                .image(false)
+                .image(true)
                 .audio(false)
                 .embedded_context(false),
         )
@@ -84,7 +85,7 @@ mod tests {
     fn agent_capabilities_match_the_contract() {
         let value = serde_json::to_value(agent_capabilities()).unwrap();
         assert_eq!(value["loadSession"], json!(true));
-        assert_eq!(value["promptCapabilities"]["image"], json!(false));
+        assert_eq!(value["promptCapabilities"]["image"], json!(true));
         assert_eq!(value["promptCapabilities"]["audio"], json!(false));
         assert_eq!(value["promptCapabilities"]["embeddedContext"], json!(false));
         assert!(value["sessionCapabilities"]["list"].is_object());

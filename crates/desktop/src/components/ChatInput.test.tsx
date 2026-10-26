@@ -5,7 +5,11 @@
 import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { ChatInput } from './ChatInput';
+import type { Attachment } from '@/lib/types';
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -17,6 +21,8 @@ beforeAll(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  vi.mocked(invoke).mockReset();
 });
 
 function render(props: Partial<Parameters<typeof ChatInput>[0]> = {}) {
@@ -26,6 +32,8 @@ function render(props: Partial<Parameters<typeof ChatInput>[0]> = {}) {
   const handlers = {
     value: '',
     onValueChange: vi.fn(),
+    attachments: [],
+    onAttachmentsChange: vi.fn(),
     onSend: vi.fn(),
     busy: false,
     onStop: vi.fn(),
@@ -63,6 +71,51 @@ function click(selector: string) {
   });
 }
 
+function image(id = 'img1'): Attachment {
+  return { id, mime: 'image/png', data: 'YWJj' };
+}
+
+// jsdom has no clipboard, so the paste event carries the file items directly.
+function paste(file: File) {
+  const item = { kind: 'file', type: file.type, getAsFile: () => file };
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', { value: { items: [item], files: [] } });
+  act(() => {
+    box().dispatchEvent(event);
+  });
+  return event;
+}
+
+// A clipboard naming a file instead of carrying it, which is what a Linux file
+// manager puts there.
+function pastePath(path: string) {
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', {
+    value: {
+      items: [],
+      files: [],
+      getData: (type: string) => (type === 'text/uri-list' ? `file://${path}` : ''),
+    },
+  });
+  act(() => {
+    box().dispatchEvent(event);
+  });
+  return event;
+}
+
+// A paste the webview hands over with nothing on it: no bytes, no path, no
+// text. A file copied in a Linux file manager can arrive this way.
+function pasteEmpty() {
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', {
+    value: { items: [], files: [], getData: () => '' },
+  });
+  act(() => {
+    box().dispatchEvent(event);
+  });
+  return event;
+}
+
 describe('ChatInput', () => {
   it('shows the draft it is given', () => {
     render({ value: 'half a thought' });
@@ -80,7 +133,7 @@ describe('ChatInput', () => {
   it('sends the trimmed text on Enter', () => {
     const { onSend, onValueChange } = render({ value: '  ask this  ' });
     press('Enter');
-    expect(onSend).toHaveBeenCalledWith('ask this');
+    expect(onSend).toHaveBeenCalledWith('ask this', []);
     // Clearing is the store's job, done when it takes the turn.
     expect(onValueChange).not.toHaveBeenCalled();
   });
@@ -103,6 +156,103 @@ describe('ChatInput', () => {
     press('Enter');
     expect(onSend).not.toHaveBeenCalled();
     expect(container.querySelector('[aria-label="Send"]')!.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('turns a pasted image into an attachment', async () => {
+    const onAttachmentsChange = vi.fn();
+    render({ onAttachmentsChange });
+    const event = paste(new File(['abc'], 'shot.png', { type: 'image/png' }));
+    await vi.waitFor(() => expect(onAttachmentsChange).toHaveBeenCalledTimes(1));
+    const [images] = onAttachmentsChange.mock.calls[0] as [Attachment[]];
+    expect(images).toHaveLength(1);
+    expect(images[0].mime).toBe('image/png');
+    expect(images[0].data).toBe('YWJj');
+    // A pasted image is taken over, so the browser does not also paste it as text.
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('reads an image the clipboard names by path', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    vi.mocked(invoke).mockResolvedValueOnce({ mime: 'image/png', data: 'YWJj' });
+    const onAttachmentsChange = vi.fn();
+    render({ onAttachmentsChange });
+
+    const event = pastePath('/home/me/a shot.png');
+
+    await vi.waitFor(() => expect(onAttachmentsChange).toHaveBeenCalledTimes(1));
+    // The path would otherwise be pasted into the box as text.
+    expect(event.defaultPrevented).toBe(true);
+    const [images] = onAttachmentsChange.mock.calls[0] as [Attachment[]];
+    expect(images[0]).toMatchObject({ mime: 'image/png', data: 'YWJj' });
+    // The URI is decoded before the host is asked for the file.
+    expect(invoke).toHaveBeenCalledWith('read_image_file', {
+      path: '/home/me/a shot.png',
+      limit: 10 * 1024 * 1024,
+    });
+  });
+
+  it('asks the host for a paste that arrives empty', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    vi.mocked(invoke).mockResolvedValueOnce({ kind: 'image', mime: 'image/png', data: 'YWJj' });
+    const onAttachmentsChange = vi.fn();
+    render({ onAttachmentsChange });
+
+    const event = pasteEmpty();
+
+    await vi.waitFor(() => expect(onAttachmentsChange).toHaveBeenCalledTimes(1));
+    // The default handling is what would write the copied path into the box.
+    expect(event.defaultPrevented).toBe(true);
+    const [images] = onAttachmentsChange.mock.calls[0] as [Attachment[]];
+    expect(images[0]).toMatchObject({ mime: 'image/png', data: 'YWJj' });
+    expect(invoke).toHaveBeenCalledWith('read_clipboard', { limit: 10 * 1024 * 1024 });
+  });
+
+  it('writes back text the host read from an empty paste', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    vi.mocked(invoke).mockResolvedValueOnce({ kind: 'text', text: 'hello' });
+    const onValueChange = vi.fn();
+    render({ onValueChange });
+
+    pasteEmpty();
+
+    await vi.waitFor(() => expect(onValueChange).toHaveBeenCalledWith('hello'));
+  });
+
+  it('leaves an empty paste alone when there is no host to read it', () => {
+    const { onValueChange } = render();
+    const event = pasteEmpty();
+    expect(event.defaultPrevented).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(onValueChange).not.toHaveBeenCalled();
+  });
+
+  it('drops an image the user no longer wants', () => {
+    const kept = image('img1');
+    const dropped = image('img2');
+    const { onAttachmentsChange } = render({ attachments: [kept, dropped] });
+    expect(container.querySelectorAll('[aria-label="Remove image"]')).toHaveLength(2);
+    click('[aria-label="Remove image"]');
+    expect(onAttachmentsChange).toHaveBeenCalledWith([dropped]);
+  });
+
+  it('sends an image with no text at all', () => {
+    const attached = image();
+    const { onSend } = render({ attachments: [attached] });
+    press('Enter');
+    expect(onSend).toHaveBeenCalledWith('', [attached]);
+  });
+
+  it('holds images back while a turn is in flight', () => {
+    const { onSend } = render({ attachments: [image()], busy: true });
+    press('Enter');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-label="Send"]')!.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('opens an attached image large', () => {
+    render({ attachments: [image()] });
+    click('[aria-label="Image preview"]');
+    expect(document.body.querySelector('img[alt="Image preview"]')).not.toBeNull();
   });
 
   it('lists waiting messages as separate lines', () => {

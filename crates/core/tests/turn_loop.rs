@@ -150,7 +150,10 @@ async fn a_plain_exchange_records_history_and_emits_in_order() {
 
     let result = srud_core::run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -207,7 +210,10 @@ async fn a_reported_usage_is_recorded_and_announced() {
 
     let result = srud_core::run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -254,7 +260,10 @@ async fn a_provider_that_reports_nothing_produces_no_usage_record() {
 
     srud_core::run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -286,7 +295,10 @@ async fn env_context_leads_the_turn_without_being_announced() {
 
     srud_core::run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -348,7 +360,10 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
 
     let result = srud_core::run_turn(
         &session,
-        TurnInput { text: "go".into() },
+        TurnInput {
+            text: "go".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -388,6 +403,7 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
             },
             srud_core::client::ModelRequestItem::FunctionCall { .. } => "call",
             srud_core::client::ModelRequestItem::FunctionCallOutput { .. } => "output",
+            srud_core::client::ModelRequestItem::Image { .. } => "image",
         })
         .collect();
     assert_eq!(kinds, vec!["user", "user", "call", "output"]);
@@ -407,7 +423,10 @@ async fn exactly_one_terminator_is_emitted_when_the_model_fails() {
 
     let result = srud_core::run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -440,7 +459,10 @@ async fn a_model_that_never_signals_completion_is_an_error() {
 
     let result = srud_core::run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -482,7 +504,10 @@ async fn an_unknown_tool_becomes_a_failed_outcome_not_a_crash() {
 
     let result = srud_core::run_turn(
         &session,
-        TurnInput { text: "go".into() },
+        TurnInput {
+            text: "go".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -553,7 +578,10 @@ async fn rejected_arguments_reach_the_model_as_a_marked_failure() {
 
     srud_core::run_turn(
         &session,
-        TurnInput { text: "go".into() },
+        TurnInput {
+            text: "go".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -600,7 +628,10 @@ async fn a_second_concurrent_turn_is_refused() {
 
     let err = srud_core::run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -636,7 +667,10 @@ async fn interrupting_before_the_first_step_stops_the_turn() {
 
     let result = srud_core::run_turn(
         &session,
-        TurnInput { text: "hi".into() },
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -651,7 +685,10 @@ async fn interrupting_before_the_first_step_stops_the_turn() {
 async fn op_values_are_constructible() {
     // The input side of the contract: `Op` is what callers hand in.
     let ops = [
-        Op::TurnInput(TurnInput { text: "x".into() }),
+        Op::TurnInput(TurnInput {
+            text: "x".into(),
+            images: Vec::new(),
+        }),
         Op::Interrupt,
         Op::Compact,
         Op::Shutdown,
@@ -688,7 +725,10 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
 
     srud_core::run_turn(
         &session,
-        TurnInput { text: "go".into() },
+        TurnInput {
+            text: "go".into(),
+            images: Vec::new(),
+        },
         client.as_ref(),
         &tools,
         &log,
@@ -751,6 +791,7 @@ async fn a_read_call_reaches_the_sessions_working_directory() {
         &session,
         TurnInput {
             text: "read note.txt".into(),
+            images: Vec::new(),
         },
         client.as_ref(),
         &tools,

@@ -68,6 +68,7 @@ async fn assert_fails_cleanly(client: &dyn ModelClient) {
         &session,
         TurnInput {
             text: "read the file".into(),
+            images: Vec::new(),
         },
         client,
         &tools,

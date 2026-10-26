@@ -972,8 +972,10 @@ name = "desktop"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "dotenvy",
  "futures",
+ "gtk",
  "serde",
  "serde_json",
  "srud-client",
@@ -985,6 +987,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
