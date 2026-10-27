@@ -37,6 +37,8 @@ const en = {
   'turn.ended': 'turn {reason}',
 
   'msg.copy': 'Copy',
+  'msg.copied': 'Copied',
+  'msg.actions': 'Message actions',
 
   'code.copy': 'Copy code',
   'code.copied': 'Copied',
