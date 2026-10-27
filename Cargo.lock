@@ -988,6 +988,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "webkit2gtk",
 ]
 
 [[package]]
