@@ -1,11 +1,27 @@
-import { useEffect, useRef, useState, type ClipboardEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 
-import { ArrowUp, Square, Trash2, X } from 'lucide-react';
+import {
+  ArrowUp,
+  ClipboardPaste,
+  Copy,
+  Scissors,
+  Square,
+  TextCursorInput,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { t } from '@/lib/i18n';
 import { isTauri, readClipboard, readImageFile } from '@/lib/acp';
 import type { Attachment, UsageState } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { ContextMenu } from '@/components/ContextMenu';
 import { Modal, ModalContent } from '@/components/ui/modal';
 import { UsageModal } from '@/components/UsageModal';
 
@@ -45,6 +61,15 @@ interface ChatInputProps {
   onHeightChange?: (height: number) => void;
 }
 
+/** The draft selection a right-click opened the editing menu over. */
+interface DraftMenu {
+  x: number;
+  y: number;
+  start: number;
+  end: number;
+  text: string;
+}
+
 export function ChatInput({
   value,
   onValueChange,
@@ -64,6 +89,7 @@ export function ChatInput({
   // modal come and go together with the usage data itself.
   const [usageOpen, setUsageOpen] = useState(false);
   const [preview, setPreview] = useState<Attachment | null>(null);
+  const [draftMenu, setDraftMenu] = useState<DraftMenu | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Reads started by a paste resolve after the event, so the list they append
@@ -117,6 +143,102 @@ export function ChatInput({
     // The draft owns the value, so the caret is placed once React has written
     // the new text into the box.
     requestAnimationFrame(() => textarea?.setSelectionRange(caret, caret));
+  };
+
+  // Writes over a remembered range and puts the caret after the new text. The
+  // draft owns the value, so the caret moves once React has written it.
+  const replaceDraftRange = (start: number, end: number, text: string) => {
+    const draft = valueRef.current;
+    const from = Math.min(start, draft.length);
+    const to = Math.min(Math.max(end, from), draft.length);
+    onValueChange(`${draft.slice(0, from)}${text}${draft.slice(to)}`);
+    const caret = from + text.length;
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      textarea?.focus();
+      textarea?.setSelectionRange(caret, caret);
+    });
+  };
+
+  // Remembers the selection the way it stands at the right-click, because the
+  // menu actions run after the pointer has already moved on.
+  const openDraftMenu = (event: ReactMouseEvent<HTMLTextAreaElement>) => {
+    event.preventDefault();
+    const textarea = event.currentTarget;
+    const draft = valueRef.current;
+    const start = Math.min(textarea.selectionStart, draft.length);
+    const end = Math.min(Math.max(textarea.selectionEnd, start), draft.length);
+    setDraftMenu({
+      x: event.clientX,
+      y: event.clientY,
+      start,
+      end,
+      text: draft.slice(start, end),
+    });
+  };
+
+  // The menu button takes focus when clicked, so the caret goes back to the
+  // selection it acted on rather than leaving the draft unfocused.
+  const restoreSelection = (selection: DraftMenu) => {
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      textarea?.focus();
+      textarea?.setSelectionRange(selection.start, selection.end);
+    });
+  };
+
+  const copySelection = async (selection: DraftMenu) => {
+    try {
+      await navigator.clipboard.writeText(selection.text);
+    } catch {
+      // Denied, or no clipboard available. Nothing was copied to report.
+      return;
+    } finally {
+      restoreSelection(selection);
+    }
+    toast.success(t('msg.copied'));
+  };
+
+  const cutSelection = async (selection: DraftMenu) => {
+    try {
+      await navigator.clipboard.writeText(selection.text);
+    } catch {
+      // Denied, so the text stays in the draft rather than disappearing.
+      restoreSelection(selection);
+      return;
+    }
+    replaceDraftRange(selection.start, selection.end, '');
+  };
+
+  const pasteAtSelection = async (selection: DraftMenu) => {
+    try {
+      if (isTauri()) {
+        const content = await readClipboard(IMAGE_LIMIT_BYTES);
+        if (content.kind === 'text') {
+          replaceDraftRange(selection.start, selection.end, content.text);
+        } else if (content.kind === 'image') {
+          onAttachmentsChange([...attachmentsRef.current, attachmentOf(content)]);
+          restoreSelection(selection);
+        } else {
+          restoreSelection(selection);
+        }
+        return;
+      }
+      const text = await navigator.clipboard.readText();
+      if (text) replaceDraftRange(selection.start, selection.end, text);
+      else restoreSelection(selection);
+    } catch (error: unknown) {
+      const kind = (error as { kind?: string } | null)?.kind;
+      if (kind === 'tooLarge') toast.error(t('chat.image.tooLarge'));
+      else if (kind) toast.error(t('chat.image.unreadable'));
+    }
+  };
+
+  const selectWholeDraft = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.select();
   };
 
   const pasteImages = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -229,6 +351,7 @@ export function ChatInput({
         rows={2}
         onChange={(e) => onValueChange(e.target.value)}
         onPaste={pasteImages}
+        onContextMenu={openDraftMenu}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -333,6 +456,37 @@ export function ChatInput({
         </div>
       ) : (
         composer
+      )}
+      {draftMenu && (
+        <ContextMenu
+          anchor={draftMenu}
+          label={t('edit.actions')}
+          onClose={() => setDraftMenu(null)}
+          items={[
+            {
+              label: t('edit.cut'),
+              icon: Scissors,
+              disabled: !draftMenu.text,
+              onSelect: () => void cutSelection(draftMenu),
+            },
+            {
+              label: t('edit.copy'),
+              icon: Copy,
+              disabled: !draftMenu.text,
+              onSelect: () => void copySelection(draftMenu),
+            },
+            {
+              label: t('edit.paste'),
+              icon: ClipboardPaste,
+              onSelect: () => void pasteAtSelection(draftMenu),
+            },
+            {
+              label: t('edit.selectAll'),
+              icon: TextCursorInput,
+              onSelect: selectWholeDraft,
+            },
+          ]}
+        />
       )}
     </div>
   );

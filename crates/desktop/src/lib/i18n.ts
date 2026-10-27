@@ -40,6 +40,12 @@ const en = {
   'msg.copied': 'Copied',
   'msg.actions': 'Message actions',
 
+  'edit.actions': 'Editing actions',
+  'edit.cut': 'Cut',
+  'edit.copy': 'Copy',
+  'edit.paste': 'Paste',
+  'edit.selectAll': 'Select all',
+
   'code.copy': 'Copy code',
   'code.copied': 'Copied',
   'code.plainText': 'text',
