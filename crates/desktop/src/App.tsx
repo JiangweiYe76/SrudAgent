@@ -65,7 +65,8 @@ function App() {
   }, [init]);
 
   // The window is a webview, and its context menu and select-all are the
-  // browser's rather than the app's. Text fields keep both.
+  // browser's rather than the app's. The menu is cancelled everywhere; text
+  // fields keep select-all because the shortcut belongs to the draft.
   useEffect(() => {
     const restoreContextMenu = suppressWebviewContextMenu();
     const restoreSelectAll = suppressSelectAll();

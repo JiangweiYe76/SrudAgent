@@ -5,14 +5,14 @@
  * "Inspect Element" and opens the page's markup over a conversation, and in every
  * build it lists browser actions that mean nothing in a desktop client.
  *
- * Text-entry fields are left alone. Their menu carries cut, copy and paste, which
- * is the only way to reach those actions from the pointer.
+ * The menu is cancelled everywhere. Text fields keep cut, copy and paste on the
+ * keyboard, but their pointer menu is the browser's no longer: the message menu
+ * is the only right-click menu the app offers.
  *
  * Returns a function that removes the listener.
  */
 export function suppressWebviewContextMenu(target: Document = document): () => void {
   const listener = (event: MouseEvent) => {
-    if (isTextEntry(event.target)) return;
     event.preventDefault();
   };
 

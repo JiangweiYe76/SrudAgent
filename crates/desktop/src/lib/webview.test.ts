@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 //
-// Both guards cancel a webview default the app does not want: the browser's
-// right-click menu and select-all over the transcript. These tests pin the rule
-// in both directions — the app cancels, text fields keep their own.
+// The guards remove two browser defaults from the window: the right-click menu,
+// everywhere, and select-all, except in text fields. These tests pin both.
 import { describe, it, expect, afterEach } from 'vitest';
 import { suppressSelectAll, suppressWebviewContextMenu } from './webview';
 
@@ -40,7 +39,7 @@ function append(tag: string): HTMLElement {
   return element;
 }
 
-/** A contenteditable region with a child, the way the composer's markup nests. */
+/** A contenteditable region with a child, the way editing hosts nest markup. */
 function editableWithChild(): HTMLElement {
   const editable = append('div');
   editable.setAttribute('contenteditable', 'true');
@@ -56,17 +55,17 @@ describe('suppressing the webview context menu', () => {
     expect(rightClick(append('p')).defaultPrevented).toBe(true);
   });
 
-  it('keeps the editing menu in a text field', () => {
+  it('cancels the browser menu in a text field', () => {
     stop = suppressWebviewContextMenu();
 
-    expect(rightClick(append('textarea')).defaultPrevented).toBe(false);
-    expect(rightClick(append('input')).defaultPrevented).toBe(false);
+    expect(rightClick(append('textarea')).defaultPrevented).toBe(true);
+    expect(rightClick(append('input')).defaultPrevented).toBe(true);
   });
 
-  it('keeps the editing menu inside editable content', () => {
+  it('cancels the browser menu inside editable content', () => {
     stop = suppressWebviewContextMenu();
 
-    expect(rightClick(editableWithChild()).defaultPrevented).toBe(false);
+    expect(rightClick(editableWithChild()).defaultPrevented).toBe(true);
   });
 
   it('stops cancelling once the guard is removed', () => {
