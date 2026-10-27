@@ -26,9 +26,12 @@ base64 = "0.22"
 # Reading the system clipboard directly, for the pastes a webview hands over
 # empty. GTK is the toolkit the webview already runs on, so this unifies with
 # the version it links.
+# WebKitGTK exposes spell checking on the web context, which this app turns off
+# so the missing enchant plugins stop logging on every check.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 url = "2"
+webkit2gtk = "2.0"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "time"] }

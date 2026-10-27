@@ -442,6 +442,26 @@ fn path_of_uri(uri: &str) -> Option<String> {
     Some(url.to_file_path().ok()?.display().to_string())
 }
 
+/// Turns off the webview's spell checker.
+///
+/// WebKitGTK loads the enchant plugins the system provides and logs a warning
+/// for every one that is missing. The app ships no dictionaries of its own, so
+/// the checker has nothing to offer beyond that noise.
+#[cfg(target_os = "linux")]
+fn disable_spell_checking<R: tauri::Runtime>(app: &tauri::App<R>) {
+    use tauri::Manager;
+    use webkit2gtk::{WebContextExt, WebViewExt};
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.with_webview(|webview| {
+        if let Some(context) = webview.inner().context() {
+            context.set_spell_checking_enabled(false);
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Reported, not fatal: the app still runs without it, and the first session
@@ -478,6 +498,8 @@ pub fn run() {
             let agent = build_agent(store);
             spawn_notify_pump(app.handle().clone(), &agent);
             app.manage(AgentState(agent));
+            #[cfg(target_os = "linux")]
+            disable_spell_checking(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
