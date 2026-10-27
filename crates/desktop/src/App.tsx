@@ -17,7 +17,7 @@ import {
 } from './lib/sessionStore';
 import { useProviderStore } from './lib/providers';
 import { useTheme, useThemeStore } from './lib/theme';
-import { suppressWebviewContextMenu } from './lib/contextMenu';
+import { suppressSelectAll, suppressWebviewContextMenu } from './lib/webview';
 import type { Provider } from './lib/acp';
 import type { UsageState } from './lib/types';
 import { t } from './lib/i18n';
@@ -64,9 +64,16 @@ function App() {
     void init();
   }, [init]);
 
-  // The window is a webview, and its context menu is the browser's rather than
-  // the app's. Removing it here leaves the composer's editing menu in place.
-  useEffect(() => suppressWebviewContextMenu(), []);
+  // The window is a webview, and its context menu and select-all are the
+  // browser's rather than the app's. Text fields keep both.
+  useEffect(() => {
+    const restoreContextMenu = suppressWebviewContextMenu();
+    const restoreSelectAll = suppressSelectAll();
+    return () => {
+      restoreContextMenu();
+      restoreSelectAll();
+    };
+  }, []);
 
   // The catalog the ring needs is the provider store's, which the settings
   // panel only asks for when it opens; the main window wants it from the start.
