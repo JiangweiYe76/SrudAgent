@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Settings } from 'lucide-react';
 import { Toaster } from 'sonner';
 import { Sidebar } from './components/Sidebar';
@@ -15,7 +15,7 @@ import {
   isBusy,
   isReopening,
 } from './lib/sessionStore';
-import { useProviderStore } from './lib/providers';
+import { useProviderStore, draftModelOptions } from './lib/providers';
 import { useTheme, useThemeStore } from './lib/theme';
 import { suppressSelectAll, suppressWebviewContextMenu } from './lib/webview';
 import { preserveMarkdownWhenCopying } from './lib/markdownSource';
@@ -89,6 +89,19 @@ function App() {
 
   const active = sessions.find((s) => s.id === activeId);
 
+  // A draft has no agent session, so it has no selector of its own yet. The
+  // provider catalog is what the agent would build one from, and showing it now
+  // is how the user can see — and choose — the model the first message will run
+  // on. Memoized because `ModelSelect` closes on a new options object, and a
+  // draft re-renders for reasons that do not change its choice.
+  const isDraft = active?.backendId === null;
+  const draftChoice = isDraft ? (active?.model?.currentValue ?? defaultModel) : null;
+  const draftOptions = useMemo(
+    () => (isDraft ? draftModelOptions(providers, draftChoice) : null),
+    [isDraft, draftChoice, providers],
+  );
+  const modelOptions = isDraft ? draftOptions : (active?.model ?? null);
+
   // The ring shows context pressure from the moment the session names a model,
   // not only after the first report: the window comes from the catalog, and
   // occupancy reads as zero until the agent says otherwise. Once reports
@@ -124,10 +137,11 @@ function App() {
         <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-5 text-sm font-medium">
           <span className="truncate">{active ? displayTitle(active) : 'SrudAgent'}</span>
           <div className="flex shrink-0 items-center gap-1">
-            {/* The session's model, next to the session it changes. Absent when
-                the agent offers no choice — a host configured no provider. */}
+            {/* The session's model, next to the session it changes. A draft has
+                no agent selector yet and is shown the catalog's; a session the
+                agent offers no choice for has none at all. */}
             <ModelSelect
-              options={active?.model ?? null}
+              options={modelOptions}
               disabled={reopening}
               onSelect={setModel}
             />

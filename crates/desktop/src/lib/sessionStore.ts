@@ -12,6 +12,7 @@ import type {
 } from './types';
 import { t } from './i18n';
 import { loadDrafts, saveDrafts } from './drafts';
+import { draftModelOptions, useProviderStore } from './providers';
 import {
   cancelTurn,
   deleteSession as requestDelete,
@@ -770,6 +771,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // so the session is created with an empty one and the agent gives it
           // a workspace of its own under the configuration directory.
           const created = await newSession('');
+          // A draft's model choice takes effect on the session it becomes. A
+          // switch needs a session id, and this is the first moment there is
+          // one: answering the first prompt on the default instead would make
+          // the choice look like it had not been made.
+          const chosen = get().sessions.find((s) => s.id === sessionId)?.model?.currentValue ?? '';
+          let model = created.model;
+          if (model && chosen && chosen !== model.currentValue && offers(model, chosen)) {
+            try {
+              model = (await setSessionModel(created.sessionId, chosen)) ?? model;
+            } catch (err) {
+              // The session runs on what it was created with; the picker shows
+              // the agent's answer rather than the choice that did not take.
+              useSessionStore.setState({ initError: String(err) });
+            }
+          }
           const draftTitle = get().sessions.find((s) => s.id === sessionId)?.title?.trim() || '';
           useSessionStore.setState((s) => {
             // The draft moves to the backend id. Text typed while the backend
@@ -786,7 +802,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             return {
               sessions: s.sessions.map((sess) =>
                 sess.id === sessionId
-                  ? { ...sess, backendId: created.sessionId, model: created.model }
+                  ? { ...sess, backendId: created.sessionId, model }
                   : sess,
               ),
               drafts,
@@ -885,10 +901,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setModel: (model) => {
     const session = get().sessions.find((s) => s.id === get().activeId);
-    // A draft has no agent to switch, and a session with no selector — a host
-    // that configured no provider — has nothing to switch between. Both are
-    // where the picker is absent anyway, so this is belt and braces.
-    if (!session?.backendId || !session.model) return;
+    if (!session) return;
+    // A draft has no agent session to switch, so the choice is recorded against
+    // the draft and applied when the first prompt creates one. The selector is
+    // the same catalog one the header rendered, so the trigger reads the new
+    // choice straight away.
+    if (!session.backendId) {
+      const { providers } = useProviderStore.getState();
+      const options = draftModelOptions(providers, model);
+      // The catalog no longer offers that model: the draft keeps what it had.
+      if (!options || options.currentValue !== model) return;
+      set((s) => ({
+        sessions: s.sessions.map((sess) =>
+          sess.id === session.id ? { ...sess, model: options } : sess,
+        ),
+      }));
+      return;
+    }
+    // A session with no selector — a host that configured no provider — has
+    // nothing to switch between.
+    if (!session.model) return;
     const localId = session.id;
     // The agent echoes the accepted selection back over `session/update`, but
     // the reply already carries it: the picker settles from the reply rather
@@ -988,6 +1020,13 @@ function removeSession(id: string) {
   // a click asks. Pointing the view at it alone would show it as one that nothing
   // was ever said in.
   useSessionStore.getState().select(movedTo);
+}
+
+// Whether a selector offers a model reference.
+function offers(options: ModelOptions, value: string): boolean {
+  return options.groups.some((group) =>
+    group.choices.some((choice) => choice.value === value),
+  );
 }
 
 // Writes a session's model selector, by this client's own id.

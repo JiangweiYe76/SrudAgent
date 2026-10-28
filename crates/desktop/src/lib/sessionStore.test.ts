@@ -153,6 +153,7 @@ async function boot(
   };
   const { useSessionStore } = await import('./sessionStore');
   await useSessionStore.getState().init();
+  const { useProviderStore } = await import('./providers');
 
   // `meta` is the `_meta.srud` the agent hangs on an update: the turn it belongs
   // to, and how that turn ended.
@@ -183,6 +184,7 @@ async function boot(
   };
   return {
     useSessionStore,
+    useProviderStore,
     prompt,
     load,
     deleteGate: del,
@@ -1256,10 +1258,39 @@ function modelOptions(currentValue: string) {
   ];
 }
 
+// The provider catalog behind the model references `modelOptions` offers, as
+// the settings panel would have loaded it.
+function providerCatalog(defaultModel: string | null) {
+  return {
+    providers: [
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        baseUrl: 'https://api.openai.com',
+        hasKey: true,
+        models: [
+          { id: 'gpt-4o', name: 'GPT-4o', modalities: [] },
+          { id: 'gpt-4o-mini', name: 'GPT-4o mini', modalities: [] },
+        ],
+      },
+      {
+        id: 'deepseek',
+        name: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com',
+        hasKey: true,
+        models: [{ id: 'chat', name: 'Chat', modalities: [] }],
+      },
+    ],
+    defaultModel,
+    loaded: true,
+    error: null,
+  };
+}
+
 describe('sessionStore model selection', () => {
   it('takes the model a new session was created with', async () => {
-    // A draft has no selector until it materializes: there is no session for the
-    // agent to have chosen a model for yet.
+    // No catalog is configured in this test, so the draft has no selector to
+    // show; the model arrives with the session the first prompt creates.
     const { useSessionStore, active, waitForBackend } = await boot({
       newModel: modelOptions('openai/gpt-4o'),
     });
@@ -1270,6 +1301,64 @@ describe('sessionStore model selection', () => {
 
     expect(active().model?.currentValue).toBe('openai/gpt-4o');
     expect(active().model?.groups.map((g) => g.name)).toEqual(['OpenAI', 'DeepSeek']);
+  });
+
+  it('lets a draft choose a model and applies it to the session it becomes', async () => {
+    const { useSessionStore, useProviderStore, active, calls, requested, waitForBackend } =
+      await boot({
+        newModel: modelOptions('openai/gpt-4o'),
+        switched: modelOptions('deepseek/chat'),
+      });
+    useProviderStore.setState(providerCatalog('openai/gpt-4o'));
+
+    // Before anything has been sent, the draft names the model it will run on.
+    useSessionStore.getState().setModel('deepseek/chat');
+    expect(active().backendId).toBeNull();
+    expect(active().model?.currentValue).toBe('deepseek/chat');
+
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    const switched = calls.indexOf('session/set_config_option');
+    expect(switched).toBeGreaterThan(-1);
+    // Switched before the prompt, so the first turn already runs on the choice.
+    expect(switched).toBeLessThan(calls.indexOf('session/prompt'));
+    expect(requested.find((r) => r.method === 'session/set_config_option')?.params).toEqual({
+      sessionId: 'S1',
+      configId: 'model',
+      value: 'deepseek/chat',
+    });
+    expect(active().model?.currentValue).toBe('deepseek/chat');
+  });
+
+  it('keeps the agent model when the draft chose one it no longer offers', async () => {
+    const { useSessionStore, useProviderStore, active, calls, waitForBackend } = await boot({
+      newModel: modelOptions('openai/gpt-4o'),
+    });
+    useProviderStore.setState({
+      ...providerCatalog('openai/gpt-4o'),
+      providers: [
+        {
+          id: 'openai',
+          name: 'OpenAI',
+          baseUrl: 'https://api.openai.com',
+          hasKey: true,
+          models: [
+            { id: 'gpt-4o', name: 'GPT-4o', modalities: [] },
+            // The client's catalog lists a model the agent's session does not,
+            // as when the agent's config changed after the catalog was read.
+            { id: 'gpt-5', name: 'GPT-5', modalities: [] },
+          ],
+        },
+      ],
+    });
+
+    useSessionStore.getState().setModel('openai/gpt-5');
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    expect(calls).not.toContain('session/set_config_option');
+    expect(active().model?.currentValue).toBe('openai/gpt-4o');
   });
 
   it('leaves the picker absent when the agent offers none', async () => {
