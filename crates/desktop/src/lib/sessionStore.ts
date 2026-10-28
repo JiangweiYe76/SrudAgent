@@ -779,7 +779,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           let model = created.model;
           if (model && chosen && chosen !== model.currentValue && offers(model, chosen)) {
             try {
-              model = (await setSessionModel(created.sessionId, chosen)) ?? model;
+              model = (await setSessionModel(created.sessionId, model.configId, chosen)) ?? model;
             } catch (err) {
               // The session runs on what it was created with; the picker shows
               // the agent's answer rather than the choice that did not take.
@@ -924,8 +924,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const localId = session.id;
     // The agent echoes the accepted selection back over `session/update`, but
     // the reply already carries it: the picker settles from the reply rather
-    // than waiting on the broadcast echo.
-    void setSessionModel(session.backendId, model)
+    // than waiting on the broadcast echo. The id comes from the selector: ACP
+    // reserves the `model` category, not the option's name.
+    void setSessionModel(session.backendId, session.model.configId, model)
       .then((next) => {
         if (next) setModelOf(localId, next);
       })

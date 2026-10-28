@@ -282,8 +282,9 @@ export async function readClipboard(limit: number): Promise<ClipboardContent> {
 // Choosing the model a session runs on
 // ---------------------------------------------------------------------------
 
-// The id of the session config option that selects a model. ACP reserves the
-// category `model` for this, and SrudAgent names the option after it.
+// SrudAgent's id for the session config option that selects a model. ACP
+// reserves the category `model` for this, but not the id, so a selector from
+// another agent is switched with the id it advertises.
 export const MODEL_OPTION_ID = 'model';
 
 // The group SrudAgent puts a session's current model in when the provider behind
@@ -318,6 +319,8 @@ function choicesOf(value: unknown): ModelChoice[] {
 // a group is an entry with a `group` key.
 export function parseModelOptions(configOptions: unknown): ModelOptions | null {
   if (!Array.isArray(configOptions)) return null;
+  // SrudAgent's id, or the category ACP reserves: an agent may name the option
+  // differently and still mark it as the model selector.
   const option = configOptions.find(
     (entry) => isJson(entry) && (entry.id === MODEL_OPTION_ID || entry.category === 'model'),
   );
@@ -351,21 +354,27 @@ export function parseModelOptions(configOptions: unknown): ModelOptions | null {
     });
   }
 
-  return { currentValue, groups };
+  const configId = typeof option.id === 'string' ? option.id : MODEL_OPTION_ID;
+  return { configId, currentValue, groups };
 }
 
 // Switches the model a session runs on. ACP's own method, so a third-party
 // client can do this too; only the value's spelling is SrudAgent's.
 //
+// `configId` is the agent's own name for the option, as returned with the
+// selector: ACP reserves the `model` category but not the id, so a client that
+// assumed `model` would fail against an agent that named it something else.
+//
 // Returns the whole selector back, rather than an acknowledgement, so the UI
 // renders the result of its own change without asking again.
 export async function setSessionModel(
   sessionId: string,
+  configId: string,
   model: string,
 ): Promise<ModelOptions | null> {
   const result = await rpcRequest('session/set_config_option', {
     sessionId,
-    configId: MODEL_OPTION_ID,
+    configId,
     value: model,
   });
   return parseModelOptions(result.configOptions);

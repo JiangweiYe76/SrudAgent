@@ -1230,11 +1230,12 @@ describe('sessionStore listing path', () => {
 });
 
 // The `configOptions` of a reply, as the agent serializes them: one `model`
-// option, grouped by provider.
-function modelOptions(currentValue: string) {
+// option, grouped by provider. `configId` is the agent's own name for the
+// option: ACP reserves the `model` category, not the id.
+function modelOptions(currentValue: string, configId = 'model') {
   return [
     {
-      id: 'model',
+      id: configId,
       name: 'Model',
       category: 'model',
       type: 'select',
@@ -1329,6 +1330,25 @@ describe('sessionStore model selection', () => {
       value: 'deepseek/chat',
     });
     expect(active().model?.currentValue).toBe('deepseek/chat');
+  });
+
+  it('switches through the id the agent gave the model option', async () => {
+    const { useSessionStore, useProviderStore, requested, waitForBackend } = await boot({
+      newModel: modelOptions('openai/gpt-4o', 'llm'),
+      switched: modelOptions('deepseek/chat', 'llm'),
+    });
+    useProviderStore.setState(providerCatalog('openai/gpt-4o'));
+
+    useSessionStore.getState().setModel('deepseek/chat');
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    // The option is the agent's, not the one this client happens to call it.
+    expect(requested.find((r) => r.method === 'session/set_config_option')?.params).toEqual({
+      sessionId: 'S1',
+      configId: 'llm',
+      value: 'deepseek/chat',
+    });
   });
 
   it('keeps the agent model when the draft chose one it no longer offers', async () => {

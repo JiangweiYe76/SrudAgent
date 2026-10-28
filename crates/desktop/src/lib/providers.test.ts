@@ -27,22 +27,26 @@ describe('draftModelOptions', () => {
   it('offers every configured model under its provider', () => {
     const options = draftModelOptions(PROVIDERS, null);
 
-    expect(options?.groups).toEqual([
-      {
-        id: 'openai',
-        name: 'openai name',
-        choices: [
-          { value: 'openai/gpt-4o', name: 'GPT-4o' },
-          // A model with no display name is shown by its id.
-          { value: 'openai/o3', name: 'o3' },
-        ],
-      },
-      {
-        id: 'deepseek',
-        name: 'deepseek name',
-        choices: [{ value: 'deepseek/chat', name: 'Chat' }],
-      },
-    ]);
+    expect(options).toEqual({
+      configId: 'model',
+      currentValue: '',
+      groups: [
+        {
+          id: 'openai',
+          name: 'openai name',
+          choices: [
+            { value: 'openai/gpt-4o', name: 'GPT-4o' },
+            // A model with no display name is shown by its id.
+            { value: 'openai/o3', name: 'o3' },
+          ],
+        },
+        {
+          id: 'deepseek',
+          name: 'deepseek name',
+          choices: [{ value: 'deepseek/chat', name: 'Chat' }],
+        },
+      ],
+    });
   });
 
   it('starts on the configured default', () => {

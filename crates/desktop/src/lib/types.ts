@@ -20,11 +20,16 @@ export interface ModelGroup {
 
 // The model selector a session was handed.
 //
+// `configId` is the id the agent gave this option. ACP reserves the category
+// `model` but not the id, so switching has to name the option the agent
+// advertised instead of assuming what it is called.
+//
 // `currentValue` is the reference the session runs on. It can name something no
 // group offers — a provider deleted since the session chose it — and is reported
 // as it is rather than replaced, so a session whose model has gone reads as
 // exactly that instead of as some other model.
 export interface ModelOptions {
+  configId: string;
   currentValue: string;
   groups: ModelGroup[];
 }

@@ -8,6 +8,7 @@ import { create } from 'zustand';
 import {
   deleteProvider as requestDelete,
   listProviders,
+  MODEL_OPTION_ID,
   saveProvider as requestSave,
   setDefaultModel as requestDefault,
   type Provider,
@@ -118,6 +119,10 @@ export function defaultChoices(providers: Provider[]): DefaultChoice[] {
 // that names nothing is not shown: the agent seeds a session only from a
 // reference that still resolves, so the draft would otherwise change its mind
 // once the session existed.
+//
+// The selector is the client's own until the session exists, so it borrows
+// SrudAgent's option id; a switch goes through the id the agent returns with
+// `session/new`, never through this one.
 export function draftModelOptions(
   providers: Provider[],
   current: string | null,
@@ -139,5 +144,9 @@ export function draftModelOptions(
   const known =
     current !== null &&
     groups.some((group) => group.choices.some((choice) => choice.value === current));
-  return { currentValue: known ? current : '', groups };
+  return {
+    configId: MODEL_OPTION_ID,
+    currentValue: known ? current : '',
+    groups,
+  };
 }

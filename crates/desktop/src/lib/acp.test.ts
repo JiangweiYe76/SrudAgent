@@ -50,6 +50,7 @@ describe('parseModelOptions', () => {
     );
 
     expect(parsed).toEqual({
+      configId: 'model',
       currentValue: 'openai/gpt-4o',
       groups: [
         {
@@ -107,6 +108,7 @@ describe('parseModelOptions', () => {
       },
     ]);
 
+    expect(parsed?.configId).toBe('which-model');
     expect(parsed?.currentValue).toBe('openai/gpt-4o');
   });
 
