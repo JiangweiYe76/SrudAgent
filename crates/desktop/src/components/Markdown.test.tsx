@@ -353,6 +353,29 @@ it('leaves inline code as a single element', () => {
     expect(html).toContain('katex');
     expect(html).not.toContain('$E');
   });
+
+  it('keeps single-dollar math inline', () => {
+    const html = render('inline $E = mc^2$ done');
+
+    // Inline math stays in the sentence; only `$$…$$` is set off and centered.
+    expect(html).not.toContain('katex-display');
+  });
+
+  it('centers a one-line double-dollar formula as display math', () => {
+    const html = render('$$E = mc^2$$');
+
+    // KaTeX's `katex-display` class is the centered block; without promotion
+    // `remark-math` reads the same formula as inline math.
+    expect(html).toContain('katex-display');
+    expect(html).not.toContain('<p>');
+  });
+
+  it('sets a one-line display formula apart from its paragraph', () => {
+    const html = render('before $$E = mc^2$$ after');
+
+    expect(html).toContain('katex-display');
+    expect(html).toContain('<p>');
+  });
 });
 
 describe('links', () => {

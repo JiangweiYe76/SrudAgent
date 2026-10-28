@@ -193,6 +193,23 @@ describe('the message context menu', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('$E = mc^2$');
   });
 
+  it('copies a one-line display formula with its delimiters', async () => {
+    const formula: Turn = {
+      ...turn(),
+      steps: [{ id: 's1', assistantText: '$$E = mc^2$$', toolCalls: [] }],
+    };
+    render([formula]);
+    const math = container.querySelector('[data-md-math]')!;
+    const range = document.createRange();
+    range.selectNodeContents(math);
+    window.getSelection()!.addRange(range);
+
+    rightClick(math);
+    await clickCopy();
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('$$E = mc^2$$');
+  });
+
   it('gives the copy event the markdown source of a selected formula', () => {
     const restoreCopy = preserveMarkdownWhenCopying();
     try {

@@ -8,6 +8,7 @@ import { common } from 'lowlight';
 import mermaidLang from '@/lib/highlight/mermaid';
 import rehypeCodeLines, { textOf, type HastNode } from '@/lib/rehypeCodeLines';
 import rehypeSourceOffsets, { rememberMarkdownSource } from '@/lib/markdownSource';
+import remarkDisplayMath from '@/lib/remarkDisplayMath';
 import { t } from '@/lib/i18n';
 import { Mermaid } from '@/components/Mermaid';
 import { CodeBlockBar } from '@/components/CodeBlockBar';
@@ -165,7 +166,10 @@ export function Markdown({
   return (
     <div ref={rootRef} className={cn('message-markdown', className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        // `remark-math` reads `$$…$$` as display math only when the delimiters
+        // sit on their own lines. The extra plugin gives a one-line formula the
+        // same centered block instead of leaving it inline.
+        remarkPlugins={[remarkGfm, remarkMath, remarkDisplayMath]}
         // Order matters: highlighting rewrites tokens into spans, so the lines
         // have to be split afterwards or a break inside a multi-line string
         // would drag half a token onto the next line.
