@@ -14,6 +14,10 @@ import { Mermaid } from '@/components/Mermaid';
 import { CodeBlockBar } from '@/components/CodeBlockBar';
 import { externalUrl, openExternal } from '@/lib/links';
 import { cn } from '@/lib/utils';
+// The stylesheet has to come from the KaTeX release `rehype-katex` renders
+// with: class names changed between releases, and a mismatch leaves a display
+// formula's box too short for its own superscripts, which are then cut off.
+// The dependency is kept to the range `rehype-katex` declares for that reason.
 import 'katex/dist/katex.min.css';
 
 /**
