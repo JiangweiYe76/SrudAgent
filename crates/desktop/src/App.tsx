@@ -18,6 +18,7 @@ import {
 import { useProviderStore } from './lib/providers';
 import { useTheme, useThemeStore } from './lib/theme';
 import { suppressSelectAll, suppressWebviewContextMenu } from './lib/webview';
+import { preserveMarkdownWhenCopying } from './lib/markdownSource';
 import type { Provider } from './lib/acp';
 import type { UsageState } from './lib/types';
 import { t } from './lib/i18n';
@@ -66,13 +67,17 @@ function App() {
 
   // The window is a webview, and its context menu and select-all are the
   // browser's rather than the app's. The menu is cancelled everywhere; text
-  // fields keep select-all because the shortcut belongs to the draft.
+  // fields keep select-all because the shortcut belongs to the draft. Copy is
+  // left to the browser except inside a message, where the selection is replaced
+  // with the markdown it came from.
   useEffect(() => {
     const restoreContextMenu = suppressWebviewContextMenu();
     const restoreSelectAll = suppressSelectAll();
+    const restoreCopy = preserveMarkdownWhenCopying();
     return () => {
       restoreContextMenu();
       restoreSelectAll();
+      restoreCopy();
     };
   }, []);
 

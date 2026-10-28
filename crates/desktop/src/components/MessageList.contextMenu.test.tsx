@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 //
 // Only what the model said, and what the reader said, belongs to the message
-// menu. These tests pin that boundary and the two things the menu does: copy the
-// message, or copy the part of it the reader selected.
+// menu. These tests pin that boundary and what copying does: take the message or
+// the selected part of it, through the menu and through Ctrl+C, as the markdown
+// the model wrote rather than rendered output.
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { MessageList } from './MessageList';
+import { preserveMarkdownWhenCopying } from '@/lib/markdownSource';
 import type { Turn } from '@/lib/types';
 
 const mocks = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
@@ -134,6 +136,120 @@ describe('the message context menu', () => {
     await clickCopy();
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('The file holds a greeting.');
+  });
+
+  it('copies the selected phrase rather than the whole message', async () => {
+    render([turn()]);
+    const text = container.querySelector('.message-markdown p')!.textContent!;
+    const from = text.indexOf('greeting');
+    const range = document.createRange();
+    range.setStart(container.querySelector('[data-md-text]')!.firstChild!, from);
+    range.setEnd(container.querySelector('[data-md-text]')!.firstChild!, from + 'greeting'.length);
+    window.getSelection()!.addRange(range);
+
+    rightClick(container.querySelector('.message-markdown p')!);
+    await clickCopy();
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('greeting');
+  });
+
+  it('copies display math as the source the model wrote', async () => {
+    // The rendered formula is KaTeX's markup; a reader quoting it wants the TeX,
+    // delimiters included, not the visual output.
+    const formula: Turn = {
+      ...turn(),
+      steps: [{ id: 's1', assistantText: '$$\nE = mc^2\n$$', toolCalls: [] }],
+    };
+    render([formula]);
+    const math = container.querySelector('[data-md-math]')!;
+    const range = document.createRange();
+    range.selectNodeContents(math);
+    window.getSelection()!.addRange(range);
+
+    rightClick(math);
+    await clickCopy();
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('$$\nE = mc^2\n$$');
+  });
+
+  it('copies inline math with its delimiters', async () => {
+    const formula: Turn = {
+      ...turn(),
+      steps: [{ id: 's1', assistantText: 'Use $E = mc^2$ here.', toolCalls: [] }],
+    };
+    render([formula]);
+    const math = container.querySelector('[data-md-math]')!;
+    // A real drag lands on the text KaTeX generated, not on the wrapper, so only
+    // the formula's own source range can carry the delimiters back out.
+    const inner = document.createTreeWalker(math, NodeFilter.SHOW_TEXT).nextNode()!;
+    const range = document.createRange();
+    range.setStart(inner, 0);
+    range.setEnd(inner, 1);
+    window.getSelection()!.addRange(range);
+
+    rightClick(math);
+    await clickCopy();
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('$E = mc^2$');
+  });
+
+  it('gives the copy event the markdown source of a selected formula', () => {
+    const restoreCopy = preserveMarkdownWhenCopying();
+    try {
+      const formula: Turn = {
+        ...turn(),
+        steps: [{ id: 's1', assistantText: '$$\nE = mc^2\n$$', toolCalls: [] }],
+      };
+      render([formula]);
+      const math = container.querySelector('[data-md-math]')!;
+      const range = document.createRange();
+      range.selectNodeContents(math);
+      window.getSelection()!.addRange(range);
+
+      const event = new Event('copy', { bubbles: true, cancelable: true });
+      const setData = vi.fn();
+      Object.defineProperty(event, 'clipboardData', { value: { setData } });
+      act(() => {
+        document.dispatchEvent(event);
+      });
+
+      expect(setData).toHaveBeenCalledWith('text/plain', '$$\nE = mc^2\n$$');
+      expect(event.defaultPrevented).toBe(true);
+    } finally {
+      restoreCopy();
+    }
+  });
+
+  it('writes the markdown source on Ctrl+C itself', async () => {
+    const restoreCopy = preserveMarkdownWhenCopying();
+    try {
+      const formula: Turn = {
+        ...turn(),
+        steps: [{ id: 's1', assistantText: '$$\nE = mc^2\n$$', toolCalls: [] }],
+      };
+      render([formula]);
+      const math = container.querySelector('[data-md-math]')!;
+      const range = document.createRange();
+      range.selectNodeContents(math);
+      window.getSelection()!.addRange(range);
+
+      const event = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      await act(async () => {
+        math.dispatchEvent(event);
+        await Promise.resolve();
+      });
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('$$\nE = mc^2\n$$');
+    } finally {
+      restoreCopy();
+    }
   });
 
   it('leaves reasoning outside the menu', () => {

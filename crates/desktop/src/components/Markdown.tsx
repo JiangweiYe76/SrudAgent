@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -7,6 +7,7 @@ import rehypeHighlight from 'rehype-highlight';
 import { common } from 'lowlight';
 import mermaidLang from '@/lib/highlight/mermaid';
 import rehypeCodeLines, { textOf, type HastNode } from '@/lib/rehypeCodeLines';
+import rehypeSourceOffsets, { rememberMarkdownSource } from '@/lib/markdownSource';
 import { t } from '@/lib/i18n';
 import { Mermaid } from '@/components/Mermaid';
 import { CodeBlockBar } from '@/components/CodeBlockBar';
@@ -151,8 +152,18 @@ export function Markdown({
   className?: string;
   streaming?: boolean;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // The copy event has only the DOM to work from, so the source the offsets
+  // point into is remembered beside it. Re-registered as tokens arrive, since
+  // the offsets are rendered from the current text.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (root) rememberMarkdownSource(root, children);
+  }, [children]);
+
   return (
-    <div className={cn('message-markdown', className)}>
+    <div ref={rootRef} className={cn('message-markdown', className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         // Order matters: highlighting rewrites tokens into spans, so the lines
@@ -166,6 +177,9 @@ export function Markdown({
         // rather than passed over — naming only the grammar here would leave every
         // other fence in every message unhighlighted.
         rehypePlugins={[
+          // Before the renderers that replace nodes: KaTeX and the highlighter
+          // discard the source positions copying needs.
+          rehypeSourceOffsets,
           rehypeKatex,
           [rehypeHighlight, { detect: false, languages: { ...common, mermaid: mermaidLang } }],
           [rehypeCodeLines, {}],
