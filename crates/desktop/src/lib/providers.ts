@@ -8,12 +8,14 @@ import { create } from 'zustand';
 import {
   deleteProvider as requestDelete,
   listProviders,
+  MODEL_OPTION_ID,
   saveProvider as requestSave,
   setDefaultModel as requestDefault,
   type Provider,
   type ProviderCatalog,
   type ProviderDraft,
 } from './acp';
+import type { ModelOptions } from './types';
 
 interface ProviderState {
   providers: Provider[];
@@ -104,4 +106,47 @@ export function defaultChoices(providers: Provider[]): DefaultChoice[] {
       label: `${provider.name} · ${model.name ?? model.id}`,
     })),
   );
+}
+
+// The model selector a new session is offered before the agent has made a
+// session for it.
+//
+// It is the catalog the agent builds a session's selector from, so a draft can
+// show what there is to choose and what it will start on without waiting for
+// `session/new`. `current` is the model the draft will start on — the configured
+// default, or a choice already made — and an empty value means nothing has been
+// chosen, the same word the agent sends for a session with no model. A default
+// that names nothing is not shown: the agent seeds a session only from a
+// reference that still resolves, so the draft would otherwise change its mind
+// once the session existed.
+//
+// The selector is the client's own until the session exists, so it borrows
+// SrudAgent's option id; a switch goes through the id the agent returns with
+// `session/new`, never through this one.
+export function draftModelOptions(
+  providers: Provider[],
+  current: string | null,
+): ModelOptions | null {
+  const groups = providers
+    .filter((provider) => provider.models.length > 0)
+    .map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      choices: provider.models.map((model) => ({
+        value: `${provider.id}/${model.id}`,
+        name: model.name ?? model.id,
+      })),
+    }));
+  // No provider offers a model, so there is nothing to pick from and no
+  // selector to offer.
+  if (groups.length === 0) return null;
+
+  const known =
+    current !== null &&
+    groups.some((group) => group.choices.some((choice) => choice.value === current));
+  return {
+    configId: MODEL_OPTION_ID,
+    currentValue: known ? current : '',
+    groups,
+  };
 }

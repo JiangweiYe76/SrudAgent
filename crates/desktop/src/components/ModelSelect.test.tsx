@@ -26,6 +26,7 @@ function trigger(): HTMLButtonElement | null {
 }
 
 const CONFIGURED: ModelOptions = {
+  configId: 'model',
   currentValue: 'openai/gpt-4o',
   groups: [
     {
@@ -67,7 +68,7 @@ describe('ModelSelect', () => {
     // A host with one fixed model: an empty picker would claim there was one.
     render(null);
     expect(trigger()).toBeNull();
-    render({ currentValue: '', groups: [] });
+    render({ configId: 'model', currentValue: '', groups: [] });
     expect(trigger()).toBeNull();
   });
 
@@ -75,7 +76,7 @@ describe('ModelSelect', () => {
     mount();
     // Nobody has chosen a default, so nothing stands in for one. The trigger is
     // a call to action rather than an empty space where a name would be.
-    render({ currentValue: '', groups: CONFIGURED.groups });
+    render({ configId: 'model', currentValue: '', groups: CONFIGURED.groups });
 
     expect(trigger()?.textContent).toBe('Choose a model');
     expect(trigger()?.className).toContain('text-accent');
@@ -86,6 +87,7 @@ describe('ModelSelect', () => {
     // The agent keeps the session on the model it named, and adds it as a group
     // of its own. Without a label to show, the reference is what there is.
     render({
+      configId: 'model',
       currentValue: 'gone/model',
       groups: [
         ...CONFIGURED.groups,
