@@ -12,6 +12,7 @@ import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
 import { JsonBlock } from '@/components/JsonBlock';
 import { MessageContextMenu, type MessageMenuAnchor } from '@/components/MessageContextMenu';
+import { sourceOfSelection } from '@/lib/markdownSource';
 import { Modal, ModalContent } from '@/components/ui/modal';
 import {
   Collapsible,
@@ -176,12 +177,13 @@ export const MessageList = memo(function MessageList({
     event.preventDefault();
 
     // A selection inside the message is what the reader meant to copy; without
-    // one the whole message is.
+    // one the whole message is. The selection is read back as markdown, so a
+    // formula comes out as the TeX the model wrote rather than KaTeX's output.
     const selection = window.getSelection();
     const selectionAnchor = selection?.anchorNode;
     const selected =
       selection && selectionAnchor && event.currentTarget.contains(selectionAnchor)
-        ? selection.toString()
+        ? (sourceOfSelection(selection, event.currentTarget, text) ?? selection.toString())
         : '';
 
     setMenu({ x: event.clientX, y: event.clientY, text: selected || text });

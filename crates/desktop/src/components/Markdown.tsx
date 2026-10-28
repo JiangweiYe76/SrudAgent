@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -7,11 +7,17 @@ import rehypeHighlight from 'rehype-highlight';
 import { common } from 'lowlight';
 import mermaidLang from '@/lib/highlight/mermaid';
 import rehypeCodeLines, { textOf, type HastNode } from '@/lib/rehypeCodeLines';
+import rehypeSourceOffsets, { rememberMarkdownSource } from '@/lib/markdownSource';
+import remarkDisplayMath from '@/lib/remarkDisplayMath';
 import { t } from '@/lib/i18n';
 import { Mermaid } from '@/components/Mermaid';
 import { CodeBlockBar } from '@/components/CodeBlockBar';
 import { externalUrl, openExternal } from '@/lib/links';
 import { cn } from '@/lib/utils';
+// The stylesheet has to come from the KaTeX release `rehype-katex` renders
+// with: class names changed between releases, and a mismatch leaves a display
+// formula's box too short for its own superscripts, which are then cut off.
+// The dependency is kept to the range `rehype-katex` declares for that reason.
 import 'katex/dist/katex.min.css';
 
 /**
@@ -151,10 +157,23 @@ export function Markdown({
   className?: string;
   streaming?: boolean;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // The copy event has only the DOM to work from, so the source the offsets
+  // point into is remembered beside it. Re-registered as tokens arrive, since
+  // the offsets are rendered from the current text.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (root) rememberMarkdownSource(root, children);
+  }, [children]);
+
   return (
-    <div className={cn('message-markdown', className)}>
+    <div ref={rootRef} className={cn('message-markdown', className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        // `remark-math` reads `$$…$$` as display math only when the delimiters
+        // sit on their own lines. The extra plugin gives a one-line formula the
+        // same centered block instead of leaving it inline.
+        remarkPlugins={[remarkGfm, remarkMath, remarkDisplayMath]}
         // Order matters: highlighting rewrites tokens into spans, so the lines
         // have to be split afterwards or a break inside a multi-line string
         // would drag half a token onto the next line.
@@ -166,6 +185,9 @@ export function Markdown({
         // rather than passed over — naming only the grammar here would leave every
         // other fence in every message unhighlighted.
         rehypePlugins={[
+          // Before the renderers that replace nodes: KaTeX and the highlighter
+          // discard the source positions copying needs.
+          rehypeSourceOffsets,
           rehypeKatex,
           [rehypeHighlight, { detect: false, languages: { ...common, mermaid: mermaidLang } }],
           [rehypeCodeLines, {}],

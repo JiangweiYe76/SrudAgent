@@ -49,7 +49,7 @@ function isSelectAll(event: KeyboardEvent): boolean {
 }
 
 /** Whether the target is a field the reader types into. */
-function isTextEntry(target: EventTarget | null): boolean {
+export function isTextEntry(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
 
   // Checked both ways: `isContentEditable` is not implemented everywhere, and the
