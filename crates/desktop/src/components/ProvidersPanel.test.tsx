@@ -124,7 +124,7 @@ function button(label: string, scope: ParentNode = document.body): HTMLButtonEle
   return found;
 }
 
-async function click(element: HTMLButtonElement): Promise<void> {
+async function click(element: HTMLElement): Promise<void> {
   await act(async () => {
     element.click();
   });
@@ -158,9 +158,30 @@ function topButton(label: string): HTMLButtonElement {
   return button(label, top);
 }
 
-function defaultSelect(): HTMLSelectElement {
-  const found = document.querySelector('select');
-  if (!found) throw new Error('no default model select');
+function defaultTrigger(): HTMLButtonElement {
+  const found = button('Default model');
+  if (!found) throw new Error('no default model trigger');
+  return found;
+}
+
+// Radix opens the menu from the keyboard, which a jsdom event can do where a
+// pointer sequence cannot.
+async function openDefaultMenu(): Promise<void> {
+  await act(async () => {
+    defaultTrigger().dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    );
+  });
+  await vi.waitFor(() => {
+    expect(document.querySelector('[role="menu"]')).not.toBeNull();
+  });
+}
+
+function menuItem(label: string): HTMLElement {
+  const found = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+    (item) => item.textContent?.trim() === label,
+  );
+  if (!found) throw new Error(`no menu item labelled ${label}`);
   return found;
 }
 
@@ -184,17 +205,42 @@ describe('ProvidersPanel', () => {
     catalog = { providers: [PROVIDER], default: null };
     await render();
 
-    expect(defaultSelect().value).toBe('');
-    expect(defaultSelect().selectedOptions[0].textContent).toBe('Not chosen');
-    // Nothing to inherit, so the option stands for nothing rather than for a
+    // Nothing to inherit, so the trigger stands for nothing rather than for a
     // model the user never picked.
-    expect(defaultSelect().selectedOptions[0].disabled).toBe(true);
+    expect(defaultTrigger().textContent).toBe('Not chosen');
+    expect(defaultTrigger().className).toContain('text-muted-foreground');
   });
 
   it('shows the model a default names', async () => {
     await render();
-    expect(defaultSelect().value).toBe('openai/gpt-4o');
-    expect(defaultSelect().selectedOptions[0].textContent).toBe('OpenAI · GPT-4o');
+    expect(defaultTrigger().textContent).toBe('OpenAI · GPT-4o');
+    expect(defaultTrigger().className).not.toContain('text-destructive');
+  });
+
+  it('marks a default that no provider offers any more', async () => {
+    catalog = { providers: [PROVIDER], default: 'gone/model' };
+    await render();
+
+    expect(defaultTrigger().textContent).toBe('gone/model (unavailable)');
+    expect(defaultTrigger().className).toContain('text-destructive');
+  });
+
+  it('writes the chosen model as the default', async () => {
+    await render();
+    await openDefaultMenu();
+
+    // The model already in force is listed, but picking it again would change
+    // nothing.
+    expect(menuItem('OpenAI · GPT-4o').getAttribute('data-disabled')).not.toBeNull();
+    expect(menuItem('OpenAI · GPT-4o mini').getAttribute('data-disabled')).toBeNull();
+
+    await click(menuItem('OpenAI · GPT-4o mini'));
+
+    await vi.waitFor(() => {
+      expect(requests.some((r) => r.method === '_srud/unstable/provider/set_default')).toBe(true);
+    });
+    const request = requests.find((r) => r.method === '_srud/unstable/provider/set_default');
+    expect(request?.params).toEqual({ model: 'openai/gpt-4o-mini' });
   });
 
   it('never writes a masked key back as though it were the key', async () => {

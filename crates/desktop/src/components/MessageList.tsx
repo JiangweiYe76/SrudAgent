@@ -1,18 +1,15 @@
 import {
   memo,
-  useCallback,
   useEffect,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { Brain, Check, ChevronDown, Copy, Loader2, Wrench } from 'lucide-react';
 import type { Attachment, Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
 import { JsonBlock } from '@/components/JsonBlock';
-import { MessageContextMenu, type MessageMenuAnchor } from '@/components/MessageContextMenu';
-import { sourceOfSelection } from '@/lib/markdownSource';
+import { MessageContextMenu } from '@/components/MessageContextMenu';
 import { Modal, ModalContent } from '@/components/ui/modal';
 import {
   Collapsible,
@@ -162,32 +159,6 @@ export const MessageList = memo(function MessageList({
   const followingRef = useRef(true);
   // The image opened from a message, shown large over the transcript.
   const [preview, setPreview] = useState<Attachment | null>(null);
-  // The message menu, or null when no message was right-clicked.
-  const [menu, setMenu] = useState<MessageMenuAnchor | null>(null);
-  const closeMenu = useCallback(() => setMenu(null), []);
-
-  /**
-   * Opens the message menu where the pointer is.
-   *
-   * Attached only to user messages and model answers: reasoning and tool calls
-   * are the model's working, not what it said.
-   */
-  const openMessageMenu = (event: ReactMouseEvent<HTMLElement>, text: string) => {
-    if (!text) return;
-    event.preventDefault();
-
-    // A selection inside the message is what the reader meant to copy; without
-    // one the whole message is. The selection is read back as markdown, so a
-    // formula comes out as the TeX the model wrote rather than KaTeX's output.
-    const selection = window.getSelection();
-    const selectionAnchor = selection?.anchorNode;
-    const selected =
-      selection && selectionAnchor && event.currentTarget.contains(selectionAnchor)
-        ? (sourceOfSelection(selection, event.currentTarget, text) ?? selection.toString())
-        : '';
-
-    setMenu({ x: event.clientX, y: event.clientY, text: selected || text });
-  };
 
   // Whether the reader is at the bottom, tracked from their scrolling rather than
   // from the content growing. Somebody reading back through a long answer would
@@ -301,12 +272,11 @@ export const MessageList = memo(function MessageList({
                     </div>
                   )}
                   {turn.userInput && (
-                    <div
-                      className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap"
-                      onContextMenu={(event) => openMessageMenu(event, turn.userInput)}
-                    >
-                      {turn.userInput}
-                    </div>
+                    <MessageContextMenu text={turn.userInput}>
+                      <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
+                        {turn.userInput}
+                      </div>
+                    </MessageContextMenu>
                   )}
                   {/* User msg meta appears only on hover. */}
                   <MetaRow
@@ -321,12 +291,11 @@ export const MessageList = memo(function MessageList({
                     its steps, and its meta carries the turn's start time. */}
                 {(turn.steeredInputs ?? []).map((text, index) => (
                   <div key={index} className="group flex w-full flex-col items-end gap-1">
-                    <div
-                      className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap"
-                      onContextMenu={(event) => openMessageMenu(event, text)}
-                    >
-                      {text}
-                    </div>
+                    <MessageContextMenu text={text}>
+                      <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
+                        {text}
+                      </div>
+                    </MessageContextMenu>
                     <MetaRow
                       text={text}
                       ts={turn.createdAt}
@@ -341,11 +310,13 @@ export const MessageList = memo(function MessageList({
                     <ThoughtBlock thought={step.thought} live={isThinking(turn, step)} />
                   )}
                   {step.assistantText && (
-                    <div onContextMenu={(event) => openMessageMenu(event, step.assistantText)}>
-                      <Markdown streaming={turn.endReason === undefined}>
-                        {step.assistantText}
-                      </Markdown>
-                    </div>
+                    <MessageContextMenu text={step.assistantText}>
+                      <div>
+                        <Markdown streaming={turn.endReason === undefined}>
+                          {step.assistantText}
+                        </Markdown>
+                      </div>
+                    </MessageContextMenu>
                   )}
                   {step.toolCalls.map((tc) => (
                     <Collapsible key={tc.id}>
@@ -442,7 +413,6 @@ export const MessageList = memo(function MessageList({
           )}
         </ModalContent>
       </Modal>
-      {menu && <MessageContextMenu anchor={menu} onClose={closeMenu} />}
     </div>
   );
 });
