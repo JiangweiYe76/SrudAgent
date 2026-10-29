@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Layers, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, Layers, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { defaultChoices, useProviderStore } from '@/lib/providers';
 import type { Provider } from '@/lib/acp';
 import { cn } from '@/lib/utils';
@@ -50,38 +56,68 @@ export function ProvidersPanel({ form, onFormChange, modelsFor, onModelsForChang
     <div className="flex flex-col gap-6">
       {/* First, because it is the one thing here that every new session inherits
           without anyone choosing it again. */}
-      <label className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1">
         <span className="text-sm">{t('providers.default')}</span>
         <span className="text-xs text-muted-foreground">{t('providers.default.hint')}</span>
-        <select
-          value={defaultModel ?? ''}
-          disabled={busy || choices.length === 0}
-          onChange={(event) => {
-            const value = event.target.value;
-            if (value) void setDefault(value);
-          }}
-          className="mt-1 rounded-md border border-border bg-background px-2 py-1.5 text-[13px] outline-none focus-visible:border-accent disabled:opacity-60"
-        >
-          {/* Nobody has chosen yet, or what they chose has gone. Either way the
-              select says so rather than standing in for a model that is not
-              theirs to pick. Disabled, so it cannot be re-chosen by accident. */}
-          {defaultModel === null && (
-            <option value="" disabled>
-              {t('providers.default.unset')}
-            </option>
-          )}
-          {orphaned && (
-            <option value={defaultModel} disabled>
-              {t('models.unavailable', { model: defaultModel })}
-            </option>
-          )}
-          {choices.map((choice) => (
-            <option key={choice.value} value={choice.value}>
-              {choice.label}
-            </option>
-          ))}
-        </select>
-      </label>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            aria-label={t('providers.default')}
+            disabled={busy || choices.length === 0}
+            className={cn(
+              'mt-1 flex w-full cursor-pointer items-center justify-between gap-2 rounded-md border border-border bg-background px-2 py-1.5 text-left text-[13px] outline-none transition-colors',
+              'hover:bg-item-hover focus-visible:border-accent disabled:pointer-events-none disabled:opacity-60',
+              orphaned
+                ? 'text-destructive'
+                : defaultModel === null
+                  ? 'text-muted-foreground'
+                  : undefined,
+            )}
+          >
+            <span className="truncate">
+              {defaultModel === null
+                ? t('providers.default.unset')
+                : orphaned
+                  ? t('models.unavailable', { model: defaultModel })
+                  : choices.find((choice) => choice.value === defaultModel)?.label ?? defaultModel}
+            </span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            sideOffset={4}
+            className="max-h-[320px] w-[var(--radix-dropdown-menu-trigger-width)] min-w-[200px] overflow-y-auto"
+          >
+            {/* The stored default can name a model that is no longer offered;
+                listing it explains the trigger's unavailable text. */}
+            {orphaned && (
+              <DropdownMenuItem disabled className="text-destructive">
+                <span className="truncate">
+                  {t('models.unavailable', { model: defaultModel })}
+                </span>
+              </DropdownMenuItem>
+            )}
+            {choices.map((choice) => {
+              // Picking what is already the default would change nothing.
+              const current = choice.value === defaultModel;
+              return (
+                <DropdownMenuItem
+                  key={choice.value}
+                  disabled={current}
+                  onSelect={() => void setDefault(choice.value)}
+                >
+                  <Check
+                    className={cn(
+                      'h-3.5 w-3.5 shrink-0',
+                      current ? 'opacity-100' : 'opacity-0',
+                    )}
+                  />
+                  <span className="truncate">{choice.label}</span>
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
 
       <div className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-4">
