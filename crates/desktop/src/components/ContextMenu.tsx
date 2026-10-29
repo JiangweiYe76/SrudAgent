@@ -1,12 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react';
 import type { LucideIcon } from 'lucide-react';
-
-/** Where the menu should open, in viewport coordinates. */
-export interface MenuAnchor {
-  x: number;
-  y: number;
-}
+import {
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuRoot,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
 
 /** One action a context menu offers. */
 export interface MenuItem {
@@ -16,94 +15,52 @@ export interface MenuItem {
   onSelect: () => void;
 }
 
-// Keeps the menu clear of the window edges once it has been measured.
-const EDGE_MARGIN = 8;
-
 /**
- * A context menu at `anchor`, shared by the transcript and the composer.
+ * A context menu over `children`, opened by right-clicking them.
  *
- * Rendered into `document.body` and positioned fixed: the content scrolls
- * underneath it, so leaving it in the owner's tree would drag the menu along
- * when the reader scrolled.
+ * Radix owns the pointer anchoring and the dismissal: Escape, a pointer down
+ * outside, and the close that follows a choice. The menu is fixed, so scroll
+ * and resize close it as well — content moving underneath would leave it
+ * pointing at the wrong line.
  */
 export function ContextMenu({
-  anchor,
   label,
   items,
-  onClose,
+  onOpen,
+  children,
 }: {
-  anchor: MenuAnchor;
   label: string;
   items: MenuItem[];
-  onClose: () => void;
+  // Runs before the menu opens, while the trigger's selection is still current.
+  onOpen?: (event: ReactMouseEvent<HTMLElement>) => void;
+  children: ReactElement;
 }) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ left: anchor.x, top: anchor.y });
-
-  // The pointer can be anywhere, including the last few pixels of the window, so
-  // the menu is moved back inside the viewport rather than drawn off its edge.
-  useLayoutEffect(() => {
-    const menu = menuRef.current;
-    if (!menu) return;
-
-    const { width, height } = menu.getBoundingClientRect();
-    setPosition({
-      left: Math.max(EDGE_MARGIN, Math.min(anchor.x, window.innerWidth - width - EDGE_MARGIN)),
-      top: Math.max(EDGE_MARGIN, Math.min(anchor.y, window.innerHeight - height - EDGE_MARGIN)),
-    });
-  }, [anchor]);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    const onPointerDown = (event: Event) => {
-      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
-      onClose();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-
-    // A fixed menu has no anchor that scrolls with the content, so any movement
-    // of the page leaves it pointing at the wrong place.
-    window.addEventListener('pointerdown', onPointerDown, true);
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('scroll', onClose, true);
-    window.addEventListener('resize', onClose);
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
     return () => {
-      window.removeEventListener('pointerdown', onPointerDown, true);
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('scroll', onClose, true);
-      window.removeEventListener('resize', onClose);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
     };
-  }, [onClose]);
+  }, [open]);
 
-  return createPortal(
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={label}
-      style={position}
-      className="fixed z-50 min-w-[160px] rounded-lg border border-border bg-background p-1 text-foreground shadow-[0_4px_16px_rgba(0,0,0,0.14)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.5)]"
-    >
-      {items.map(({ label: itemLabel, icon: Icon, disabled, onSelect }) => (
-        <button
-          key={itemLabel}
-          type="button"
-          role="menuitem"
-          disabled={disabled}
-          onClick={() => {
-            onSelect();
-            onClose();
-          }}
-          // No autofocus: the menu appears where the pointer already is, and focus
-          // alone would paint a row as hovered before the pointer reached it.
-          // `focus-visible` keeps the highlight for keyboard entry.
-          className="flex w-full cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] outline-none transition-colors hover:bg-item-hover focus-visible:bg-item-hover disabled:pointer-events-none disabled:opacity-40"
-        >
-          {Icon && <Icon className="h-3.5 w-3.5 text-muted-foreground" />}
-          {itemLabel}
-        </button>
-      ))}
-    </div>,
-    document.body,
+  return (
+    <ContextMenuRoot open={open} onOpenChange={setOpen}>
+      <ContextMenuTrigger asChild onContextMenu={onOpen}>
+        {children}
+      </ContextMenuTrigger>
+      <ContextMenuContent aria-label={label}>
+        {items.map(({ label: itemLabel, icon: Icon, disabled, onSelect }) => (
+          <ContextMenuItem key={itemLabel} disabled={disabled} onSelect={onSelect}>
+            {Icon && <Icon className="h-3.5 w-3.5 text-muted-foreground" />}
+            {itemLabel}
+          </ContextMenuItem>
+        ))}
+      </ContextMenuContent>
+    </ContextMenuRoot>
   );
 }

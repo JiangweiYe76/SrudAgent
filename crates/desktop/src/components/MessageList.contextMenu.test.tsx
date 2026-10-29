@@ -69,8 +69,8 @@ function menu(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[role="menu"]');
 }
 
-function copyItem(): HTMLButtonElement {
-  return document.querySelector<HTMLButtonElement>('[role="menuitem"]')!;
+function copyItem(): HTMLElement {
+  return document.querySelector<HTMLElement>('[role="menuitem"]')!;
 }
 
 /** Clicks Copy and lets the clipboard promise settle. */
@@ -295,8 +295,8 @@ describe('the message context menu', () => {
 
   it('does not paint Copy as hovered before the pointer reaches it', () => {
     // The menu opens where the pointer already is, in the padding above the
-    // item. Focusing the item as the menu mounted made it look hovered when the
-    // pointer had not touched it.
+    // item. Focusing the item on mount would paint it as hovered before the
+    // pointer reached it.
     render([turn()]);
     rightClick(container.querySelector('.bg-user-bubble')!);
 
@@ -307,16 +307,23 @@ describe('the message context menu', () => {
     render([turn()]);
     rightClick(container.querySelector('.bg-user-bubble')!);
 
+    // Radix listens on the document rather than the window.
     act(() => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
 
     expect(menu()).toBeNull();
   });
 
-  it('closes when the pointer goes down anywhere else', () => {
+  it('closes when the pointer goes down anywhere else', async () => {
     render([turn()]);
     rightClick(container.querySelector('.bg-user-bubble')!);
+
+    // Radix arms the outside-pointer listener on the next tick, so that the
+    // right-click that opened the menu does not immediately close it.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
     act(() => {
       document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));

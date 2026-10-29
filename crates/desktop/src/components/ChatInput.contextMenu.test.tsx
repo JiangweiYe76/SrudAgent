@@ -76,8 +76,8 @@ function openMenu(start = 0, end = 0): MouseEvent {
   return event;
 }
 
-function item(label: string): HTMLButtonElement {
-  const found = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(
+function item(label: string): HTMLElement {
+  const found = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
     (button) => button.textContent?.trim() === label,
   );
   if (!found) throw new Error(`no menu item: ${label}`);
@@ -142,13 +142,14 @@ describe('the composer context menu', () => {
     expect(invoke).toHaveBeenCalledWith('read_clipboard', { limit: 10 * 1024 * 1024 });
   });
 
-  it('selects the whole draft', () => {
+  it('selects the whole draft', async () => {
     render('hello');
 
     openMenu(2, 2);
     choose('Select all');
 
-    expect(document.activeElement).toBe(box());
+    // Radix returns focus after the menu has finished closing.
+    await vi.waitFor(() => expect(document.activeElement).toBe(box()));
     expect(box().selectionStart).toBe(0);
     expect(box().selectionEnd).toBe(5);
   });
@@ -158,8 +159,9 @@ describe('the composer context menu', () => {
 
     openMenu(2, 2);
 
-    expect(item('Cut').disabled).toBe(true);
-    expect(item('Copy').disabled).toBe(true);
-    expect(item('Paste').disabled).toBe(false);
+    // Radix marks a disabled item rather than rendering a disabled button.
+    expect(item('Cut').getAttribute('data-disabled')).not.toBeNull();
+    expect(item('Copy').getAttribute('data-disabled')).not.toBeNull();
+    expect(item('Paste').getAttribute('data-disabled')).toBeNull();
   });
 });

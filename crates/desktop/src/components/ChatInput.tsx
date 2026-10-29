@@ -3,7 +3,6 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
-  type MouseEvent as ReactMouseEvent,
 } from 'react';
 
 import {
@@ -62,9 +61,7 @@ interface ChatInputProps {
 }
 
 /** The draft selection a right-click opened the editing menu over. */
-interface DraftMenu {
-  x: number;
-  y: number;
+interface DraftSelection {
   start: number;
   end: number;
   text: string;
@@ -89,7 +86,7 @@ export function ChatInput({
   // modal come and go together with the usage data itself.
   const [usageOpen, setUsageOpen] = useState(false);
   const [preview, setPreview] = useState<Attachment | null>(null);
-  const [draftMenu, setDraftMenu] = useState<DraftMenu | null>(null);
+  const [draftSelection, setDraftSelection] = useState<DraftSelection | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Reads started by a paste resolve after the event, so the list they append
@@ -162,24 +159,22 @@ export function ChatInput({
 
   // Remembers the selection the way it stands at the right-click, because the
   // menu actions run after the pointer has already moved on.
-  const openDraftMenu = (event: ReactMouseEvent<HTMLTextAreaElement>) => {
-    event.preventDefault();
-    const textarea = event.currentTarget;
+  const openDraftMenu = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
     const draft = valueRef.current;
     const start = Math.min(textarea.selectionStart, draft.length);
     const end = Math.min(Math.max(textarea.selectionEnd, start), draft.length);
-    setDraftMenu({
-      x: event.clientX,
-      y: event.clientY,
+    setDraftSelection({
       start,
       end,
       text: draft.slice(start, end),
     });
   };
 
-  // The menu button takes focus when clicked, so the caret goes back to the
-  // selection it acted on rather than leaving the draft unfocused.
-  const restoreSelection = (selection: DraftMenu) => {
+  // Choosing an item moves focus out of the draft, so the caret goes back to
+  // the selection it acted on.
+  const restoreSelection = (selection: DraftSelection) => {
     requestAnimationFrame(() => {
       const textarea = textareaRef.current;
       textarea?.focus();
@@ -187,7 +182,7 @@ export function ChatInput({
     });
   };
 
-  const copySelection = async (selection: DraftMenu) => {
+  const copySelection = async (selection: DraftSelection) => {
     try {
       await navigator.clipboard.writeText(selection.text);
     } catch {
@@ -199,7 +194,7 @@ export function ChatInput({
     toast.success(t('msg.copied'));
   };
 
-  const cutSelection = async (selection: DraftMenu) => {
+  const cutSelection = async (selection: DraftSelection) => {
     try {
       await navigator.clipboard.writeText(selection.text);
     } catch {
@@ -210,7 +205,7 @@ export function ChatInput({
     replaceDraftRange(selection.start, selection.end, '');
   };
 
-  const pasteAtSelection = async (selection: DraftMenu) => {
+  const pasteAtSelection = async (selection: DraftSelection) => {
     try {
       if (isTauri()) {
         const content = await readClipboard(IMAGE_LIMIT_BYTES);
@@ -343,22 +338,56 @@ export function ChatInput({
       {/* A textarea defaults to its intrinsic `size=20` width, where the
           placeholder wraps to three lines and clips; `block w-full` stretches it
           to the card so the text lays out on its own terms. */}
-      <textarea
-        ref={textareaRef}
-        className="block w-full min-h-[44px] max-h-[200px] resize-none border-none bg-transparent text-sm leading-normal text-foreground outline-none placeholder:text-muted-foreground"
-        value={value}
-        placeholder={t('chat.placeholder')}
-        rows={2}
-        onChange={(e) => onValueChange(e.target.value)}
-        onPaste={pasteImages}
-        onContextMenu={openDraftMenu}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
+      <ContextMenu
+        label={t('edit.actions')}
+        onOpen={openDraftMenu}
+        items={[
+          {
+            label: t('edit.cut'),
+            icon: Scissors,
+            disabled: !draftSelection?.text,
+            onSelect: () => {
+              if (draftSelection) void cutSelection(draftSelection);
+            },
+          },
+          {
+            label: t('edit.copy'),
+            icon: Copy,
+            disabled: !draftSelection?.text,
+            onSelect: () => {
+              if (draftSelection) void copySelection(draftSelection);
+            },
+          },
+          {
+            label: t('edit.paste'),
+            icon: ClipboardPaste,
+            onSelect: () => {
+              if (draftSelection) void pasteAtSelection(draftSelection);
+            },
+          },
+          {
+            label: t('edit.selectAll'),
+            icon: TextCursorInput,
+            onSelect: selectWholeDraft,
+          },
+        ]}
+      >
+        <textarea
+          ref={textareaRef}
+          className="block w-full min-h-[44px] max-h-[200px] resize-none border-none bg-transparent text-sm leading-normal text-foreground outline-none placeholder:text-muted-foreground"
+          value={value}
+          placeholder={t('chat.placeholder')}
+          rows={2}
+          onChange={(e) => onValueChange(e.target.value)}
+          onPaste={pasteImages}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+      </ContextMenu>
       <div className="flex items-center justify-end gap-1.5">
         {usage && <UsageIndicator usage={usage} onOpen={() => setUsageOpen(true)} />}
         <Button
@@ -456,37 +485,6 @@ export function ChatInput({
         </div>
       ) : (
         composer
-      )}
-      {draftMenu && (
-        <ContextMenu
-          anchor={draftMenu}
-          label={t('edit.actions')}
-          onClose={() => setDraftMenu(null)}
-          items={[
-            {
-              label: t('edit.cut'),
-              icon: Scissors,
-              disabled: !draftMenu.text,
-              onSelect: () => void cutSelection(draftMenu),
-            },
-            {
-              label: t('edit.copy'),
-              icon: Copy,
-              disabled: !draftMenu.text,
-              onSelect: () => void copySelection(draftMenu),
-            },
-            {
-              label: t('edit.paste'),
-              icon: ClipboardPaste,
-              onSelect: () => void pasteAtSelection(draftMenu),
-            },
-            {
-              label: t('edit.selectAll'),
-              icon: TextCursorInput,
-              onSelect: selectWholeDraft,
-            },
-          ]}
-        />
       )}
     </div>
   );
