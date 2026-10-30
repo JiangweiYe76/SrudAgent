@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Boxes, Info, Monitor, Moon, Palette, Sun, type LucideIcon } from 'lucide-react';
+import { Boxes, Info, Keyboard, Monitor, Moon, Palette, Sun, type LucideIcon } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { Modal, ModalContent } from '@/components/ui/modal';
 import { ProvidersPanel } from '@/components/ProvidersPanel';
 import { ProviderFormModal } from '@/components/ProviderFormModal';
 import { ModelsModal } from '@/components/ModelsModal';
+import { ShortcutsPanel } from '@/components/ShortcutsPanel';
 import { useThemeStore, type ThemeMode } from '@/lib/theme';
 import { percentOf, useZoomStore, ZOOM_LEVELS } from '@/lib/zoom';
 import type { Provider } from '@/lib/acp';
@@ -15,10 +16,11 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type Section = 'appearance' | 'models' | 'about';
+type Section = 'appearance' | 'shortcuts' | 'models' | 'about';
 
 const SECTIONS: { id: Section; label: Parameters<typeof t>[0]; Icon: LucideIcon }[] = [
   { id: 'appearance', label: 'settings.appearance', Icon: Palette },
+  { id: 'shortcuts', label: 'settings.shortcuts', Icon: Keyboard },
   { id: 'models', label: 'settings.models', Icon: Boxes },
   { id: 'about', label: 'settings.about', Icon: Info },
 ];
@@ -32,6 +34,7 @@ const THEME_OPTIONS: { mode: ThemeMode; label: Parameters<typeof t>[0]; Icon: Lu
 // The heading over each section's own content.
 const TITLES: Record<Section, Parameters<typeof t>[0]> = {
   appearance: 'settings.appearance',
+  shortcuts: 'settings.shortcuts',
   models: 'settings.models',
   about: 'settings.about',
 };
@@ -134,6 +137,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       </div>
                     </div>
                   </div>
+                ) : section === 'shortcuts' ? (
+                  <ShortcutsPanel />
                 ) : section === 'models' ? (
                   <ProvidersPanel
                     form={form}

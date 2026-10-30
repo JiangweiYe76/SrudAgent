@@ -17,6 +17,7 @@ import {
 } from './lib/sessionStore';
 import { useProviderStore, draftModelOptions } from './lib/providers';
 import { useTheme, useThemeStore } from './lib/theme';
+import { actionForEvent, useShortcutStore } from './lib/shortcuts';
 import { suppressSelectAll, suppressWebviewContextMenu } from './lib/webview';
 import { preserveMarkdownWhenCopying } from './lib/markdownSource';
 import type { Provider } from './lib/acp';
@@ -48,6 +49,7 @@ function App() {
   const reopening = useSessionStore(isReopening);
   const providers = useProviderStore((s) => s.providers);
   const defaultModel = useProviderStore((s) => s.defaultModel);
+  const bindings = useShortcutStore((s) => s.bindings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The composer floats over the conversation, so the list keeps room under its
   // last message for it. Measured rather than fixed: queued messages make the
@@ -65,6 +67,23 @@ function App() {
   useEffect(() => {
     void init();
   }, [init]);
+
+  // The window's shortcuts, dispatched from one place: the settings panel only
+  // writes bindings, so what it shows and what the window does cannot drift.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // A control that already claimed the key keeps it, a held key counts once,
+      // and a settings row recording a binding must not fire the one it replaces.
+      if (event.defaultPrevented || event.repeat || useShortcutStore.getState().recording) return;
+      const id = actionForEvent(bindings, event);
+      if (!id) return;
+      event.preventDefault();
+      if (id === 'session.new') addSession();
+      else setSettingsOpen(true);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [bindings, addSession]);
 
   // The window is a webview, and its context menu and select-all are the
   // browser's rather than the app's. The menu is cancelled everywhere; text

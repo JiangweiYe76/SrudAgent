@@ -76,6 +76,15 @@ const en = {
   'settings.theme.dark': 'Dark',
   'settings.zoom': 'Zoom',
   'settings.zoom.hint': 'Scales the whole window — text, icons and spacing together.',
+  'settings.shortcuts': 'Shortcuts',
+
+  'shortcuts.hint': 'Click a binding and press the keys to replace it. Escape cancels.',
+  'shortcuts.session.new': 'New session',
+  'shortcuts.settings.open': 'Open settings',
+  'shortcuts.recording': 'Press keys…',
+  'shortcuts.needModifier': 'Hold Ctrl, Alt or Shift as well — a key on its own would fire while typing.',
+  'shortcuts.taken': 'Already bound to “{name}”.',
+  'shortcuts.reset': 'Reset',
   'settings.about.line': 'SrudAgent 0.1.0 — an AI agent runtime in Rust.',
 
   'models.unavailable': '{model} (unavailable)',
