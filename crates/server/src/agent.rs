@@ -46,6 +46,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde_json::Value;
 use srud_core::client::ModelClient;
@@ -136,6 +137,15 @@ pub struct Agent {
     hub: EventHub,
     active_sinks: Mutex<HashMap<SessionId, TurnSink>>,
     initialized: AtomicBool,
+    /// Set once the host has begun shutting down. New prompts and steers are
+    /// refused from that point on, so a drain cannot be extended by new work.
+    shutting_down: AtomicBool,
+    /// Held for reading by every prompt; [`Agent::shutdown`] probes the write
+    /// side to see whether any is left.
+    ///
+    /// The write side can be taken only once every in-flight prompt has left,
+    /// so a successful probe means every turn has settled.
+    prompt_gate: tokio::sync::RwLock<()>,
 }
 
 impl Agent {
@@ -154,6 +164,8 @@ impl Agent {
             hub: EventHub::new(),
             active_sinks: Mutex::new(HashMap::new()),
             initialized: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
+            prompt_gate: tokio::sync::RwLock::new(()),
         }
     }
 
@@ -178,6 +190,8 @@ impl Agent {
             hub: EventHub::new(),
             active_sinks: Mutex::new(HashMap::new()),
             initialized: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
+            prompt_gate: tokio::sync::RwLock::new(()),
         }
     }
 
@@ -185,6 +199,39 @@ impl Agent {
     #[must_use]
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Notification<SessionNotification>> {
         self.hub.subscribe()
+    }
+
+    /// Stops accepting new prompts and steers, and waits for every in-flight
+    /// turn to settle.
+    ///
+    /// Active turns are interrupted and re-interrupted while the drain waits,
+    /// because a prompt that had already passed its entry check may claim its
+    /// turn after the first signal.
+    ///
+    /// Returns whether every in-flight prompt finished before `timeout`.
+    /// A turn that did not settle is left open in the log, exactly as after a
+    /// process crash; the next load or resume closes it with a synthetic
+    /// interruption.
+    pub async fn shutdown(&self, timeout: Duration) -> bool {
+        self.shutting_down.store(true, Ordering::Release);
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            self.sessions.interrupt_all();
+
+            // Every prompt holds a read guard for its whole turn, so a write
+            // that becomes available means none is left. Probing rather than
+            // awaiting the lock keeps the loop free to re-signal a turn that
+            // claims the session late.
+            if self.prompt_gate.try_write().is_ok() {
+                return true;
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     /// Handles one JSON-RPC request and produces its reply.
@@ -298,6 +345,13 @@ impl Agent {
     }
 
     async fn handle_prompt(&self, params: Value) -> Result<PromptResponse, AcpError> {
+        // Held for the whole turn, so `shutdown`'s probe succeeds only once the
+        // turn has settled.
+        let _running = self.prompt_gate.read().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(AcpError::new(INTERNAL_ERROR, "the agent is shutting down"));
+        }
+
         let request: PromptRequest = parse_params(params)?;
 
         // The session and its log together, so a turn cannot be recorded against
@@ -389,6 +443,10 @@ impl Agent {
     }
 
     async fn handle_steer(&self, params: Value) -> Result<SteerResponse, AcpError> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(AcpError::new(INTERNAL_ERROR, "the agent is shutting down"));
+        }
+
         let request: SteerRequest = parse_params(params)?;
         let session = self
             .sessions
@@ -1728,6 +1786,72 @@ mod tests {
 
         let result = result_of(prompt.await.unwrap());
         assert_eq!(result["stopReason"], json!("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_interrupts_an_active_turn_and_refuses_new_prompts() {
+        let model = stalling(vec![ModelEvent::TextDelta {
+            delta: "partial".into(),
+        }]);
+        let agent = Arc::new(agent(model));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+
+        let prompt_agent = Arc::clone(&agent);
+        let prompt_session = session_id.clone();
+        let prompt = tokio::spawn(async move {
+            prompt_agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": prompt_session.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "go" }]
+                    }),
+                ))
+                .await
+        });
+
+        for _ in 0..100 {
+            if agent
+                .sessions
+                .get(&session_id)
+                .is_some_and(|session| session.is_busy())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            agent
+                .sessions
+                .get(&session_id)
+                .is_some_and(|session| session.is_busy()),
+            "the turn should have claimed the session before shutdown"
+        );
+
+        assert!(
+            agent.shutdown(std::time::Duration::from_secs(2)).await,
+            "the in-flight turn should settle within the timeout"
+        );
+        let result = result_of(prompt.await.unwrap());
+        assert_eq!(result["stopReason"], json!("cancelled"));
+
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "after" }]
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INTERNAL_ERROR);
+        assert!(
+            error.message.contains("shutting down"),
+            "the refusal names why: {error:?}"
+        );
     }
 
     #[tokio::test]

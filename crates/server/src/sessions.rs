@@ -488,6 +488,18 @@ impl SessionManager {
             .map(|tracked| (Arc::clone(&tracked.session), Arc::clone(&tracked.log)))
     }
 
+    /// Interrupts every live session's active turn.
+    ///
+    /// Returns how many turns were signalled. A session with no active turn is
+    /// left alone, so this is safe to call repeatedly while draining.
+    pub fn interrupt_all(&self) -> usize {
+        let sessions = self.sessions.lock().expect("session map lock poisoned");
+        sessions
+            .values()
+            .filter(|tracked| tracked.session.interrupt())
+            .count()
+    }
+
     /// Sets a session's display title, returning whether the session existed.
     ///
     /// An empty or whitespace-only title clears it, returning the session to its
