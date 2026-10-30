@@ -3,7 +3,8 @@
 // Only the deleting row is at stake here: while a delete is in flight the row
 // must visibly be on its way out — dimmed, with the actions it could otherwise
 // re-fire swapped for a spinner — and the other rows must render exactly as
-// they do without one.
+// they do without one. The activity dots ride along, since they share the row's
+// status slot.
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
@@ -34,13 +35,14 @@ function session(id: string): Session {
   };
 }
 
-function render(sessions: Session[], deletingIds: string[] = []): void {
+function render(sessions: Session[], deletingIds: string[] = [], unreadIds: string[] = []): void {
   act(() => {
     root.render(
       <Sidebar
         sessions={sessions}
         activeId={sessions[0]?.id ?? ''}
         deletingIds={deletingIds}
+        unreadIds={unreadIds}
         onSelect={() => {}}
         onNew={() => {}}
         onRename={() => {}}
@@ -91,5 +93,20 @@ describe('Sidebar deleting rows', () => {
       expect(row.querySelector('[role="status"]')).toBeNull();
       expect(row.querySelector('[aria-label="Session actions"]')).not.toBeNull();
     }
+  });
+
+  it('marks a streaming row with a pulsing dot and an unread row with a plain one', () => {
+    // An open last turn is all "streaming" means to the sidebar.
+    const busy = session('s1');
+    busy.turns = [{ id: 't1', userInput: 'hi', steps: [], createdAt: Date.now() }];
+    mount();
+    render([busy, session('s2')], [], ['s2']);
+    const [streaming, unread] = rows();
+
+    expect(streaming.querySelector('[title="Still replying…"]')).not.toBeNull();
+    expect(unread.querySelector('[title="Unread reply"]')).not.toBeNull();
+    // Streaming outranks unread, so one row never carries both.
+    expect(streaming.querySelector('[title="Unread reply"]')).toBeNull();
+    expect(unread.querySelector('[title="Still replying…"]')).toBeNull();
   });
 });

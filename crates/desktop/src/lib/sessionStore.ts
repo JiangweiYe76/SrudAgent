@@ -407,6 +407,9 @@ interface SessionState {
   // a refused delete must lose nothing — and this is what the sidebar shows
   // while it waits.
   deletingIds: string[];
+  // Sessions whose last turn ended while they were off screen. Held until the
+  // session is opened; the sidebar holds a dot for it until then.
+  unreadIds: string[];
   // What each session's input box holds, keyed by `draftKeyOf`.
   drafts: Record<string, string>;
   setDraft: (id: string, text: string) => void;
@@ -569,6 +572,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   initError: null,
   reopeningCount: 0,
   deletingIds: [],
+  unreadIds: [],
   drafts: {},
   attachments: {},
 
@@ -662,7 +666,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   select: (id) => {
-    set({ activeId: id });
+    set((s) => ({
+      activeId: id,
+      unreadIds: s.unreadIds.filter((x) => x !== id),
+    }));
     // A session the agent listed has a conversation that is not on screen yet, so
     // it is asked for on the way to being shown. Already-loaded and draft
     // sessions are left alone: loading one again would replay it on top of itself.
@@ -1005,9 +1012,10 @@ function removeSession(id: string) {
     const drafts = withoutDraft(s.drafts, key);
     const attachments = { ...s.attachments };
     delete attachments[key];
-    if (s.activeId !== id) return { sessions: remaining, drafts, attachments };
+    const unreadIds = s.unreadIds.filter((x) => x !== id);
+    if (s.activeId !== id) return { sessions: remaining, drafts, attachments, unreadIds };
     movedTo = remaining[0]?.id ?? '';
-    return { sessions: remaining, activeId: movedTo, drafts, attachments };
+    return { sessions: remaining, activeId: movedTo, drafts, attachments, unreadIds };
   });
   if (!removed) return;
   saveDrafts(useSessionStore.getState().drafts);
@@ -1053,6 +1061,13 @@ function closeTurn(sessionId: string, turnId: string, endReason: TurnEndReason, 
         updatedAt: Date.now(),
       };
     }),
+    // A turn that ends while its session is off screen finished unwatched, and
+    // the sidebar holds a dot for it until the session is opened. One the user
+    // sat through to the end needs no mark.
+    unreadIds:
+      s.activeId === sessionId || s.unreadIds.includes(sessionId)
+        ? s.unreadIds
+        : [...s.unreadIds, sessionId],
     ...(error ? { initError: error } : {}),
   }));
   // A finished turn releases the first waiting follow-up as its own turn; that

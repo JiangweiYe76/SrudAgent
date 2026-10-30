@@ -252,6 +252,36 @@ describe('sessionStore live path', () => {
     expect(calls.indexOf('session/new')).toBeLessThan(calls.indexOf('session/prompt'));
   });
 
+  it('a turn that ends off screen marks the session unread until it is opened', async () => {
+    const { useSessionStore, active, prompt, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const spokenId = active().id;
+
+    // The view moves to a draft, so the turn ends where nobody watches.
+    useSessionStore.getState().addSession();
+    expect(useSessionStore.getState().unreadIds).not.toContain(spokenId);
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().unreadIds).toContain(spokenId);
+    });
+
+    useSessionStore.getState().select(spokenId);
+    expect(useSessionStore.getState().unreadIds).not.toContain(spokenId);
+  });
+
+  it('a turn that ends on screen leaves nothing unread', async () => {
+    const { useSessionStore, active, prompt, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const spokenId = active().id;
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+    expect(useSessionStore.getState().unreadIds).not.toContain(spokenId);
+  });
+
   it('a message queued during a turn runs as the next turn once it ends', async () => {
     const { useSessionStore, active, calls, prompt, waitForBackend } = await boot();
     const promptsSoFar = () => calls.filter((m) => m === 'session/prompt').length;

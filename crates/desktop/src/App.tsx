@@ -28,6 +28,7 @@ function App() {
   const sessions = useSessionStore((s) => s.sessions);
   const activeId = useSessionStore((s) => s.activeId);
   const deletingIds = useSessionStore((s) => s.deletingIds);
+  const unreadIds = useSessionStore((s) => s.unreadIds);
   const select = useSessionStore((s) => s.select);
   const addSession = useSessionStore((s) => s.addSession);
   const sendTurn = useSessionStore((s) => s.sendTurn);
@@ -128,6 +129,7 @@ function App() {
         sessions={sessions}
         activeId={activeId}
         deletingIds={deletingIds}
+        unreadIds={unreadIds}
         onSelect={select}
         onNew={addSession}
         onRename={renameSession}

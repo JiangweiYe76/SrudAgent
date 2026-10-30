@@ -22,6 +22,8 @@ interface SidebarProps {
   // Sessions whose delete is in flight. Their rows stay put — a refused delete
   // must lose nothing — so they show this instead of the actions.
   deletingIds: string[];
+  // Sessions whose last turn ended off screen and have not been opened since.
+  unreadIds: string[];
   onSelect: (id: string) => void;
   onNew: () => void;
   onRename: (id: string, title: string) => void;
@@ -83,6 +85,7 @@ export function Sidebar({
   sessions,
   activeId,
   deletingIds,
+  unreadIds,
   onSelect,
   onNew,
   onRename,
@@ -122,6 +125,10 @@ export function Sidebar({
           // dimmed, with a spinner where the actions were, since firing delete
           // again would stack a second request on the first.
           const deleting = deletingIds.includes(s.id);
+          // Streaming outranks unread: a session that is still replying has
+          // nothing finished to catch up on yet.
+          const streaming = !deleting && isBusy(s);
+          const unread = !deleting && !streaming && unreadIds.includes(s.id);
           return (
             <button
               key={s.id}
@@ -139,6 +146,17 @@ export function Sidebar({
                 <span className="w-full truncate text-[13px]">{displayTitle(s)}</span>
                 <span className="text-[11px] text-muted-foreground">{formatTime(s.updatedAt)}</span>
               </span>
+              {(streaming || unread) && (
+                // Deliberately no `role="status"`: that is the deleting
+                // spinner's contract, and tests read it as such. The state
+                // travels in the title instead.
+                <span
+                  title={streaming ? t('sidebar.streaming') : t('sidebar.unread')}
+                  className={`h-2 w-2 shrink-0 rounded-full ${
+                    streaming ? 'animate-presence-dot bg-accent' : 'bg-success'
+                  }`}
+                />
+              )}
               {deleting ? (
                 <span
                   role="status"
