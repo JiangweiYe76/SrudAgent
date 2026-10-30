@@ -15,7 +15,9 @@
 //! it. The one store is shared between the settings panel and the agent, so a
 //! provider added at runtime takes effect without a restart.
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::Value;
@@ -31,6 +33,29 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Shared state: the agent the webview's requests go to.
 struct AgentState(Arc<Agent>);
+
+/// How far the exit hook has progressed.
+///
+/// A second close request while draining is held off, so it cannot cut the
+/// wait short; only the drain task moves the state to `READY`.
+struct ShutdownState(AtomicU8);
+
+const SHUTDOWN_RUNNING: u8 = 0;
+const SHUTDOWN_DRAINING: u8 = 1;
+const SHUTDOWN_READY: u8 = 2;
+
+/// How long a close waits for in-flight turns to settle.
+///
+/// Long enough for an interrupted turn to flush its partial message, short
+/// enough that a provider stuck on a network read cannot keep the window from
+/// closing.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl Default for ShutdownState {
+    fn default() -> Self {
+        Self(AtomicU8::new(SHUTDOWN_RUNNING))
+    }
+}
 
 /// Shared state: the provider store the panel writes through. The agent
 /// resolves its sessions against the same store, so an edit there is visible
@@ -469,7 +494,7 @@ pub fn run() {
     if let Err(error) = config::ensure() {
         eprintln!("{error}");
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         // Links in assistant output are opened in the user's own browser. Without
         // this a click navigates the webview itself, replacing the whole app with a
         // web page the reader then has to navigate back out of.
@@ -498,6 +523,7 @@ pub fn run() {
             let agent = build_agent(store);
             spawn_notify_pump(app.handle().clone(), &agent);
             app.manage(AgentState(agent));
+            app.manage(ShutdownState::default());
             #[cfg(target_os = "linux")]
             disable_spell_checking(app);
             Ok(())
@@ -508,8 +534,41 @@ pub fn run() {
             read_image_file,
             read_clipboard
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        let tauri::RunEvent::ExitRequested { api, .. } = event else {
+            return;
+        };
+
+        let state = app_handle.state::<ShutdownState>();
+        match state.0.load(Ordering::Acquire) {
+            SHUTDOWN_RUNNING => {
+                state.0.store(SHUTDOWN_DRAINING, Ordering::Release);
+                api.prevent_exit();
+
+                let app = app_handle.clone();
+                let agent = Arc::clone(&app.state::<AgentState>().0);
+                tauri::async_runtime::spawn(async move {
+                    let settled = agent.shutdown(SHUTDOWN_TIMEOUT).await;
+                    if !settled {
+                        eprintln!(
+                            "agent turns did not settle within {SHUTDOWN_TIMEOUT:?}; exiting anyway"
+                        );
+                    }
+                    app.state::<ShutdownState>()
+                        .0
+                        .store(SHUTDOWN_READY, Ordering::Release);
+                    app.exit(0);
+                });
+            }
+            // A second close while draining must not cut the wait short.
+            SHUTDOWN_DRAINING => api.prevent_exit(),
+            // READY: the drain has finished and asked for the exit.
+            _ => {}
+        }
+    });
 }
 
 #[cfg(test)]
