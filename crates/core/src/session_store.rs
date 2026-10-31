@@ -24,7 +24,8 @@ use chrono::{DateTime, Utc};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::session_event::{Logged, SessionEvent};
-use crate::types::{ResponseItem, SessionId, TurnEndReason, TurnId};
+use crate::session_log::{describe, RecordError};
+use crate::types::{ResponseItem, Role, SessionId, TurnEndReason, TurnId};
 
 /// Where one session's log lives, and what to write in it.
 ///
@@ -127,6 +128,77 @@ impl SessionLogWriter {
     ) -> Result<(), io::Error> {
         self.record(&SessionEvent::item(turn_id, message_id, item.clone()))
             .await
+    }
+
+    /// The last turn the log opened, and never discarded.
+    ///
+    /// Read back from the file rather than remembered, so a session resumed in
+    /// this process and one written by another agree on which turn is its last.
+    /// A turn that has opened but not ended counts: it is the latest, and a
+    /// client replacing it will be interrupting it.
+    ///
+    /// # Errors
+    ///
+    /// As [`read`]. `None` when the log opened no turn, or discarded all of them.
+    pub async fn last_turn(&self) -> Result<Option<TurnId>, io::Error> {
+        let log = read(&self.path).await?;
+        Ok(last_turn_of(&log))
+    }
+
+    /// The last turn the log opened and never discarded, for a caller that
+    /// already knows one exists.
+    ///
+    /// # Errors
+    ///
+    /// As [`SessionLogWriter::last_turn`].
+    pub async fn last_turn_id(&self) -> Result<TurnId, io::Error> {
+        self.last_turn()
+            .await?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the log opened no turn"))
+    }
+}
+
+/// The last turn a log holds, ignoring the ones it discarded.
+fn last_turn_of(log: &ReadLog) -> Option<TurnId> {
+    let mut last = None;
+    let mut discarded: Vec<TurnId> = Vec::new();
+    for entry in &log.entries {
+        match &entry.event {
+            SessionEvent::TurnStarted { turn_id } => last = Some(*turn_id),
+            SessionEvent::TurnDiscarded { turn_id } => discarded.push(*turn_id),
+            _ => {}
+        }
+    }
+    last.filter(|turn_id| !discarded.contains(turn_id))
+}
+
+/// Something outside a turn that records to a session's log.
+///
+/// The turn loop records through [`SessionLog`] and does so on the event sink's
+/// timeline. A discard is not part of a turn — it takes one back — so it is
+/// reported to the client by its caller instead, and the client has no log to
+/// write to.
+#[async_trait::async_trait]
+pub trait SessionWriter: Send + Sync {
+    /// Writes one record, returning only once it is durable.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the record could not be written. Reported rather than swallowed
+    /// for the reason [`SessionLog`] gives: a log that quietly stopped accepting
+    /// records describes a session that cannot be recovered.
+    async fn record(&self, entry: &SessionEvent) -> Result<(), RecordError>;
+}
+
+#[async_trait::async_trait]
+impl SessionWriter for SessionLogWriter {
+    async fn record(&self, entry: &SessionEvent) -> Result<(), RecordError> {
+        SessionLogWriter::record(self, entry)
+            .await
+            .map_err(|source| RecordError::Io {
+                what: describe(entry),
+                source,
+            })
     }
 }
 
@@ -305,7 +377,8 @@ fn summarize_log(log: &ReadLog) -> Result<Summary, LoadError> {
             | SessionEvent::TurnStarted { .. }
             | SessionEvent::Item { .. }
             | SessionEvent::TurnEnded { .. }
-            | SessionEvent::UsageRecorded { .. } => {}
+            | SessionEvent::UsageRecorded { .. }
+            | SessionEvent::TurnDiscarded { .. } => {}
         }
         updated_at = Some(entry.time);
     }
@@ -406,41 +479,98 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     // The thinking level the session sends, as last chosen. Same rule: the last
     // record is what is true now.
     let mut thinking = None;
-    // Turns the log opened and never closed. A turn's end record can fail to
-    // write while the turn itself still ends, so more than one can be open.
-    let mut open: Vec<TurnId> = Vec::new();
-    // Every recorded entry, in order.
-    let mut items: Vec<&SessionEvent> = Vec::new();
+    // Every recorded entry, with the turn it was written in.
+    let mut items: Vec<(TurnId, &SessionEvent)> = Vec::new();
     let mut turn_ends: Vec<(TurnId, TurnEndReason)> = Vec::new();
+    let mut discarded: Vec<TurnId> = Vec::new();
 
     for entry in &log.entries {
         match &entry.event {
             SessionEvent::Title { title: last } => title = last.clone(),
             SessionEvent::Model { model: last } => model = last.clone(),
             SessionEvent::Thinking { level } => thinking = level.clone(),
-            SessionEvent::TurnStarted { turn_id } => open.push(*turn_id),
             SessionEvent::TurnEnded { turn_id, reason } => {
                 // A turn ends once. A log carrying a second end for one is
                 // damaged, and the first is the one that says what happened, so
                 // a client is never shown two reasons for the same turn.
-                if open.contains(turn_id) {
-                    open.retain(|id| id != turn_id);
+                if !turn_ends.iter().any(|(id, _)| id == turn_id) {
                     turn_ends.push((*turn_id, *reason));
                 }
             }
+            SessionEvent::TurnDiscarded { turn_id } => discarded.push(*turn_id),
             // Usage is not history — `history_item` keeps it out of what the
             // model is re-sent — but it belongs to the conversation: a client
             // replaying the session wants each step's cost where it happened.
-            SessionEvent::Item { .. } | SessionEvent::UsageRecorded { .. } => {
-                items.push(&entry.event);
+            SessionEvent::Item { turn_id, .. } | SessionEvent::UsageRecorded { turn_id, .. } => {
+                items.push((*turn_id, &entry.event));
             }
-            SessionEvent::Session { .. } | SessionEvent::System { .. } => {}
+            SessionEvent::Session { .. }
+            | SessionEvent::System { .. }
+            | SessionEvent::TurnStarted { .. } => {}
         }
     }
+
+    let mut kept: Vec<&SessionEvent> = Vec::new();
+    // The turns an entry still in the history belongs to, in the order they
+    // appear: the only turns a reader can still be missing the end of.
+    let mut held: Vec<TurnId> = Vec::new();
+    // Set once a discarded turn's answer begins: everything from there on is
+    // output that turn produced, and stops being read. Later turns still written
+    // are their own history, and keep it.
+    let mut cutting = false;
+    for (turn_id, event) in &items {
+        // A discarded turn gives back the message it answered and every image
+        // that came with it, and nothing else. Its first other entry is the one
+        // point in the history where what it was asked ends and what it answered
+        // begins, so the cut is taken there rather than counted. A turn that
+        // answered nothing gives nothing back: what it was asked stays, and there
+        // is nothing after it to cut.
+        let mine = discarded.contains(turn_id);
+        let asked = matches!(
+            event.history_item(),
+            None | Some(ResponseItem::Message {
+                role: Role::User,
+                ..
+            }) | Some(ResponseItem::Image { .. })
+        );
+        // Nothing of a discarded turn is held, whether or not it was asked:
+        // keeping the question is what lets the turn that replaces it answer the
+        // same words, and closing the turn it came from would close a turn the
+        // conversation no longer has.
+        if !mine {
+            cutting = false;
+            kept.push(event);
+        } else if asked && !cutting {
+            kept.push(event);
+        } else {
+            cutting = true;
+            continue;
+        }
+        if !held.contains(turn_id) {
+            held.push(*turn_id);
+        }
+    }
+    held.retain(|id| !discarded.contains(id));
+
+    // Turns the log opened and never closed. A turn's end record can fail to
+    // write while the turn itself still ends, so more than one can be open. Only
+    // turns that still have an entry in the history count: a turn that was
+    // discarded wrote nothing a reader still holds, and closing it would put a
+    // boundary in a conversation that no longer has the turn.
+    let open: Vec<TurnId> = held
+        .into_iter()
+        .filter(|id| !turn_ends.iter().any(|(ended, _)| ended == id))
+        .fold(Vec::new(), |mut open, id| {
+            if !open.contains(&id) {
+                open.push(id);
+            }
+            open
+        });
+
     // A session that has not stopped has nothing to repair: what the log is
     // missing is what has not happened yet.
     let repairs = if stopped {
-        repairs(&items, &open)
+        repairs(&kept, &open)
     } else {
         Vec::new()
     };
@@ -456,7 +586,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     // The repairs that carry an item are part of both the history and the
     // conversation; the one that only closes a turn is in neither, since a turn
     // boundary is not something the model or the client is shown.
-    let ordered = items.iter().copied().chain(
+    let ordered = kept.iter().copied().chain(
         repairs
             .iter()
             .filter(|event| event.history_item().is_some()),
@@ -933,6 +1063,195 @@ mod tests {
     /// A user message, as the loop records one.
     fn said(turn_id: TurnId, text: &str) -> SessionEvent {
         SessionEvent::item(turn_id, None, ResponseItem::user(text))
+    }
+
+    /// An assistant message, as the loop records one.
+    fn answered(turn_id: TurnId, text: &str) -> SessionEvent {
+        SessionEvent::item(
+            turn_id,
+            Some(MessageId::new()),
+            ResponseItem::assistant(text),
+        )
+    }
+
+    #[test]
+    fn a_discarded_turn_gives_back_its_message_and_keeps_the_answer_out() {
+        // What regenerate needs from a reload: the question the second turn
+        // answered is there once, and neither version of the answer is.
+        let (first, second) = (TurnId::new(), TurnId::new());
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id: first },
+            said(first, "hello"),
+            answered(first, "a discarded answer"),
+            SessionEvent::TurnEnded {
+                turn_id: first,
+                reason: TurnEndReason::Completed,
+            },
+            SessionEvent::turn_discarded(first),
+            SessionEvent::TurnStarted { turn_id: second },
+            answered(second, "the answer"),
+            SessionEvent::TurnEnded {
+                turn_id: second,
+                reason: TurnEndReason::Completed,
+            },
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(
+            loaded.history,
+            vec![
+                ResponseItem::user("hello"),
+                ResponseItem::assistant("the answer")
+            ],
+            "the question is kept and the discarded answer is not"
+        );
+        assert_eq!(
+            loaded
+                .conversation
+                .iter()
+                .filter(|event| matches!(event, SessionEvent::Item { .. }))
+                .count(),
+            2,
+            "and a client replaying the session is shown the same two messages"
+        );
+        assert!(loaded.repairs.is_empty(), "{:?}", loaded.repairs);
+        assert_eq!(
+            loaded.turn_ends,
+            vec![
+                (first, TurnEndReason::Completed),
+                (second, TurnEndReason::Completed)
+            ],
+            "both turns ended, whether or not one of them still counts"
+        );
+    }
+
+    #[test]
+    fn a_discarded_turn_takes_the_images_it_was_sent_with() {
+        // The images are content the user attached rather than something the
+        // turn produced, and they belong to the message the new turn answers.
+        let (first, second) = (TurnId::new(), TurnId::new());
+        let image = ResponseItem::Image {
+            mime: "image/png".into(),
+            data: "AAAA".into(),
+        };
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id: first },
+            said(first, "look"),
+            SessionEvent::item(first, None, image.clone()),
+            answered(first, "a discarded answer"),
+            SessionEvent::turn_discarded(first),
+            SessionEvent::TurnStarted { turn_id: second },
+            answered(second, "the answer"),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(
+            loaded.history,
+            vec![
+                ResponseItem::user("look"),
+                image,
+                ResponseItem::assistant("the answer")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_discard_with_nothing_to_take_back_keeps_the_message() {
+        // A turn that answered nothing — cut off before its first chunk, or
+        // refused before it asked — leaves the user's message and the images
+        // beside it as the only entries it wrote. Those are not its output.
+        let turn_id = TurnId::new();
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id },
+            said(turn_id, "hello"),
+            SessionEvent::turn_discarded(turn_id),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.history, vec![ResponseItem::user("hello")]);
+        assert_eq!(
+            loaded.conversation.len(),
+            1,
+            "the message is the conversation: {:?}",
+            loaded.conversation
+        );
+    }
+
+    #[test]
+    fn a_discarded_turn_is_not_left_open() {
+        // Its end record failed to write while the turn still ended. A reader
+        // that closed it would put a boundary in a conversation the turn is no
+        // longer part of.
+        let (first, second) = (TurnId::new(), TurnId::new());
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id: first },
+            said(first, "hello"),
+            answered(first, "an answer"),
+            SessionEvent::turn_discarded(first),
+            SessionEvent::TurnStarted { turn_id: second },
+            answered(second, "the answer"),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(
+            loaded.repairs,
+            vec![SessionEvent::TurnEnded {
+                turn_id: second,
+                reason: TurnEndReason::Interrupted,
+            }],
+            "only the turn that is still in the conversation is closed"
+        );
+        assert_eq!(
+            loaded.history,
+            vec![
+                ResponseItem::user("hello"),
+                ResponseItem::assistant("the answer")
+            ]
+        );
+    }
+
+    #[test]
+    fn the_env_context_block_survives_a_discard() {
+        // Written ahead of the first message and never repeated, so a discard
+        // that cut back past it would leave the model without where it is working.
+        let (first, second) = (TurnId::new(), TurnId::new());
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id: first },
+            SessionEvent::item(
+                first,
+                None,
+                crate::context::item(std::path::Path::new("/w")),
+            ),
+            said(first, "hello"),
+            answered(first, "a discarded answer"),
+            SessionEvent::turn_discarded(first),
+            SessionEvent::TurnStarted { turn_id: second },
+            answered(second, "the answer"),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert!(
+            crate::context::is_item(&loaded.history[0]),
+            "the block is still there: {:?}",
+            loaded.history[0]
+        );
+        assert_eq!(loaded.history.len(), 3, "{:?}", loaded.history);
+        assert_eq!(
+            loaded.conversation.len(),
+            2,
+            "and a client is not shown it: {:?}",
+            loaded.conversation
+        );
     }
 
     #[test]

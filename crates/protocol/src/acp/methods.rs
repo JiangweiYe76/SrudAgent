@@ -42,6 +42,13 @@ pub const SESSION_REQUEST_PERMISSION: &str = "session/request_permission";
 pub const SRUD_SESSION_FORK: &str = "_srud/unstable/session/fork";
 /// Client -> agent: inject input into an in-flight turn.
 pub const SRUD_SESSION_STEER: &str = "_srud/unstable/session/steer";
+/// Client -> agent: discard the last turn's answer and ask again.
+///
+/// ACP's `session/prompt` always opens a turn with new input, so asking the same
+/// question again without the first answer in the way has no wire form of its
+/// own. This is that method: it answers when the second turn ends, the way
+/// `session/prompt` does.
+pub const SRUD_SESSION_REGENERATE: &str = "_srud/unstable/session/regenerate";
 /// Client -> agent: read raw rollout entries for a session.
 pub const SRUD_SESSION_ROLLOUT_READ: &str = "_srud/unstable/session/rollout/read";
 /// Client -> agent: set a session's display title.

@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::acp::{ContentBlock, Meta, SessionId};
+use crate::acp::{ContentBlock, Meta, SessionId, StopReason};
 
 /// Client -> agent: `_srud/unstable/session/fork`.
 ///
@@ -70,6 +70,43 @@ pub struct SteerRequest {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SteerResponse {
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Client -> agent: `_srud/unstable/session/regenerate`.
+///
+/// Discards the answer the last turn gave and asks the model again for a fresh
+/// one. The message it answered stays in the conversation and is answered once:
+/// the client is told to drop the turn it was shown (`TurnDiscarded` →
+/// `srud.turnDiscarded`), and the turn that replaces it streams under a new id.
+///
+/// Resolves when the second turn ends, exactly like `session/prompt`, because a
+/// caller streaming the replacement has nothing to wait on otherwise.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegenerateRequest {
+    /// The session to ask again.
+    pub session_id: SessionId,
+    /// The turn whose answer is being replaced.
+    ///
+    /// Named rather than implied: a client that regenerated twice, or a session
+    /// two clients are watching, must not have the second request replace a
+    /// different turn from the one the user was looking at. A turn that is not
+    /// the session's last is refused rather than silently mistaken for it.
+    pub turn_id: String,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Response to [`RegenerateRequest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegenerateResponse {
+    /// Why the replacement turn stopped.
+    pub stop_reason: StopReason,
     /// The `_meta` property reserved by ACP for extensibility.
     #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<Meta>,

@@ -3,11 +3,15 @@
 use std::sync::{Arc, Mutex};
 
 use futures::stream;
-use srud_core::client::{ModelClient, ModelError, ModelEvent, ModelRequest, ModelStream};
+use srud_core::client::{
+    ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream,
+};
 use srud_core::session::Session;
 use srud_core::session_log::Volatile;
 use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
-use srud_core::types::{Event, EventSink, Op, ResponseItem, Role, TurnEndReason, TurnInput};
+use srud_core::types::{
+    Event, EventSink, ImagePart, Op, ResponseItem, Role, TurnEndReason, TurnInput,
+};
 use tokio_util::sync::CancellationToken;
 
 /// Records every event, so tests can assert on order.
@@ -43,6 +47,7 @@ fn kind_of(event: &Event) -> &'static str {
         Event::ToolCallEnd { .. } => "ToolCallEnd",
         Event::ToolCallNamed { .. } => "ToolCallNamed",
         Event::UsageRecorded { .. } => "UsageRecorded",
+        Event::TurnDiscarded { .. } => "TurnDiscarded",
         Event::TurnComplete { .. } => "TurnComplete",
     }
 }
@@ -813,5 +818,545 @@ async fn a_read_call_reaches_the_sessions_working_directory() {
     assert!(
         output.contains("hello from the workspace"),
         "a relative path resolved against the session's working directory: {output}"
+    );
+}
+
+#[tokio::test]
+async fn a_turn_that_opens_on_an_answered_message_keeps_what_the_last_one_wrote_before_it() {
+    // Regenerating: the question stays in history, the answer it produced is
+    // cut, and the request that follows carries the question once.
+    let session = session();
+    let log = Volatile::new();
+    let (tools, _calls) = tool_registry();
+    let first_sink = Recorder::default();
+    let first = Scripted::new(vec![vec![text("a first answer"), done()]]);
+
+    srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        first.as_ref(),
+        &tools,
+        &log,
+        &first_sink,
+    )
+    .await
+    .expect("turn runs");
+
+    // Taken before the turn opened, the way a caller has to: the mark is how
+    // far the history had got when the question was the last thing in it.
+    let opening = Some(2);
+    assert!(
+        session.truncate(2),
+        "the answer is what answers the question"
+    );
+
+    let second_sink = Recorder::default();
+    let second = Scripted::new(vec![vec![text("a second answer"), done()]]);
+
+    let result = srud_core::run_turn_after(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        opening,
+        second.as_ref(),
+        &tools,
+        &log,
+        &second_sink,
+    )
+    .await
+    .expect("turn runs");
+
+    assert_eq!(result.reason, TurnEndReason::Completed);
+    assert_eq!(
+        session.state().history(),
+        &[
+            srud_core::context::item(session.cwd()),
+            ResponseItem::user("hi"),
+            ResponseItem::assistant("a second answer"),
+        ][..],
+        "the question survived once, and only the second answer is there"
+    );
+    assert_eq!(
+        second_sink.kinds(),
+        vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
+        "nothing is said again: the user's message is already in the conversation"
+    );
+
+    let requests = second.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]
+            .items
+            .iter()
+            .filter(|item| matches!(item, ModelRequestItem::Message { role: Role::User, content } if content == "hi"))
+            .count(),
+        1,
+        "the model is asked once about the question: {:?}",
+        requests[0].items
+    );
+    assert!(
+        !requests[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, ModelRequestItem::Message { role: Role::Assistant, content } if content == "a first answer")),
+        "and never sees the answer that was discarded"
+    );
+}
+
+#[tokio::test]
+async fn the_mark_a_re_answer_cuts_at_keeps_the_question() {
+    let session = session();
+    let log = Volatile::new();
+    let (tools, _calls) = tool_registry();
+
+    srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        Scripted::new(vec![vec![text("an answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &Recorder::default(),
+    )
+    .await
+    .expect("turn runs");
+
+    let opened = session
+        .last_prompt()
+        .expect("the last turn can be asked again");
+    // The context block and the question: everything the answer was built on,
+    // and nothing it wrote.
+    assert_eq!(
+        opened.mark, 2,
+        "the mark sits after the question, not before it"
+    );
+    assert!(session.truncate(opened.mark), "the answer is cut back");
+    assert_eq!(
+        session.state().history(),
+        &[
+            srud_core::context::item(session.cwd()),
+            ResponseItem::user("hi")
+        ][..],
+        "the question survives the cut, which is what lets the re-answer repeat it"
+    );
+}
+
+#[tokio::test]
+async fn a_re_answer_from_the_recorded_mark_asks_the_question_once() {
+    let session = session();
+    let log = Volatile::new();
+    let (tools, _calls) = tool_registry();
+
+    srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        Scripted::new(vec![vec![text("a first answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &Recorder::default(),
+    )
+    .await
+    .expect("turn runs");
+
+    let opened = session
+        .last_prompt()
+        .expect("the last turn can be asked again");
+    assert!(session.truncate(opened.mark), "the answer is cut back");
+
+    let sink = Recorder::default();
+    srud_core::run_turn_after(
+        &session,
+        opened.input,
+        Some(opened.mark),
+        Scripted::new(vec![vec![text("a second answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &sink,
+    )
+    .await
+    .expect("re-answer runs");
+
+    assert_eq!(
+        session.state().history(),
+        &[
+            srud_core::context::item(session.cwd()),
+            ResponseItem::user("hi"),
+            ResponseItem::assistant("a second answer"),
+        ][..],
+        "the question is in the history once, with only the second answer under it"
+    );
+    assert_eq!(
+        sink.kinds(),
+        vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
+        "nothing is said again: the question was already there"
+    );
+}
+
+#[tokio::test]
+async fn a_restored_session_keeps_the_last_question() {
+    // What a log rebuild hands back after a restart: no turn loop ran in this
+    // process, so the mark has to come from the history itself.
+    let session = Session::restored(
+        srud_core::types::SessionId::new(),
+        "workspace",
+        vec![
+            srud_core::context::item(std::path::Path::new("workspace")),
+            ResponseItem::user("hi"),
+            ResponseItem::assistant("an answer"),
+        ],
+    );
+
+    let opened = session
+        .last_prompt()
+        .expect("the last question can still be asked again");
+    assert_eq!(opened.mark, 2, "the mark sits after the question");
+    assert_eq!(opened.input.text, "hi");
+
+    assert!(session.truncate(opened.mark));
+    assert_eq!(
+        session.state().history(),
+        &[
+            srud_core::context::item(std::path::Path::new("workspace")),
+            ResponseItem::user("hi"),
+        ][..],
+        "cutting the answer leaves the question"
+    );
+}
+
+#[tokio::test]
+async fn a_re_answer_keeps_the_images_it_was_sent_with() {
+    let session = session();
+    let log = Volatile::new();
+    let (tools, _calls) = tool_registry();
+    let shot = ImagePart {
+        mime: "image/png".into(),
+        data: "YWJj".into(),
+    };
+
+    srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "look".into(),
+            images: vec![shot.clone()],
+        },
+        Scripted::new(vec![vec![text("a first answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &Recorder::default(),
+    )
+    .await
+    .expect("turn runs");
+
+    let opened = session.last_prompt().expect("can be asked again");
+    assert_eq!(
+        opened.mark, 3,
+        "the mark sits past the image as well as the text"
+    );
+    assert_eq!(opened.input.images.len(), 1, "the image comes back with it");
+
+    assert!(session.truncate(opened.mark));
+    assert_eq!(
+        session.state().history(),
+        &[
+            srud_core::context::item(session.cwd()),
+            ResponseItem::user("look"),
+            ResponseItem::Image {
+                mime: "image/png".into(),
+                data: "YWJj".into(),
+            },
+        ][..],
+        "cutting the answer leaves the text and the image"
+    );
+
+    srud_core::run_turn_after(
+        &session,
+        opened.input,
+        Some(opened.mark),
+        Scripted::new(vec![vec![text("a second answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &Recorder::default(),
+    )
+    .await
+    .expect("re-answer runs");
+
+    assert_eq!(
+        session.state().history(),
+        &[
+            srud_core::context::item(session.cwd()),
+            ResponseItem::user("look"),
+            ResponseItem::Image {
+                mime: "image/png".into(),
+                data: "YWJj".into(),
+            },
+            ResponseItem::assistant("a second answer"),
+        ][..],
+        "the image is in the history once, not twice"
+    );
+}
+
+#[tokio::test]
+async fn a_restored_session_keeps_the_images_beside_the_question() {
+    let session = Session::restored(
+        srud_core::types::SessionId::new(),
+        "workspace",
+        vec![
+            srud_core::context::item(std::path::Path::new("workspace")),
+            ResponseItem::user("look"),
+            ResponseItem::Image {
+                mime: "image/png".into(),
+                data: "YWJj".into(),
+            },
+            ResponseItem::assistant("an answer"),
+        ],
+    );
+
+    let opened = session.last_prompt().expect("can be asked again");
+    assert_eq!(opened.mark, 3, "the mark reaches past the image");
+    assert_eq!(opened.input.text, "look");
+    assert_eq!(opened.input.images.len(), 1);
+    assert_eq!(opened.input.images[0].mime, "image/png");
+}
+
+#[tokio::test]
+async fn a_restored_session_with_no_user_message_cannot_be_asked_again() {
+    let session = Session::restored(
+        srud_core::types::SessionId::new(),
+        "workspace",
+        vec![srud_core::context::item(std::path::Path::new("workspace"))],
+    );
+    assert!(session.last_prompt().is_none());
+}
+
+#[tokio::test]
+async fn a_second_re_answer_cuts_at_the_same_question() {
+    let session = session();
+    let log = Volatile::new();
+    let (tools, _calls) = tool_registry();
+
+    srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        Scripted::new(vec![vec![text("a first answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &Recorder::default(),
+    )
+    .await
+    .expect("turn runs");
+
+    let opened = session.last_prompt().expect("can be asked again");
+    assert!(session.truncate(opened.mark));
+    srud_core::run_turn_after(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        Some(opened.mark),
+        Scripted::new(vec![vec![text("a second answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &Recorder::default(),
+    )
+    .await
+    .expect("re-answer runs");
+
+    // The replacement records no input of its own, so the mark still points at
+    // the question: a second re-answer cuts the same place, not one answer later.
+    let again = session.last_prompt().expect("can be asked again");
+    assert_eq!(again.mark, opened.mark, "the mark did not move");
+    assert!(session.truncate(again.mark));
+    srud_core::run_turn_after(
+        &session,
+        again.input,
+        Some(again.mark),
+        Scripted::new(vec![vec![text("a third answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &Recorder::default(),
+    )
+    .await
+    .expect("second re-answer runs");
+
+    assert_eq!(
+        session.state().history(),
+        &[
+            srud_core::context::item(session.cwd()),
+            ResponseItem::user("hi"),
+            ResponseItem::assistant("a third answer"),
+        ][..],
+        "the question is still there once, with only the newest answer"
+    );
+}
+
+#[tokio::test]
+async fn a_re_answer_stopped_mid_answer_keeps_the_question() {
+    let session = session();
+    let log = Volatile::new();
+    let (tools, _calls) = tool_registry();
+
+    srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        Scripted::new(vec![vec![text("a first answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &Recorder::default(),
+    )
+    .await
+    .expect("turn runs");
+
+    let opened = session.last_prompt().expect("can be asked again");
+    assert!(session.truncate(opened.mark));
+
+    // A model that only answers once it is cancelled, so the stop lands while
+    // the replacement is still running rather than after it.
+    let stalled = Arc::new(Stalled {
+        started: tokio::sync::Notify::new(),
+    });
+    let stop = async {
+        stalled.started.notified().await;
+        session.interrupt();
+    };
+    let sink = Recorder::default();
+    let (result, ()) = tokio::join!(
+        srud_core::run_turn_after(
+            &session,
+            TurnInput {
+                text: "hi".into(),
+                images: Vec::new(),
+            },
+            Some(opened.mark),
+            stalled.as_ref(),
+            &tools,
+            &log,
+            &sink,
+        ),
+        stop
+    );
+
+    assert_eq!(
+        result.expect("the turn ends").reason,
+        TurnEndReason::Interrupted
+    );
+    assert_eq!(
+        session.state().history(),
+        &[
+            srud_core::context::item(session.cwd()),
+            ResponseItem::user("hi"),
+            // Stopping ends the turn; it does not take back what the model had
+            // already said before it noticed.
+            ResponseItem::assistant("late"),
+        ][..],
+        "the question stays once, and the answer that was cut is not repeated"
+    );
+    assert_eq!(
+        sink.kinds(),
+        vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
+        "the late delta is the wake-up, and the turn still closes once"
+    );
+}
+
+/// Answers nothing until its turn is cancelled.
+struct Stalled {
+    started: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for Stalled {
+    async fn stream(
+        &self,
+        _request: ModelRequest,
+        cancel: CancellationToken,
+    ) -> Result<ModelStream, ModelError> {
+        self.started.notify_one();
+        let tail = stream::unfold(Some(cancel), |state| async move {
+            let token = state?;
+            token.cancelled().await;
+            Some((
+                Ok(ModelEvent::TextDelta {
+                    delta: "late".into(),
+                }),
+                None,
+            ))
+        });
+        Ok(Box::pin(tail))
+    }
+}
+
+#[tokio::test]
+async fn a_discarded_turn_is_recorded_and_announced_before_the_new_one() {
+    let session = session();
+    let log = Volatile::new();
+    let (tools, _calls) = tool_registry();
+    let sink = Recorder::default();
+    let client = Scripted::new(vec![vec![text("an answer"), done()]]);
+
+    let earlier = srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        Scripted::new(vec![vec![text("the answer"), done()]]).as_ref(),
+        &tools,
+        &log,
+        &Recorder::default(),
+    )
+    .await
+    .expect("turn runs");
+
+    let journal = srud_core::turn::Journal::new(&session, &log, &sink, earlier.turn_id);
+    journal.discard().await.expect("the discard is recorded");
+    assert_eq!(sink.kinds(), vec!["TurnDiscarded"]);
+
+    srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "again".into(),
+            images: Vec::new(),
+        },
+        client.as_ref(),
+        &tools,
+        &log,
+        &sink,
+    )
+    .await
+    .expect("turn runs");
+
+    let records = log.records();
+    let kinds: Vec<&str> = records
+        .iter()
+        .map(|logged| match &logged.event {
+            srud_core::SessionEvent::TurnDiscarded { .. } => "turn_discarded",
+            srud_core::SessionEvent::TurnStarted { .. } => "turn_started",
+            _ => "other",
+        })
+        .collect();
+    let discard = kinds
+        .iter()
+        .position(|kind| *kind == "turn_discarded")
+        .expect("the discard was written");
+    assert_eq!(
+        kinds[discard + 1],
+        "turn_started",
+        "the discard is written before anything the new turn records: {kinds:?}"
     );
 }

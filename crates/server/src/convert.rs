@@ -16,8 +16,8 @@ use srud_core::session_event::SessionEvent;
 use srud_core::types::{Event, ResponseItem, Role, TurnEndReason};
 use srud_protocol::acp::{
     AcpError, ContentBlock, ContentChunk, ImageContent, Meta, Notification, SessionId,
-    SessionNotification, SessionUpdate, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, UsageUpdate, CLIENT_METHOD_NAMES,
+    SessionInfoUpdate, SessionNotification, SessionUpdate, TextContent, ToolCall, ToolCallContent,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate, CLIENT_METHOD_NAMES,
 };
 use srud_protocol::srud::meta::{SrudMeta, SrudUsage};
 use srud_protocol::srud::turn_end::{map_turn_end_reason, TurnEndWire};
@@ -29,6 +29,9 @@ pub enum Skipped {
     TurnStarted,
     /// The turn ended; the outcome flows through the prompt response.
     TurnComplete,
+    /// The turn's answer was taken back; it is carried by `turnDiscarded` on the
+    /// outer `_meta`, so the update itself has nothing to say.
+    TurnDiscarded,
     /// The provider reported usage, but the session's model has no configured
     /// context window, so there is no `size` for a `usage` update to report
     /// against. The breakdown has nowhere else to ride.
@@ -85,6 +88,9 @@ pub fn to_session_update(
             ))
         }
         Event::TurnComplete { .. } => return Some(Err(Skipped::TurnComplete)),
+        // The notification path handles this before reaching here, because the
+        // turn it names is not the one the sink is streaming.
+        Event::TurnDiscarded { .. } => return Some(Err(Skipped::TurnDiscarded)),
     };
     Some(Ok(update))
 }
@@ -202,8 +208,16 @@ pub fn to_notification(
         Event::UsageRecorded { usage } => Some(srud_usage(usage)),
         _ => None,
     };
+    // A discard names the turn it takes back, which is not the turn the sink is
+    // streaming: it is emitted before the replacement starts and belongs to the
+    // answer that is leaving. Read from the event rather than from `turn_id`,
+    // which names whoever is speaking now.
+    if let Event::TurnDiscarded { turn_id: discarded } = &event {
+        return Some(discard_notification(session_id, &discarded.to_string()));
+    }
     let update = match to_session_update(event, context_size)? {
         Ok(update) => update,
+        Err(Skipped::TurnDiscarded) => return Some(discard_notification(session_id, turn_id)),
         Err(_) => return None,
     };
     let (update, outer_meta) = attach_turn_meta(update, turn_id, usage);
@@ -212,6 +226,33 @@ pub fn to_notification(
         method: CLIENT_METHOD_NAMES.session_update.into(),
         params: Some(notification),
     })
+}
+
+/// The update that tells a client a turn's answer was taken back.
+///
+/// A `session_info_update` with no fields set: ACP offers no update for "forget
+/// this", and the empty variant costs a client that does not know the marker
+/// nothing — it has nothing to render and changes nothing. The turn to drop is
+/// named in `_meta.srud.turnDiscarded`, which is also where the turn id of a
+/// streaming update rides, so every other consumer of that field already parses
+/// it.
+fn discard_notification(
+    session_id: &SessionId,
+    turn_id: &str,
+) -> Notification<SessionNotification> {
+    let srud = SrudMeta {
+        turn_discarded: Some(turn_id.to_string()),
+        ..Default::default()
+    };
+    let meta = srud
+        .to_meta()
+        .expect("a payload naming a discarded turn is never empty");
+    let update = SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new());
+    let notification = SessionNotification::new(session_id.clone(), update).meta(Some(meta));
+    Notification {
+        method: CLIENT_METHOD_NAMES.session_update.into(),
+        params: Some(notification),
+    }
 }
 
 /// Attaches `_meta.srud` to an update.

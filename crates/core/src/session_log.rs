@@ -130,7 +130,7 @@ impl SessionLog for Volatile {
 /// Named rather than printed: the failure that matters here is a record the log
 /// turned down, and which record was refused is the whole of what the reader
 /// needs to tell a full disk from a bad path.
-fn describe(entry: &SessionEvent) -> String {
+pub fn describe(entry: &SessionEvent) -> String {
     match entry {
         SessionEvent::Session { .. } => "the session record".into(),
         SessionEvent::System { .. } => "the system instruction".into(),
@@ -141,6 +141,9 @@ fn describe(entry: &SessionEvent) -> String {
         SessionEvent::TurnEnded { turn_id, .. } => format!("the end of turn {turn_id}"),
         SessionEvent::UsageRecorded { turn_id, .. } => {
             format!("the token usage of turn {turn_id}")
+        }
+        SessionEvent::TurnDiscarded { turn_id } => {
+            format!("the discarding of turn {turn_id}")
         }
         SessionEvent::Item { turn_id, item, .. } => {
             let kind = match item {
@@ -272,6 +275,7 @@ mod tests {
                 },
                 "turn",
             ),
+            (SessionEvent::turn_discarded(turn()), "turn"),
             (
                 entry_for(turn(), None, ResponseItem::assistant("x")),
                 "message",

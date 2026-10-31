@@ -73,6 +73,7 @@ fn kind_of(event: &Event) -> String {
         Event::ToolCallEnd { .. } => "ToolCallEnd".into(),
         Event::ToolCallNamed { .. } => "ToolCallNamed".into(),
         Event::UsageRecorded { .. } => "UsageRecorded".into(),
+        Event::TurnDiscarded { .. } => "TurnDiscarded".into(),
         Event::TurnComplete { .. } => "TurnComplete".into(),
     }
 }
@@ -138,6 +139,7 @@ fn describe(entry: &SessionEvent) -> String {
         SessionEvent::Thinking { .. } => "thinking".into(),
         SessionEvent::TurnStarted { .. } => "turn_started".into(),
         SessionEvent::TurnEnded { .. } => "turn_ended".into(),
+        SessionEvent::TurnDiscarded { .. } => "turn_discarded".into(),
         SessionEvent::UsageRecorded { .. } => "usage".into(),
         SessionEvent::Item { item, .. } => match item {
             ResponseItem::Message {

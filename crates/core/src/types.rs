@@ -165,6 +165,19 @@ pub enum Event {
     /// message is recorded. Not conversation: a consumer renders it as
     /// diagnostics, and history rebuilds ignore it.
     UsageRecorded { usage: crate::client::TokenUsage },
+    /// A turn's output was discarded so it can be asked again.
+    ///
+    /// Emitted before any event of the turn that replaces it, because a consumer
+    /// must drop the discarded turn first: past that point the turn no longer
+    /// exists on the wire, and anything still holding it would append the new
+    /// answer underneath an answer that is gone.
+    ///
+    /// The turn keeps the id it was shown with, so a consumer drops what it was
+    /// given rather than being told which turn to forget in terms it never saw.
+    TurnDiscarded {
+        /// Which turn.
+        turn_id: TurnId,
+    },
     /// The turn stopped. Exactly one of these closes every turn.
     TurnComplete {
         turn_id: TurnId,

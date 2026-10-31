@@ -70,6 +70,13 @@ pub struct SrudMeta {
     /// conversation ended. A turn the list leaves out is one still running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turns: Option<Vec<SrudTurnEnd>>,
+    /// A turn whose answer was discarded, on the update that says so.
+    ///
+    /// Present only on a discard. The client drops the turn and everything it
+    /// said, and keeps the message the turn answered: the turn that replaces it
+    /// answers those same words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_discarded: Option<String>,
 }
 
 /// One finished turn, as `_meta.srud.turns` reports it.
@@ -109,30 +116,27 @@ pub struct SrudUsage {
 
 impl SrudMeta {
     /// Returns `true` when there is nothing to attach.
+    ///
+    /// Empty means "serialises to no keys", the same rule [`SrudMeta::to_meta`]
+    /// applies, so the two cannot disagree.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.turn_id.is_none()
-            && self.step_index.is_none()
-            && self.failure_kind.is_none()
-            && self.interrupted.is_none()
-            && self.turn_end_reason.is_none()
-            && self.limit.is_none()
-            && self.refusal.is_none()
-            && self.usage.is_none()
-            && self.turns.is_none()
+        self.to_meta().is_none()
     }
 
     /// Wraps this payload as a standalone `_meta` object: `{"srud": {...}}`.
     ///
     /// Returns `None` when the payload is empty, so callers can skip attaching
     /// `_meta` entirely instead of emitting `{"srud":{}}`.
+    ///
+    /// Emptiness is read from the serialised form: a payload is empty exactly
+    /// when it has no keys to carry.
     #[must_use]
     pub fn to_meta(&self) -> Option<Meta> {
-        if self.is_empty() {
+        let inner = serde_json::to_value(self).ok()?;
+        if inner.as_object().is_none_or(|fields| fields.is_empty()) {
             return None;
         }
-        let inner = serde_json::to_value(self)
-            .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
         let mut meta = Meta::new();
         meta.insert(SRUD_META_KEY.to_string(), inner);
         Some(meta)
@@ -156,12 +160,13 @@ impl SrudMeta {
         if let Some(key) = find_reserved(meta.keys()) {
             return Err(ReservedKeyConflict(key.to_string()));
         }
-        if self.is_empty() {
-            return Ok(());
+        // Wrapped by the same rule [`Self::to_meta`] uses, so the empty test
+        // lives in one place rather than once per field.
+        if let Some(wrapper) = self.to_meta() {
+            if let Some(inner) = wrapper.get(SRUD_META_KEY) {
+                meta.insert(SRUD_META_KEY.to_string(), inner.clone());
+            }
         }
-        let inner = serde_json::to_value(self)
-            .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
-        meta.insert(SRUD_META_KEY.to_string(), inner);
         Ok(())
     }
 }
@@ -200,6 +205,19 @@ mod tests {
     #[test]
     fn empty_meta_produces_no_wrapper() {
         assert_eq!(SrudMeta::default().to_meta(), None);
+    }
+
+    #[test]
+    fn a_discarded_turn_alone_makes_the_payload_worth_wrapping() {
+        // The discard update carries nothing else: ACP has no "forget this"
+        // update, so the marker is the whole payload.
+        let meta = SrudMeta {
+            turn_discarded: Some("turn_01".into()),
+            ..Default::default()
+        };
+        let wrapped = meta.to_meta().expect("a discard is not empty");
+        let value = serde_json::to_value(&wrapped).unwrap();
+        assert_eq!(value, json!({ "srud": { "turnDiscarded": "turn_01" } }));
     }
 
     #[test]

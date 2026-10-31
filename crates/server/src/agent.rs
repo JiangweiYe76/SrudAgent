@@ -52,12 +52,12 @@ use serde_json::Value;
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
 use srud_core::tools::ToolRegistry;
-use srud_core::EventSink;
+use srud_core::{EventSink, SessionEvent, SessionWriter};
 use srud_protocol::acp::methods::{
     INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_LOAD,
     SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SRUD_PROVIDER_DELETE,
-    SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT, SRUD_SESSION_SET_TITLE,
-    SRUD_SESSION_STEER,
+    SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT, SRUD_SESSION_REGENERATE,
+    SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
 };
 use srud_protocol::acp::{
     AcpError, CancelNotification, CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate,
@@ -76,9 +76,9 @@ use srud_protocol::error::{
 use srud_protocol::srud::meta::{SrudMeta, SrudTurnEnd};
 use srud_protocol::srud::methods::{
     DeleteProviderRequest, DeleteProviderResponse, ListProvidersRequest, ListProvidersResponse,
-    ProviderCatalog, SetDefaultProviderRequest, SetDefaultProviderResponse, SetProviderRequest,
-    SetProviderResponse, SetSessionTitleRequest, SetSessionTitleResponse, SteerRequest,
-    SteerResponse,
+    ProviderCatalog, RegenerateRequest, RegenerateResponse, SetDefaultProviderRequest,
+    SetDefaultProviderResponse, SetProviderRequest, SetProviderResponse, SetSessionTitleRequest,
+    SetSessionTitleResponse, SteerRequest, SteerResponse,
 };
 use srud_protocol::srud::turn_end::TurnEndWire;
 
@@ -277,6 +277,7 @@ impl Agent {
             SESSION_SET_CONFIG_OPTION => self.handle_set_config_option(params).await.map(serialize),
             SRUD_SESSION_SET_TITLE => self.handle_set_title(params).await.map(serialize),
             SRUD_SESSION_STEER => self.handle_steer(params).await.map(serialize),
+            SRUD_SESSION_REGENERATE => self.handle_regenerate(params).await.map(serialize),
             SRUD_PROVIDER_LIST => self.handle_provider_list(params),
             SRUD_PROVIDER_SET => self.handle_provider_set(params),
             SRUD_PROVIDER_DELETE => self.handle_provider_delete(params),
@@ -443,6 +444,178 @@ impl Agent {
         // carries `stopReason: "cancelled"`.
         session.interrupt();
         Ok(())
+    }
+
+    /// Interrupts a running turn and waits for it to close.
+    ///
+    /// The prompt that owns the turn removes its sink only after the turn has
+    /// ended, so waiting for that removal is how this learns the turn is over
+    /// without holding anything the prompt holds.
+    ///
+    /// Returns `false` on giving up, which only happens when the prompt never
+    /// settles. The caller then refuses rather than starting a second turn on a
+    /// session that still has one: two turns would record into one history in
+    /// whatever order they happened to finish.
+    async fn interrupt_and_wait(&self, session_id: &SessionId) -> bool {
+        // Loop, because a turn that had not claimed the session yet when the
+        // first signal arrived claims it just after — the same reason
+        // `shutdown` re-signals while it drains.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while self
+            .active_sinks
+            .lock()
+            .expect("active sinks lock poisoned")
+            .contains_key(session_id)
+        {
+            if let Some(session) = self.sessions.get(session_id) {
+                session.interrupt();
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        true
+    }
+
+    /// Answers the last turn again, after discarding what it said.
+    ///
+    /// The session's history is the only thing that decides what the model sees,
+    /// so the answer is taken back there before the second request is built —
+    /// not merely stopped on the client. What the discard removes is everything
+    /// the last turn appended, and nothing before it: the message the turn
+    /// answered stays, which is what lets the replacement answer the same words
+    /// without them being recorded twice.
+    ///
+    /// A turn still running is interrupted first and its end awaited, because a
+    /// turn being generated is not a turn whose output can be taken back yet.
+    async fn handle_regenerate(&self, params: Value) -> Result<RegenerateResponse, AcpError> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(AcpError::new(INTERNAL_ERROR, "the agent is shutting down"));
+        }
+
+        let request: RegenerateRequest = parse_params(params)?;
+        let (session, log) = self
+            .sessions
+            .with_log(&request.session_id)
+            .ok_or_else(|| session_not_found(&request.session_id))?;
+        let client = self.client_for(&request.session_id)?;
+        let opened = session.last_prompt().ok_or_else(|| {
+            AcpError::new(
+                INVALID_PARAMS,
+                "only a turn this session ran can be answered again",
+            )
+        })?;
+
+        // A turn still arriving is stopped first and then replaced: a user
+        // pressing regenerate while an answer is streaming means "not this one",
+        // and the partial answer is as discardable as a finished one.
+        if !self.interrupt_and_wait(&request.session_id).await {
+            return Err(AcpError::new(
+                SESSION_BUSY,
+                "the running turn did not stop; try again once it has",
+            ));
+        }
+
+        // Taken under the same lock the prompt's busy gate uses, so a prompt
+        // that started between the wait and here cannot have its output cut.
+        let sink = self
+            .hub
+            .sink_for(session.id(), self.context_size_for(&request.session_id));
+        {
+            let mut sinks = self
+                .active_sinks
+                .lock()
+                .expect("active sinks lock poisoned");
+            if sinks.contains_key(&request.session_id) {
+                return Err(AcpError::new(
+                    SESSION_BUSY,
+                    "session already has an active turn",
+                ));
+            }
+            sinks.insert(request.session_id.clone(), sink.clone());
+        }
+
+        // The replacement is a turn, so it holds the gate `shutdown` waits on for
+        // the whole of its run.
+        let _running = self.prompt_gate.read().await;
+
+        // Only the latest turn can be taken back: an older one has turns written
+        // after it, and cutting history at its answer would take them with it.
+        let latest = log.last_turn().await.unwrap_or_default();
+        if latest.map(|id| id.to_string()).as_deref() != Some(request.turn_id.as_str()) {
+            self.active_sinks
+                .lock()
+                .expect("active sinks lock poisoned")
+                .remove(&request.session_id);
+            return Err(AcpError::new(
+                INVALID_PARAMS,
+                "only the session's latest turn can be answered again",
+            ));
+        }
+        let latest = latest.expect("checked above");
+
+        // Recorded before the history is cut and before anything of the
+        // replacement goes out: a session that could not record the discard
+        // still has the answer it had, rather than a memory the log disagrees
+        // with. A turn whose entries the client was shown but the log never
+        // wrote has nothing to record — history already holds nothing of it.
+        let cut = session.state().len() > opened.mark;
+        if cut {
+            if let Err(err) =
+                SessionWriter::record(log.as_ref(), &SessionEvent::turn_discarded(latest)).await
+            {
+                self.active_sinks
+                    .lock()
+                    .expect("active sinks lock poisoned")
+                    .remove(&request.session_id);
+                return Err(AcpError::new(
+                    INTERNAL_ERROR,
+                    format!("cannot record this discard: {err}"),
+                ));
+            }
+            session.truncate(opened.mark);
+        }
+        // Always announced, discarded or not: a client showing the turn must
+        // drop it, and a client showing nothing is unaffected. Sent under the
+        // discarded turn's own id rather than held until the replacement names
+        // itself, because it is the answer that is leaving, not the one starting.
+        sink.broadcast(latest, srud_core::Event::TurnDiscarded { turn_id: latest });
+
+        let result = srud_core::run_turn_after(
+            &session,
+            opened.input,
+            Some(opened.mark),
+            client.as_ref(),
+            self.tools.as_ref(),
+            log.as_ref(),
+            &sink,
+        )
+        .await;
+        self.active_sinks
+            .lock()
+            .expect("active sinks lock poisoned")
+            .remove(&request.session_id);
+        let result = result.map_err(|err| match err {
+            srud_core::TurnError::Busy => {
+                AcpError::new(SESSION_BUSY, "session already has an active turn")
+            }
+            srud_core::TurnError::Unrecordable(err) => {
+                AcpError::new(INTERNAL_ERROR, format!("cannot record this turn: {err}"))
+            }
+        })?;
+
+        let wire: TurnEndWire = prompt_outcome(result.reason)?;
+        Ok(match wire.meta {
+            Some(meta) => RegenerateResponse {
+                stop_reason: wire.stop_reason,
+                meta: meta.to_meta(),
+            },
+            None => RegenerateResponse {
+                stop_reason: wire.stop_reason,
+                meta: None,
+            },
+        })
     }
 
     async fn handle_list(&self) -> Result<ListSessionsResponse, AcpError> {
@@ -2848,5 +3021,127 @@ mod tests {
             json!("anthropic/opus"),
             "the choice survives the restart"
         );
+    }
+
+    /// The id of the turn a prompt ran, read from the updates it sent.
+    async fn turn_id_of(agent: &Agent, session_id: &SessionId, text: &str) -> String {
+        let mut rx = agent.subscribe();
+        let _ = agent
+            .handle(request(
+                SESSION_PROMPT,
+                json!({
+                    "sessionId": session_id.0.as_ref(),
+                    "prompt": [{ "type": "text", "text": text }]
+                }),
+            ))
+            .await;
+        let mut id = String::new();
+        while let Ok(notification) = rx.try_recv() {
+            let value = serde_json::to_value(&notification).unwrap();
+            if let Some(turn_id) = value["params"]["_meta"]["srud"]["turnId"].as_str() {
+                id = turn_id.to_string();
+            }
+        }
+        id
+    }
+
+    #[tokio::test]
+    async fn a_regenerate_answers_the_last_turn_again() {
+        let agent = agent(scripted(vec![
+            ModelEvent::TextDelta {
+                delta: "first answer".into(),
+            },
+            ModelEvent::Done,
+        ]));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+        let turn_id = turn_id_of(&agent, &session_id, "Hola").await;
+        assert!(!turn_id.is_empty(), "the prompt named its turn");
+
+        let mut rx = agent.subscribe();
+        let reply = tokio::time::timeout(
+            Duration::from_secs(10),
+            agent.handle(request(
+                SRUD_SESSION_REGENERATE,
+                json!({ "sessionId": session_id.0.as_ref(), "turnId": turn_id }),
+            )),
+        )
+        .await
+        .expect("a regenerate resolves rather than hanging");
+        let value = result_of(reply);
+        assert_eq!(value["stopReason"], json!("end_turn"), "{value:?}");
+
+        // The question is not said again: the discard takes the answer, and the
+        // replacement answers words the history already holds.
+        let mut asked = 0;
+        let mut discarded: Option<String> = None;
+        while let Ok(notification) = rx.try_recv() {
+            let value = serde_json::to_value(&notification).unwrap();
+            let update = &value["params"]["update"];
+            if update["sessionUpdate"] == json!("user_message_chunk") {
+                asked += 1;
+            }
+            if let Some(id) = value["params"]["_meta"]["srud"]["turnDiscarded"].as_str() {
+                discarded = Some(id.to_string());
+            }
+        }
+        assert_eq!(
+            discarded.as_deref(),
+            Some(turn_id.as_str()),
+            "the discard names the turn it takes back, not the one replacing it"
+        );
+        assert_eq!(asked, 0, "the question is not said again");
+    }
+
+    #[tokio::test]
+    async fn a_restored_session_can_answer_its_last_turn_again() {
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-regenerate"),
+        );
+
+        let first = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "first answer".into(),
+        }]));
+        initialize(&first).await;
+        let (session_id, cwd) = session_with_a_home(&first).await;
+        prompt_titles(&first, &session_id, "Hola").await;
+        drop(first);
+
+        // A second agent, as after a restart: nothing in memory, everything in
+        // the log. The question it must answer again is read back from history.
+        let second = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "second answer".into(),
+        }]));
+        initialize(&second).await;
+        let loaded = result_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+        let turn_id = loaded["_meta"]["srud"]["turns"][0]["turnId"]
+            .as_str()
+            .expect("the loaded session lists its turn")
+            .to_string();
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(10),
+            second.handle(request(
+                SRUD_SESSION_REGENERATE,
+                json!({ "sessionId": session_id.0.as_ref(), "turnId": turn_id }),
+            )),
+        )
+        .await
+        .expect("a regenerate resolves rather than being refused");
+        let value = result_of(reply);
+        assert_eq!(value["stopReason"], json!("end_turn"), "{value:?}");
     }
 }
