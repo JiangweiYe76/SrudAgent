@@ -74,6 +74,8 @@ async function boot(
     listed?: Array<Record<string, unknown>>;
     // Makes `session/steer` refuse, as a turn that ended or sealed does.
     steerFails?: boolean;
+    // Makes `session/regenerate` refuse, for the same reason.
+    regenerateFails?: boolean;
     // The `configOptions` the agent hangs on each reply, as the wire spells them.
     newModel?: unknown;
     loadModel?: unknown;
@@ -83,6 +85,9 @@ async function boot(
   vi.resetModules();
   mocks.notifyCb = null;
   const prompt = deferred<{ stopReason: string }>();
+  // A regenerate answers only when its deferred settles, like a prompt: the
+  // call returns the stop reason of the turn it ran.
+  const regenerate = deferred<{ stopReason: string }>();
   // What the `session/load` reply carries beyond the model: how each replayed
   // turn ended. Resolved last: it is the last thing the client hears about the
   // conversation.
@@ -143,6 +148,9 @@ async function boot(
         case '_srud/unstable/session/steer':
           if (options.steerFails) throw new Error('steer refused');
           return reply(payload.id, {});
+        case '_srud/unstable/session/regenerate':
+          if (options.regenerateFails) throw new Error('regenerate refused');
+          return regenerate.promise.then((r) => reply(payload.id, r));
         case 'session/delete':
           if (options.failDelete) throw new Error('delete refused');
           if (options.holdDelete) return del.promise.then(() => reply(payload.id, {}));
@@ -186,6 +194,7 @@ async function boot(
     useSessionStore,
     useProviderStore,
     prompt,
+    regenerate,
     load,
     deleteGate: del,
     fire,
@@ -1927,5 +1936,182 @@ describe('sessionStore images', () => {
     expect(active().turns[0].images).toEqual([
       expect.objectContaining({ mime: 'image/png', data: 'YWJj' }),
     ]);
+  });
+});
+
+describe('sessionStore regenerate', () => {
+  const SHOT: Attachment = { id: 'img1', mime: 'image/png', data: 'YWJj' };
+
+  // One finished turn: sent, answered, and named T1 by the agent.
+  async function answered(
+    options: Parameters<typeof boot>[0] = {},
+    input: { text?: string; images?: Attachment[] } = {},
+  ) {
+    const harness = await boot(options);
+    const { useSessionStore, active, fire, prompt, waitForBackend } = harness;
+    useSessionStore.getState().sendTurn(input.text ?? 'hi', undefined, input.images);
+    await waitForBackend();
+    fire(
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first answer' } },
+      { turnId: 'T1' },
+    );
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+    return harness;
+  }
+
+  it('asks the agent for the latest turn again, naming it', async () => {
+    const { useSessionStore, active, requested } = await answered();
+
+    useSessionStore.getState().regenerateTurn(active().turns[0]);
+    await vi.waitFor(() => {
+      expect(requested.some((r) => r.method === '_srud/unstable/session/regenerate')).toBe(true);
+    });
+    const req = requested.find((r) => r.method === '_srud/unstable/session/regenerate');
+    expect(req?.params).toMatchObject({ sessionId: 'S1', turnId: 'T1' });
+  });
+
+  it('holds the message and the images while the answer goes', async () => {
+    const { useSessionStore, active } = await answered(
+      {},
+      { text: 'look at this', images: [SHOT] },
+    );
+
+    useSessionStore.getState().regenerateTurn(active().turns[0]);
+
+    // The answer goes the moment the request does, and the message it answered
+    // stays in the same turn: a second turn holding the same words would show
+    // them on screen twice.
+    expect(active().turns).toHaveLength(1);
+    const [asked] = active().turns;
+    expect(asked.backendTurnId).toBeUndefined();
+    expect(asked.userInput).toBe('look at this');
+    expect(asked.images).toEqual([SHOT]);
+    expect(asked.steps).toEqual([]);
+    // Open again: the turn is being answered, and the answer is what will close
+    // it. How it ended before belonged to the reply that was just taken back.
+    expect(asked.endReason).toBeUndefined();
+    expect(asked.endedAt).toBeUndefined();
+    expect(isBusy(active())).toBe(true);
+  });
+
+  it('drops the discarded turn when the agent says so', async () => {
+    const { useSessionStore, active, fire } = await answered({}, { images: [SHOT] });
+
+    useSessionStore.getState().regenerateTurn(active().turns[0]);
+    // A discard rides on the empty update ACP has for the purpose.
+    fire({ sessionUpdate: 'session_info_update' }, { turnDiscarded: 'T1' });
+
+    // The message and its images stay; the answer goes.
+    const turns = active().turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0].userInput).toBe('hi');
+    expect(turns[0].images).toEqual([SHOT]);
+    expect(turns[0].steps).toEqual([]);
+    expect(turns[0].backendTurnId).toBeUndefined();
+    // And it is not mistaken for a title change, which the update looks like.
+    expect(active().title).toBeNull();
+  });
+
+  it('streams the new answer into the turn it replaced', async () => {
+    const { useSessionStore, active, fire, regenerate } = await answered();
+
+    useSessionStore.getState().regenerateTurn(active().turns[0]);
+    fire({ sessionUpdate: 'session_info_update' }, { turnDiscarded: 'T1' });
+    fire(
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'second' } },
+      { turnId: 'T2' },
+    );
+
+    const turns = active().turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0].backendTurnId).toBe('T2');
+    expect(turns[0].userInput).toBe('hi');
+    expect(turns[0].steps[0].assistantText).toBe('second');
+
+    regenerate.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+  });
+
+  it('closes an interrupted re-answer as interrupted', async () => {
+    const { useSessionStore, active, regenerate, waitForBackend } = await answered();
+
+    useSessionStore.getState().regenerateTurn(active().turns[0]);
+    await vi.waitFor(() => {
+      expect(isBusy(active())).toBe(true);
+    });
+    regenerate.resolve({ stopReason: 'cancelled' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('interrupted');
+    });
+    // Stopping the re-answer leaves what it was asked again in place.
+    const turns = active().turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0].userInput).toBe('hi');
+    void waitForBackend;
+  });
+
+  it('puts the turn back untouched when the agent refuses', async () => {
+    const { useSessionStore, active } = await answered({ regenerateFails: true });
+    const before = active().turns;
+
+    useSessionStore.getState().regenerateTurn(before[0]);
+    // Everything the request does happens before it is sent, so the message is
+    // already back to being unanswered before the agent's answer can arrive.
+    expect(active().turns).toHaveLength(1);
+    expect(active().turns[0].steps).toEqual([]);
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().initError).toContain('regenerate refused');
+    });
+
+    // A refusal comes before the agent has recorded anything, so the answer it
+    // was asked to replace is still the agent's latest turn. The turn on screen
+    // takes back everything it gave up, and the refusal is reported beside it
+    // rather than as an empty bubble over an answer that never ran.
+    const turns = active().turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0].id).toBe(before[0].id);
+    expect(turns[0].backendTurnId).toBe('T1');
+    expect(turns[0].endReason).toBe('completed');
+    expect(turns[0].userInput).toBe('hi');
+    expect(isBusy(active())).toBe(false);
+  });
+
+  it('refuses to ask again while a turn is running', async () => {
+    const { useSessionStore, active, prompt, calls, waitForBackend } = await answered();
+    useSessionStore.getState().sendTurn('and another');
+    await vi.waitFor(() => {
+      expect(isBusy(active())).toBe(true);
+    });
+
+    useSessionStore.getState().regenerateTurn(active().turns[0]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).not.toContain('_srud/unstable/session/regenerate');
+
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(isBusy(active())).toBe(false);
+    });
+    void waitForBackend;
+  });
+
+  it('asks again only for the latest turn', async () => {
+    const { useSessionStore, active, prompt, calls } = await answered();
+    useSessionStore.getState().sendTurn('and another');
+    await vi.waitFor(() => {
+      expect(active().turns).toHaveLength(2);
+    });
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[1].endReason).toBe('completed');
+    });
+
+    useSessionStore.getState().regenerateTurn(active().turns[0]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).not.toContain('_srud/unstable/session/regenerate');
   });
 });

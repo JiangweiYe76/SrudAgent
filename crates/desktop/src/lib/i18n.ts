@@ -37,6 +37,7 @@ const en = {
 
   'turn.awaitingReply': 'Waiting for a reply',
   'turn.ended': 'turn {reason}',
+  'turn.regenerate': 'Regenerate',
 
   'msg.copy': 'Copy',
   'msg.copied': 'Copied',

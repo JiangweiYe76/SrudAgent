@@ -38,6 +38,7 @@ function App() {
   const steerFollowup = useSessionStore((s) => s.steerFollowup);
   const removeFollowup = useSessionStore((s) => s.removeFollowup);
   const stopTurn = useSessionStore((s) => s.stopTurn);
+  const regenerateTurn = useSessionStore((s) => s.regenerateTurn);
   const setModel = useSessionStore((s) => s.setModel);
   const setThinking = useSessionStore((s) => s.setThinking);
   const renameSession = useSessionStore((s) => s.renameSession);
@@ -211,6 +212,7 @@ function App() {
           turns={active?.turns ?? []}
           reopening={reopening}
           bottomInset={composerHeight + 38}
+          onRegenerate={regenerateTurn}
         />
         {/* Busy while a turn runs, and while a session is still being reopened:
             the conversation is arriving then, so a prompt would interleave with
