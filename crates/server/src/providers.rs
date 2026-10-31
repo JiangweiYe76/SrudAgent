@@ -24,11 +24,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use srud_core::client::{ModelClient, ModelError};
+use srud_core::thinking::ThinkingRequest;
 use srud_protocol::acp::{
-    SessionConfigOption, SessionConfigSelectGroup, SessionConfigSelectOption,
-    SessionConfigSelectOptions,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectGroup,
+    SessionConfigSelectOption, SessionConfigSelectOptions,
 };
-use srud_protocol::srud::methods::{Modality, ProviderModel, ProviderView};
+use srud_protocol::srud::methods::{
+    Modality, ProviderModel, ProviderView, ThinkingConfig, ThinkingLevel,
+};
 
 use crate::config;
 
@@ -45,6 +48,12 @@ pub const MODEL_OPTION_ID: &str = "model";
 /// The label the model selector is shown under.
 const MODEL_OPTION_NAME: &str = "Model";
 
+/// The id of the session config option that selects a thinking level.
+pub const THINKING_OPTION_ID: &str = "reasoning";
+
+/// The label the thinking selector is shown under.
+const THINKING_OPTION_NAME: &str = "Thinking";
+
 /// One model a provider offers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Model {
@@ -60,6 +69,9 @@ pub struct Model {
     /// `UsageUpdate.size` so clients can render context pressure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// The thinking levels this model accepts, when the user declared them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
 }
 
 impl Model {
@@ -68,6 +80,69 @@ impl Model {
     pub fn label(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.id)
     }
+
+    /// The thinking selection to send for this model, if it declares any.
+    ///
+    /// `requested` is the session's own level; passing `None` asks for the
+    /// model's default. A level the model does not offer is projected down to
+    /// the nearest one it does, because restoring a session under a different
+    /// model must not silently make it think harder.
+    #[must_use]
+    pub fn thinking_request(&self, requested: Option<String>) -> Option<ThinkingRequest> {
+        let config = self.thinking.as_ref()?;
+        let level = self.thinking_level(requested.as_deref())?;
+        let value = config.levels.get(&level)?.clone();
+        Some(ThinkingRequest {
+            value,
+            off: level == ThinkingLevel::Off,
+        })
+    }
+
+    /// The level this model will actually send for a requested one.
+    ///
+    /// A level the model does not offer, or does not parse, is projected to the
+    /// nearest weaker level it does offer. If it offers nothing weaker — asking
+    /// `off` of a model that cannot disable thinking — the weakest level it does
+    /// offer is used, so the request never silently becomes the strongest one.
+    /// `None` means the model declares no thinking at all.
+    #[must_use]
+    pub fn thinking_level(&self, requested: Option<&str>) -> Option<ThinkingLevel> {
+        let config = self.thinking.as_ref()?;
+        let Some(requested) = requested.and_then(|value| value.parse::<ThinkingLevel>().ok())
+        else {
+            return Some(config.default);
+        };
+        if config.levels.contains_key(&requested) {
+            return Some(requested);
+        }
+        Some(
+            nearest_supported(config, requested)
+                .or_else(|| config.levels.keys().next().copied())
+                .unwrap_or(config.default),
+        )
+    }
+
+    /// The level a session starts on for this model, if it declares thinking.
+    #[must_use]
+    pub fn default_thinking(&self) -> Option<ThinkingLevel> {
+        self.thinking.as_ref().map(|config| config.default)
+    }
+}
+
+/// The strongest level at or below `requested` that `config` offers.
+///
+/// A request for a level the model does not offer is answered with the nearest
+/// weaker one. `None` means the model offers nothing at or below the request;
+/// the caller then falls back to the weakest level it does offer.
+fn nearest_supported(config: &ThinkingConfig, requested: ThinkingLevel) -> Option<ThinkingLevel> {
+    let index = ThinkingLevel::ALL
+        .iter()
+        .position(|level| *level == requested)?;
+    ThinkingLevel::ALL[..=index]
+        .iter()
+        .rev()
+        .find(|level| config.levels.contains_key(level))
+        .copied()
 }
 
 /// One provider: an endpoint and the credentials for it.
@@ -245,6 +320,19 @@ fn valid_base_url(url: &str) -> bool {
 /// Builds a model reference from its two halves.
 fn reference(provider_id: &str, model_id: &str) -> String {
     format!("{provider_id}/{model_id}")
+}
+
+/// How a thinking level reads in a selector.
+fn thinking_label(level: ThinkingLevel) -> &'static str {
+    match level {
+        ThinkingLevel::Off => "Off",
+        ThinkingLevel::Minimal => "Minimal",
+        ThinkingLevel::Low => "Low",
+        ThinkingLevel::Medium => "Medium",
+        ThinkingLevel::High => "High",
+        ThinkingLevel::Xhigh => "XHigh",
+        ThinkingLevel::Max => "Max",
+    }
 }
 
 /// Splits a model reference into its provider and model halves.
@@ -490,6 +578,7 @@ impl ProviderStore {
     pub fn session_config_options(
         &self,
         current: Option<&str>,
+        current_thinking: Option<&str>,
     ) -> Option<Vec<SessionConfigOption>> {
         let providers = self.inner.read().expect("provider lock poisoned");
         if providers.providers.is_empty() {
@@ -558,8 +647,45 @@ impl ProviderStore {
             SessionConfigSelectOptions::Grouped(groups),
         );
         option.description = Some("The provider and model this conversation uses.".to_owned());
-        option.category = Some(srud_protocol::acp::SessionConfigOptionCategory::Model);
-        Some(vec![option])
+        option.category = Some(SessionConfigOptionCategory::Model);
+        let mut options = vec![option];
+
+        // The thinking level is offered only for the model actually selected.
+        // A level is meaningless without the model that declares it, and a
+        // model whose reference no longer resolves has nothing to project onto.
+        let selected = current.and_then(|reference| providers.resolve(reference).ok());
+        if let Some((_, model)) = selected {
+            if let Some(level) = model.thinking_level(current_thinking) {
+                let choices = model
+                    .thinking
+                    .as_ref()
+                    .map(|thinking| {
+                        thinking
+                            .levels
+                            .keys()
+                            .map(|level| {
+                                SessionConfigSelectOption::new(
+                                    level.as_str(),
+                                    thinking_label(*level),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut thinking = SessionConfigOption::select(
+                    THINKING_OPTION_ID,
+                    THINKING_OPTION_NAME,
+                    level.as_str(),
+                    SessionConfigSelectOptions::Ungrouped(choices),
+                );
+                thinking.description =
+                    Some("How much the model is allowed to think before answering.".to_owned());
+                thinking.category = Some(SessionConfigOptionCategory::ThoughtLevel);
+                options.push(thinking);
+            }
+        }
+
+        Some(options)
     }
 
     /// The providers as the wire shows them: keys masked, never sent whole.
@@ -584,6 +710,7 @@ impl ProviderStore {
                         name: model.name.clone(),
                         modalities: model.modalities.clone(),
                         context_window: model.context_window,
+                        thinking: model.thinking.clone(),
                     })
                     .collect(),
             })
@@ -609,11 +736,20 @@ impl ProviderStore {
 pub trait ModelFactory: Send + Sync {
     /// Builds a client that sends `model` to `provider`'s endpoint.
     ///
+    /// `thinking` is the selection this turn should send, already resolved
+    /// against the model's declared levels; `None` means the model declares no
+    /// thinking control.
+    ///
     /// # Errors
     ///
     /// Returns [`ModelError::Config`] when the settings cannot make a client —
     /// an empty key for an endpoint that needs one, above all.
-    fn build(&self, provider: &Provider, model: &str) -> Result<Arc<dyn ModelClient>, ModelError>;
+    fn build(
+        &self,
+        provider: &Provider,
+        model: &Model,
+        thinking: Option<ThinkingRequest>,
+    ) -> Result<Arc<dyn ModelClient>, ModelError>;
 }
 
 /// Checks a provider is one this agent can talk to.
@@ -653,6 +789,41 @@ fn validate_provider(provider: &Provider) -> Result<(), ProviderError> {
         if !seen.insert(id) {
             return Err(ProviderError::Invalid(format!(
                 "model id `{id}` is listed twice"
+            )));
+        }
+        validate_thinking(id, model.thinking.as_ref())?;
+    }
+    Ok(())
+}
+
+/// Checks the thinking controls a model declares.
+///
+/// A model with no `thinking` block is fine: it simply has no thinking control.
+/// One that declares controls must be usable as written — a `default` that names
+/// a level it does not offer, or a blank level value, would make every request
+/// either invalid or ambiguous, and the file is read before any turn runs.
+fn validate_thinking(
+    model_id: &str,
+    thinking: Option<&ThinkingConfig>,
+) -> Result<(), ProviderError> {
+    let Some(thinking) = thinking else {
+        return Ok(());
+    };
+    if thinking.levels.is_empty() {
+        return Err(ProviderError::Invalid(format!(
+            "model `{model_id}` declares thinking but lists no levels"
+        )));
+    }
+    if !thinking.levels.contains_key(&thinking.default) {
+        return Err(ProviderError::Invalid(format!(
+            "model `{model_id}` defaults to thinking level `{}`, which it does not list",
+            thinking.default
+        )));
+    }
+    for (level, value) in &thinking.levels {
+        if value.trim().is_empty() {
+            return Err(ProviderError::Invalid(format!(
+                "model `{model_id}` maps thinking level `{level}` to a blank value"
             )));
         }
     }
@@ -826,12 +997,14 @@ mod tests {
                     name: Some("Small".into()),
                     modalities: vec![],
                     context_window: None,
+                    thinking: None,
                 },
                 Model {
                     id: "large".into(),
                     name: None,
                     modalities: vec![],
                     context_window: None,
+                    thinking: None,
                 },
             ],
         }
@@ -843,7 +1016,7 @@ mod tests {
         assert!(!path.exists(), "nothing was created by reading");
         assert_eq!(store.snapshot(), Providers::default());
         assert!(store.start_reference().is_none());
-        assert!(store.session_config_options(None).is_none());
+        assert!(store.session_config_options(None, None).is_none());
     }
 
     #[test]
@@ -953,6 +1126,7 @@ mod tests {
             name: None,
             modalities: vec![],
             context_window: None,
+            thinking: None,
         }];
         assert!(matches!(
             store.upsert(blank),
@@ -966,12 +1140,14 @@ mod tests {
                 name: None,
                 modalities: vec![],
                 context_window: None,
+                thinking: None,
             },
             Model {
                 id: "same".into(),
                 name: None,
                 modalities: vec![],
                 context_window: None,
+                thinking: None,
             },
         ];
         assert!(matches!(
@@ -1112,7 +1288,9 @@ mod tests {
         store.upsert(sample("openai", None)).unwrap();
         store.upsert(sample("deepseek", None)).unwrap();
 
-        let options = store.session_config_options(None).expect("a selector");
+        let options = store
+            .session_config_options(None, None)
+            .expect("a selector");
         assert_eq!(options.len(), 1, "one option, the model");
         assert_eq!(options[0].id.0.as_ref(), MODEL_OPTION_ID);
 
@@ -1140,7 +1318,9 @@ mod tests {
         let (store, _path, _env) = store();
         store.upsert(sample("openai", None)).unwrap();
 
-        let options = store.session_config_options(Some("gone/model")).unwrap();
+        let options = store
+            .session_config_options(Some("gone/model"), None)
+            .unwrap();
         let srud_protocol::acp::SessionConfigKind::Select(select) = &options[0].kind else {
             panic!("select");
         };
@@ -1159,7 +1339,7 @@ mod tests {
         let (store, _path, _env) = store();
         store.upsert(sample("openai", None)).unwrap();
 
-        let options = store.session_config_options(None).unwrap();
+        let options = store.session_config_options(None, None).unwrap();
         let srud_protocol::acp::SessionConfigKind::Select(select) = &options[0].kind else {
             panic!("select");
         };
@@ -1179,7 +1359,7 @@ mod tests {
         bare.models.clear();
         store.upsert(bare).unwrap();
 
-        assert_eq!(store.session_config_options(None), None);
+        assert_eq!(store.session_config_options(None, None), None);
     }
 
     #[test]
@@ -1192,7 +1372,9 @@ mod tests {
         bare.models.clear();
         store.upsert(bare).unwrap();
 
-        let options = store.session_config_options(None).expect("a selector");
+        let options = store
+            .session_config_options(None, None)
+            .expect("a selector");
         let srud_protocol::acp::SessionConfigKind::Select(select) = &options[0].kind else {
             panic!("select");
         };
@@ -1202,6 +1384,141 @@ mod tests {
         };
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "Provider openai");
+    }
+
+    /// A provider whose one model declares thinking levels.
+    fn thinking_provider() -> ProviderInput {
+        let mut provider = sample("thinking", None);
+        provider.models = vec![Model {
+            id: "m".into(),
+            name: None,
+            modalities: Vec::new(),
+            context_window: None,
+            thinking: Some(ThinkingConfig {
+                default: ThinkingLevel::High,
+                levels: [
+                    (ThinkingLevel::Low, "low".to_owned()),
+                    (ThinkingLevel::Medium, "medium".to_owned()),
+                    (ThinkingLevel::High, "high".to_owned()),
+                ]
+                .into_iter()
+                .collect(),
+            }),
+        }];
+        provider
+    }
+
+    #[test]
+    fn a_thinking_model_offers_the_levels_it_declares() {
+        let (store, _path, _env) = store();
+        store.upsert(thinking_provider()).unwrap();
+
+        let options = store
+            .session_config_options(Some("thinking/m"), None)
+            .expect("selectors");
+        assert_eq!(options.len(), 2, "the model and the thinking level");
+        assert_eq!(options[1].id.0.as_ref(), THINKING_OPTION_ID);
+        assert_eq!(
+            options[1].category,
+            Some(SessionConfigOptionCategory::ThoughtLevel)
+        );
+
+        let srud_protocol::acp::SessionConfigKind::Select(select) = &options[1].kind else {
+            panic!("the thinking option is a select");
+        };
+        assert_eq!(select.current_value.0.as_ref(), "high");
+        let srud_protocol::acp::SessionConfigSelectOptions::Ungrouped(choices) = &select.options
+        else {
+            panic!("a flat list of levels");
+        };
+        assert_eq!(
+            choices
+                .iter()
+                .map(|choice| choice.value.0.as_ref())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high"]
+        );
+    }
+
+    #[test]
+    fn a_stored_level_the_model_lost_projects_down() {
+        let (store, _path, _env) = store();
+        store.upsert(thinking_provider()).unwrap();
+
+        let options = store
+            .session_config_options(Some("thinking/m"), Some("max"))
+            .expect("selectors");
+        let srud_protocol::acp::SessionConfigKind::Select(select) = &options[1].kind else {
+            panic!("select");
+        };
+        assert_eq!(select.current_value.0.as_ref(), "high");
+    }
+
+    #[test]
+    fn a_model_without_thinking_offers_no_level_option() {
+        let (store, _path, _env) = store();
+        store.upsert(sample("openai", None)).unwrap();
+
+        let options = store
+            .session_config_options(Some("openai/small"), None)
+            .expect("a selector");
+        assert_eq!(options.len(), 1);
+    }
+
+    #[test]
+    fn a_thinking_default_must_name_a_level_it_lists() {
+        let (store, _path, _env) = store();
+        let mut provider = thinking_provider();
+        provider.models[0]
+            .thinking
+            .as_mut()
+            .unwrap()
+            .levels
+            .remove(&ThinkingLevel::High);
+
+        assert!(matches!(
+            store.upsert(provider),
+            Err(ProviderError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn a_blank_thinking_value_is_refused() {
+        let (store, _path, _env) = store();
+        let mut provider = thinking_provider();
+        provider.models[0]
+            .thinking
+            .as_mut()
+            .unwrap()
+            .levels
+            .insert(ThinkingLevel::High, "   ".into());
+
+        assert!(matches!(
+            store.upsert(provider),
+            Err(ProviderError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn the_default_level_is_what_a_request_sends() {
+        let model = thinking_provider().models.remove(0);
+        let request = model.thinking_request(None).expect("thinking is declared");
+        assert_eq!(request.value, "high");
+        assert!(!request.off);
+
+        let request = model
+            .thinking_request(Some("max".into()))
+            .expect("thinking is declared");
+        assert_eq!(request.value, "high", "max is not offered, so high wins");
+
+        let request = model
+            .thinking_request(Some("off".into()))
+            .expect("thinking is declared");
+        assert_eq!(
+            request.value, "low",
+            "off is unavailable, so the weakest offered level wins"
+        );
+        assert!(!request.off);
     }
 
     #[test]

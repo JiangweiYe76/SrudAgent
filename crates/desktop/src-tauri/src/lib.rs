@@ -27,7 +27,8 @@ use srud_protocol::acp::{AcpError, JsonRpcMessage, Notification, Response, Sessi
 use srud_protocol::error::INTERNAL_ERROR;
 use srud_protocol::transport::tauri::{NotifyBody, RpcNotify, RpcRequest, RPC_NOTIFY_EVENT};
 use srud_server::{
-    config, standard_tools, Agent, ModelFactory, ModelProviders, Provider, ProviderStore, RpcReply,
+    config, standard_tools, Agent, Model, ModelFactory, ModelProviders, Provider, ProviderStore,
+    RpcReply,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -71,9 +72,15 @@ struct ProviderState(Arc<ProviderStore>);
 struct ChatFactory;
 
 impl ModelFactory for ChatFactory {
-    fn build(&self, provider: &Provider, model: &str) -> Result<Arc<dyn ModelClient>, ModelError> {
-        let settings = ClientConfig::new(provider.api_key.clone(), model.to_owned())
-            .with_base_url(provider.base_url.clone());
+    fn build(
+        &self,
+        provider: &Provider,
+        model: &Model,
+        thinking: Option<srud_core::thinking::ThinkingRequest>,
+    ) -> Result<Arc<dyn ModelClient>, ModelError> {
+        let settings = ClientConfig::new(provider.api_key.clone(), model.id.clone())
+            .with_base_url(provider.base_url.clone())
+            .with_thinking(thinking);
         Ok(Arc::new(ChatClient::new(settings)))
     }
 }
@@ -91,7 +98,9 @@ fn starting_client(
 ) -> Option<Arc<dyn ModelClient>> {
     let reference = store.start_reference()?;
     let (provider, model) = store.resolve(&reference).ok()?;
-    factory.build(&provider, &model.id).ok()
+    factory
+        .build(&provider, &model, model.thinking_request(None))
+        .ok()
 }
 
 /// Builds the agent over the shared provider store.
@@ -195,6 +204,7 @@ async fn handle_provider_command(
                         name: m.name,
                         modalities: m.modalities,
                         context_window: m.context_window,
+                        thinking: m.thinking,
                     })
                     .collect(),
             };
@@ -751,10 +761,12 @@ mod tests {
                 name: None,
                 modalities: vec![],
                 context_window: None,
+                thinking: None,
             }],
         };
         // No network call: building the client is all this shell decides.
-        assert!(ChatFactory.build(&provider, "gpt-4o").is_ok());
+        let model = &provider.models[0];
+        assert!(ChatFactory.build(&provider, model, None).is_ok());
     }
 
     #[tokio::test]
