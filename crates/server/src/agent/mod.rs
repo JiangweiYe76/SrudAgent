@@ -59,10 +59,10 @@ use srud_protocol::acp::methods::{
     SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
 };
 use srud_protocol::acp::{
-    AcpError, CloseSessionResponse, ContentBlock, DeleteSessionResponse, Implementation,
-    InitializeRequest, InitializeResponse, JsonRpcMessage, MaybeUndefined, Notification,
-    ProtocolVersion, Request, RequestId, Response, SessionId, SessionInfoUpdate,
-    SessionNotification, SessionUpdate, CLIENT_METHOD_NAMES,
+    AcpError, CloseSessionResponse, DeleteSessionResponse, Implementation, InitializeRequest,
+    InitializeResponse, JsonRpcMessage, MaybeUndefined, Notification, ProtocolVersion, Request,
+    RequestId, Response, SessionId, SessionInfoUpdate, SessionNotification, SessionUpdate,
+    CLIENT_METHOD_NAMES,
 };
 use srud_protocol::error::{INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_NOT_FOUND};
 
@@ -353,60 +353,6 @@ fn serialize<T: serde::Serialize>(value: T) -> Value {
         .unwrap_or_else(|err| Value::String(format!("response serialization failed: {err}")))
 }
 
-/// A prompt block that the declared capabilities do not accept.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnsupportedContent {
-    /// An audio block, refused while `promptCapabilities.audio` is false.
-    Audio,
-    /// Any other block the agent does not read, such as a resource or a link.
-    Other(&'static str),
-}
-
-/// The parts of a prompt the agent accepts.
-#[derive(Debug, Default)]
-pub struct PromptParts {
-    /// The text blocks, joined in the order they arrived.
-    pub text: String,
-    /// The image blocks, in the order they arrived.
-    pub images: Vec<srud_core::types::ImagePart>,
-}
-
-/// Splits a prompt into the text and images the agent accepts.
-///
-/// Returns an error naming the first block the agent cannot accept — dropping
-/// multimodal input silently would make the model answer a prompt the user
-/// never sent.
-pub fn prompt_parts(blocks: &[ContentBlock]) -> Result<PromptParts, AcpError> {
-    let mut parts = PromptParts::default();
-    for block in blocks {
-        match block {
-            ContentBlock::Text(content) => {
-                if !parts.text.is_empty() {
-                    parts.text.push('\n');
-                }
-                parts.text.push_str(&content.text);
-            }
-            ContentBlock::Image(content) => parts.images.push(srud_core::types::ImagePart {
-                mime: content.mime_type.clone(),
-                data: content.data.clone(),
-            }),
-            block => {
-                let kind = match block {
-                    ContentBlock::Audio(_) => UnsupportedContent::Audio,
-                    ContentBlock::Resource(_) => UnsupportedContent::Other("resource"),
-                    ContentBlock::ResourceLink(_) => UnsupportedContent::Other("resource_link"),
-                    _ => UnsupportedContent::Other("unknown"),
-                };
-                return Err(AcpError::new(
-                    INVALID_PARAMS,
-                    format!("this agent cannot accept {kind:?} prompts"),
-                ));
-            }
-        }
-    }
-    Ok(parts)
-}
-
 #[cfg(test)]
 mod tests {
     use super::support::*;
@@ -414,7 +360,7 @@ mod tests {
 
     use serde_json::json;
     use srud_protocol::acp::methods::{INITIALIZE, SESSION_NEW};
-    use srud_protocol::acp::{AcpError, RequestId, TextContent};
+    use srud_protocol::acp::{AcpError, RequestId};
     use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND};
 
     #[tokio::test]
@@ -498,30 +444,5 @@ mod tests {
         );
         let value = serde_json::to_value(&err).unwrap();
         assert_eq!(value["error"]["code"], json!(INTERNAL_ERROR));
-    }
-
-    #[test]
-    fn prompt_parts_accepts_text_and_images_and_rejects_audio() {
-        let blocks = vec![
-            ContentBlock::Text(TextContent::new("hello")),
-            ContentBlock::Image(srud_protocol::acp::ImageContent::new("d", "image/png")),
-        ];
-        let parts = prompt_parts(&blocks).unwrap();
-        assert_eq!(parts.text, "hello");
-        assert_eq!(
-            parts.images,
-            vec![srud_core::types::ImagePart {
-                mime: "image/png".into(),
-                data: "d".into(),
-            }]
-        );
-
-        let blocks = vec![
-            ContentBlock::Text(TextContent::new("a")),
-            ContentBlock::Audio(srud_protocol::acp::AudioContent::new("d", "audio/wav")),
-        ];
-        let err = prompt_parts(&blocks).unwrap_err();
-        assert_eq!(i32::from(err.code), INVALID_PARAMS);
-        assert!(err.message.contains("Audio"));
     }
 }

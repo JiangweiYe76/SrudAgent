@@ -6,8 +6,8 @@
 //! and `_srud/unstable/session/regenerate` takes the last turn's answer back and
 //! answers the same words again.
 
-use super::{parse_params, prompt_parts, session_not_found, Agent};
-use crate::convert::prompt_outcome;
+use super::{parse_params, session_not_found, Agent};
+use crate::convert::{prompt_outcome, prompt_parts};
 use serde_json::Value;
 use srud_core::{EventSink, SessionEvent, SessionWriter};
 use srud_protocol::acp::{AcpError, CancelNotification, PromptRequest, PromptResponse, SessionId};
