@@ -5,6 +5,7 @@ import type {
   ModelOptions,
   Session,
   Step,
+  ThinkingOptions,
   ToolCall,
   Turn,
   TurnEndReason,
@@ -12,7 +13,7 @@ import type {
 } from './types';
 import { t } from './i18n';
 import { loadDrafts, saveDrafts } from './drafts';
-import { draftModelOptions, useProviderStore } from './providers';
+import { draftModelOptions, draftThinkingOptions, useProviderStore } from './providers';
 import {
   cancelTurn,
   deleteSession as requestDelete,
@@ -21,11 +22,13 @@ import {
   loadSession,
   newSession,
   onNotify,
-  parseModelOptions,
+  parseSessionOptions,
   setSessionModel,
+  setSessionThinking,
   type ListedSession,
   type LoadedSession,
   type LoadedTurnEnd,
+  type SessionOptions,
   RpcFailure,
   sendPrompt,
   steerTurn as requestSteer,
@@ -210,13 +213,21 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
     };
   }
 
-  // So is a model change: it was already recorded when this arrived, since the
-  // notification is how another client's switch reaches this one. The whole
-  // selector comes with it, so the list and the selection cannot disagree.
+  // So is a model or thinking change: it was already recorded when this arrived,
+  // since the notification is how another client's switch reaches this one. The
+  // whole option set comes with it, so the lists and the selections cannot
+  // disagree.
   if (kind === 'config_option_update') {
-    const model = parseModelOptions(update.configOptions);
-    if (!model) return null;
-    return { ...session, model, updatedAt: replaying ? session.updatedAt : Date.now() };
+    const { model, thinking } = parseSessionOptions(update.configOptions);
+    // An agent may offer thinking without a model selector, so both have to be
+    // absent before the update is nothing this client renders.
+    if (!model && !thinking) return null;
+    return {
+      ...session,
+      model,
+      thinking,
+      updatedAt: replaying ? session.updatedAt : Date.now(),
+    };
   }
 
   // Read before a turn is located, so a turn is never opened for an update that
@@ -429,6 +440,7 @@ interface SessionState {
   steerFollowup: (index: number) => void;
   stopTurn: () => void;
   setModel: (model: string) => void;
+  setThinking: (level: string) => void;
   renameSession: (id: string, title: string) => void;
   deleteSession: (id: string) => void;
 }
@@ -689,10 +701,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void loadSession(backendId, session.cwd)
       .then((result) => {
         loaded = result;
-        // The reply says which model the replayed conversation was left on.
-        // Written before the updates stop arriving, so the picker is right from
-        // the moment the conversation appears.
+        // The reply says which model and thinking level the replayed
+        // conversation was left on. Written before the updates stop arriving, so
+        // the pickers are right from the moment the conversation appears.
         if (result.model) setModelOf(id, result.model);
+        setThinkingOf(id, result.thinking);
       })
       .catch((err: unknown) => {
         // A session the agent will not name is one this app cannot show, and
@@ -778,18 +791,50 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // so the session is created with an empty one and the agent gives it
           // a workspace of its own under the configuration directory.
           const created = await newSession('');
-          // A draft's model choice takes effect on the session it becomes. A
-          // switch needs a session id, and this is the first moment there is
-          // one: answering the first prompt on the default instead would make
-          // the choice look like it had not been made.
-          const chosen = get().sessions.find((s) => s.id === sessionId)?.model?.currentValue ?? '';
-          let model = created.model;
-          if (model && chosen && chosen !== model.currentValue && offers(model, chosen)) {
+          // A draft's model and thinking choices take effect on the session it
+          // becomes. A switch needs a session id, and this is the first moment
+          // there is one: answering the first prompt on the defaults instead
+          // would make the choices look like they had not been made.
+          const draft = get().sessions.find((s) => s.id === sessionId);
+          const chosenModel = draft?.model?.currentValue ?? '';
+          const chosenThinking = draft?.thinking?.currentValue ?? '';
+          let options: SessionOptions = {
+            model: created.model,
+            thinking: created.thinking,
+          };
+          if (
+            options.model &&
+            chosenModel &&
+            chosenModel !== options.model.currentValue &&
+            offers(options.model, chosenModel)
+          ) {
             try {
-              model = (await setSessionModel(created.sessionId, model.configId, chosen)) ?? model;
+              options = await setSessionModel(
+                created.sessionId,
+                options.model.configId,
+                chosenModel,
+              );
             } catch (err) {
               // The session runs on what it was created with; the picker shows
               // the agent's answer rather than the choice that did not take.
+              useSessionStore.setState({ initError: String(err) });
+            }
+          }
+          // The model switch carries the thinking selector back too, projected
+          // onto the new model; the draft's own level is applied after it, so
+          // the first turn runs on both choices.
+          if (
+            options.thinking &&
+            chosenThinking &&
+            chosenThinking !== options.thinking.currentValue
+          ) {
+            try {
+              options = await setSessionThinking(
+                created.sessionId,
+                options.thinking.configId,
+                chosenThinking,
+              );
+            } catch (err) {
               useSessionStore.setState({ initError: String(err) });
             }
           }
@@ -809,7 +854,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             return {
               sessions: s.sessions.map((sess) =>
                 sess.id === sessionId
-                  ? { ...sess, backendId: created.sessionId, model }
+                  ? {
+                      ...sess,
+                      backendId: created.sessionId,
+                      model: options.model,
+                      thinking: options.thinking,
+                    }
                   : sess,
               ),
               drafts,
@@ -918,9 +968,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const options = draftModelOptions(providers, model);
       // The catalog no longer offers that model: the draft keeps what it had.
       if (!options || options.currentValue !== model) return;
+      // A draft gets the catalog's thinking options after the model switch, so a
+      // level the new model does not declare falls back to its default.
+      const thinking = draftThinkingOptions(
+        providers,
+        model,
+        session.thinking?.currentValue ?? null,
+      );
       set((s) => ({
         sessions: s.sessions.map((sess) =>
-          sess.id === session.id ? { ...sess, model: options } : sess,
+          sess.id === session.id ? { ...sess, model: options, thinking } : sess,
         ),
       }));
       return;
@@ -935,7 +992,37 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // reserves the `model` category, not the option's name.
     void setSessionModel(session.backendId, session.model.configId, model)
       .then((next) => {
-        if (next) setModelOf(localId, next);
+        if (next.model) setModelOf(localId, next.model);
+        setThinkingOf(localId, next.thinking);
+      })
+      .catch((err) => set({ initError: String(err) }));
+  },
+
+  setThinking: (level) => {
+    const session = get().sessions.find((s) => s.id === get().activeId);
+    if (!session) return;
+    // A draft has no agent session to switch, so the level is recorded against
+    // the draft and applied when the first prompt creates one.
+    if (!session.backendId) {
+      const { providers, defaultModel } = useProviderStore.getState();
+      // A draft that has not been switched runs on the catalog's default, which
+      // is the model the header offered this level for.
+      const model = session.model?.currentValue ?? defaultModel ?? '';
+      const options = draftThinkingOptions(providers, model, level);
+      if (!options || options.currentValue !== level) return;
+      set((s) => ({
+        sessions: s.sessions.map((sess) =>
+          sess.id === session.id ? { ...sess, thinking: options } : sess,
+        ),
+      }));
+      return;
+    }
+    if (!session.thinking) return;
+    const localId = session.id;
+    void setSessionThinking(session.backendId, session.thinking.configId, level)
+      .then((next) => {
+        if (next.model) setModelOf(localId, next.model);
+        setThinkingOf(localId, next.thinking);
       })
       .catch((err) => set({ initError: String(err) }));
   },
@@ -1043,9 +1130,18 @@ function offers(options: ModelOptions, value: string): boolean {
 // A switch can be in flight while the view moves to another session, so the row
 // is matched on the id it was read with rather than on whichever is active when
 // the reply lands.
-function setModelOf(localId: string, model: ModelOptions) {
+function setModelOf(localId: string, model: ModelOptions | null) {
   useSessionStore.setState((s) => ({
     sessions: s.sessions.map((sess) => (sess.id === localId ? { ...sess, model } : sess)),
+  }));
+}
+
+// Writes a session's thinking selector, by this client's own id. Null when the
+// selected model declares no control, which is what the agent reports after a
+// switch to such a model.
+function setThinkingOf(localId: string, thinking: ThinkingOptions | null) {
+  useSessionStore.setState((s) => ({
+    sessions: s.sessions.map((sess) => (sess.id === localId ? { ...sess, thinking } : sess)),
   }));
 }
 

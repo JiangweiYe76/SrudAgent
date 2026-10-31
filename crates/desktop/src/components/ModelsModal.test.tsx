@@ -123,6 +123,22 @@ function inputByLabel(label: string): HTMLInputElement {
   return found;
 }
 
+// The trigger of a select control, which is a menu button rather than a native
+// `<select>`.
+function selectTrigger(label: string): HTMLButtonElement {
+  const found = topDialog().querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  if (!found) throw new Error(`no select labelled ${label}`);
+  return found;
+}
+
+function inputByPlaceholder(placeholder: string): HTMLInputElement {
+  const found = [...topDialog().querySelectorAll<HTMLInputElement>('input')].find(
+    (input) => input.placeholder === placeholder,
+  );
+  if (!found) throw new Error(`no field with placeholder ${placeholder}`);
+  return found;
+}
+
 async function type(element: HTMLInputElement, value: string): Promise<void> {
   const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   await act(async () => {
@@ -315,5 +331,121 @@ describe('ModelsModal', () => {
     expect(setRequest().provider.models).toEqual([
       { id: 'omni', modalities: ['image', 'audio'] },
     ]);
+  });
+
+  it('records the thinking levels a model was configured with', async () => {
+    await render();
+    await click(button('Add model'));
+    await type(inputByLabel('Model id'), 'kimi');
+
+    // An empty list is an ordinary chat model: no thinking control, and a
+    // model saved without a declaration. It is not a form error.
+    expect(topButton('Save').disabled).toBe(false);
+
+    await click(topButton('Add level'));
+    // The first row is `off`, and it becomes the default.
+    expect(selectTrigger('Default level').textContent).toBe('Off');
+    // A level with no wire value is still not a declaration.
+    expect(topButton('Save').disabled).toBe(true);
+
+    await type(inputByPlaceholder('off'), 'none');
+    expect(topButton('Save').disabled).toBe(false);
+
+    await click(topButton('Save'));
+    await click(button('Save'));
+    await vi.waitFor(() => {
+      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+    });
+    expect(setRequest().provider.models).toEqual([
+      { id: 'gpt-4o', name: 'GPT-4o', modalities: [] },
+      { id: 'gpt-4o-mini', modalities: [] },
+      {
+        id: 'kimi',
+        modalities: [],
+        thinking: { default: 'off', levels: { off: 'none' } },
+      },
+    ]);
+  });
+
+  it('reopens a model with the thinking it was saved with', async () => {
+    await render({
+      ...PROVIDER,
+      models: [
+        {
+          id: 'kimi',
+          modalities: [],
+          thinking: {
+            default: 'max',
+            levels: { off: 'false', low: 'low', max: 'max' },
+          },
+        },
+      ],
+    });
+
+    const row = topDialog().querySelector('li button');
+    if (!(row instanceof HTMLButtonElement)) throw new Error('no model row to click');
+    await act(async () => {
+      row.click();
+    });
+
+    // Rows are listed weakest to strongest, whatever order they were stored in.
+    expect(
+      [...topDialog().querySelectorAll<HTMLButtonElement>('button[aria-label="Level"]')][0]
+        .textContent,
+    ).toBe('Off');
+    expect(selectTrigger('Default level').textContent).toBe('Max');
+
+    // Untouched, the declaration survives a save as it was.
+    await click(topButton('Save'));
+    await click(button('Save'));
+    await vi.waitFor(() => {
+      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+    });
+    expect(setRequest().provider.models).toEqual([
+      {
+        id: 'kimi',
+        modalities: [],
+        thinking: {
+          default: 'max',
+          levels: { off: 'false', low: 'low', max: 'max' },
+        },
+      },
+    ]);
+  });
+
+  it('drops a thinking declaration when every level is removed', async () => {
+    await render({
+      ...PROVIDER,
+      models: [
+        {
+          id: 'kimi',
+          modalities: [],
+          thinking: { default: 'low', levels: { low: 'low' } },
+        },
+      ],
+    });
+
+    const row = topDialog().querySelector('li button');
+    if (!(row instanceof HTMLButtonElement)) throw new Error('no model row to click');
+    await act(async () => {
+      row.click();
+    });
+
+    // No levels is the form's only way to say "this model has no thinking
+    // control"; there is no separate on/off switch.
+    await click(topButton('Remove level'));
+    expect(
+      [...document.querySelectorAll('label')].some(
+        (label) => label.querySelector('span')?.textContent === 'Default level',
+      ),
+    ).toBe(false);
+    await click(topButton('Save'));
+    await click(button('Save'));
+    await vi.waitFor(() => {
+      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+    });
+    // Absent, not an empty declaration: a model with no thinking control is
+    // what an empty level list means to the agent.
+    expect(setRequest().provider.models).toEqual([{ id: 'kimi', modalities: [] }]);
   });
 });

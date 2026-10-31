@@ -324,9 +324,16 @@ impl Agent {
             .providers
             .as_ref()
             .and_then(|providers| providers.store.start_reference());
+        let start_thinking = start.as_deref().and_then(|reference| {
+            let providers = self.providers.as_ref()?;
+            let (_, model) = providers.store.resolve(reference).ok()?;
+            model
+                .default_thinking()
+                .map(|level| level.as_str().to_owned())
+        });
         let session_id = self
             .sessions
-            .create(Some(request.cwd), start)
+            .create_with_thinking(Some(request.cwd), start, start_thinking)
             .await
             .map_err(|err| {
                 AcpError::new(
@@ -640,7 +647,11 @@ impl Agent {
         })?;
         providers
             .factory
-            .build(&provider, &model.id)
+            .build(
+                &provider,
+                &model,
+                model.thinking_request(self.sessions.thinking(id)),
+            )
             .map_err(|err| {
                 AcpError::new(
                     INTERNAL_ERROR,
@@ -678,9 +689,10 @@ impl Agent {
     /// would claim it had.
     fn config_options(&self, id: &SessionId) -> Option<Vec<SessionConfigOption>> {
         let providers = self.providers.as_ref()?;
-        providers
-            .store
-            .session_config_options(self.sessions.model(id).as_deref())
+        providers.store.session_config_options(
+            self.sessions.model(id).as_deref(),
+            self.sessions.thinking(id).as_deref(),
+        )
     }
 
     /// Chooses the model a session runs on.
@@ -700,38 +712,101 @@ impl Agent {
                 "this agent's model is not configurable",
             ));
         };
-        if request.config_id.0.as_ref() != providers::MODEL_OPTION_ID {
-            return Err(AcpError::new(
-                INVALID_PARAMS,
-                format!("no configuration option `{}`", request.config_id.0),
-            ));
-        }
-        let reference = request
-            .value
-            .as_value_id()
-            .ok_or_else(|| AcpError::new(INVALID_PARAMS, "the model option takes a string value"))?
-            .0
-            .to_string();
+        match request.config_id.0.as_ref() {
+            providers::MODEL_OPTION_ID => {
+                let reference = request
+                    .value
+                    .as_value_id()
+                    .ok_or_else(|| {
+                        AcpError::new(INVALID_PARAMS, "the model option takes a string value")
+                    })?
+                    .0
+                    .to_string();
 
-        // Resolved before it is recorded. A reference nothing resolves to would
-        // leave the session unable to take a turn, while its log claimed the
-        // choice was deliberate.
-        providers
-            .store
-            .resolve(&reference)
-            .map_err(|err| AcpError::new(INVALID_PARAMS, err.to_string()))?;
+                // Resolved before it is recorded. A reference nothing resolves to
+                // would leave the session unable to take a turn, while its log
+                // claimed the choice was deliberate.
+                let (_, model) = providers
+                    .store
+                    .resolve(&reference)
+                    .map_err(|err| AcpError::new(INVALID_PARAMS, err.to_string()))?;
 
-        match self
-            .sessions
-            .set_model(&request.session_id, Some(reference))
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => return Err(session_not_found(&request.session_id)),
-            Err(err) => {
+                match self
+                    .sessions
+                    .set_model(&request.session_id, Some(reference))
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => return Err(session_not_found(&request.session_id)),
+                    Err(err) => {
+                        return Err(AcpError::new(
+                            INTERNAL_ERROR,
+                            format!("cannot record the model: {err}"),
+                        ));
+                    }
+                }
+
+                // The level is stored model-agnostically, so a switch can land
+                // on a model that does not offer the old one. Project it now, so
+                // the selector names the level the next turn will send.
+                self.reproject_thinking(&request.session_id, &model).await?;
+            }
+            providers::THINKING_OPTION_ID => {
+                let value = request
+                    .value
+                    .as_value_id()
+                    .ok_or_else(|| {
+                        AcpError::new(INVALID_PARAMS, "the thinking option takes a string value")
+                    })?
+                    .0
+                    .to_string();
+                let level = value
+                    .parse::<srud_protocol::srud::methods::ThinkingLevel>()
+                    .map_err(|err| AcpError::new(INVALID_PARAMS, err))?;
+
+                let reference = self.sessions.model(&request.session_id).ok_or_else(|| {
+                    AcpError::new(
+                        INVALID_PARAMS,
+                        "this session has no model yet; choose one first",
+                    )
+                })?;
+                let (_, model) = providers
+                    .store
+                    .resolve(&reference)
+                    .map_err(|err| AcpError::new(INVALID_PARAMS, err.to_string()))?;
+                let offered = model
+                    .thinking
+                    .as_ref()
+                    .is_some_and(|thinking| thinking.levels.contains_key(&level));
+                if !offered {
+                    return Err(AcpError::new(
+                        INVALID_PARAMS,
+                        format!(
+                            "`{}` is not a thinking level `{reference}` offers",
+                            level.as_str()
+                        ),
+                    ));
+                }
+
+                match self
+                    .sessions
+                    .set_thinking(&request.session_id, Some(level.as_str().to_owned()))
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => return Err(session_not_found(&request.session_id)),
+                    Err(err) => {
+                        return Err(AcpError::new(
+                            INTERNAL_ERROR,
+                            format!("cannot record the thinking level: {err}"),
+                        ));
+                    }
+                }
+            }
+            other => {
                 return Err(AcpError::new(
-                    INTERNAL_ERROR,
-                    format!("cannot record the model: {err}"),
+                    INVALID_PARAMS,
+                    format!("no configuration option `{other}`"),
                 ));
             }
         }
@@ -744,6 +819,39 @@ impl Agent {
                 Ok(SetSessionConfigOptionResponse::new(options))
             }
             None => Ok(SetSessionConfigOptionResponse::new(Vec::new())),
+        }
+    }
+
+    /// Records the level this session will actually send under `model`.
+    ///
+    /// A level is stored in the model-agnostic vocabulary, so a model switch can
+    /// leave it unsupported. For a model that declares thinking the level is
+    /// projected down to the nearest one it offers; for a model that declares
+    /// none the stored level is left alone, so switching back restores the
+    /// user's choice instead of silently resetting it. Nothing is written when
+    /// the projection is the value already stored.
+    async fn reproject_thinking(
+        &self,
+        id: &SessionId,
+        model: &providers::Model,
+    ) -> Result<(), AcpError> {
+        if model.thinking.is_none() {
+            return Ok(());
+        }
+        let current = self.sessions.thinking(id);
+        let next = model
+            .thinking_level(current.as_deref())
+            .map(|level| level.as_str().to_owned());
+        if current == next {
+            return Ok(());
+        }
+        match self.sessions.set_thinking(id, next).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(session_not_found(id)),
+            Err(err) => Err(AcpError::new(
+                INTERNAL_ERROR,
+                format!("cannot record the thinking level: {err}"),
+            )),
         }
     }
 
@@ -787,6 +895,7 @@ impl Agent {
                         name: model.name,
                         modalities: model.modalities,
                         context_window: model.context_window,
+                        thinking: model.thinking,
                     })
                     .collect(),
             })
@@ -2168,12 +2277,13 @@ mod tests {
         fn build(
             &self,
             provider: &Provider,
-            model: &str,
+            model: &Model,
+            _thinking: Option<srud_core::thinking::ThinkingRequest>,
         ) -> Result<Arc<dyn ModelClient>, srud_core::client::ModelError> {
             self.built
                 .lock()
                 .expect("factory lock poisoned")
-                .push(format!("{}/{}", provider.id, model));
+                .push(format!("{}/{}", provider.id, model.id));
             Ok(Arc::new(Scripted {
                 events: self.events.clone(),
                 stall_until_cancel: false,
@@ -2194,6 +2304,7 @@ mod tests {
                     name: None,
                     modalities: Vec::new(),
                     context_window: None,
+                    thinking: None,
                 })
                 .collect(),
         }
@@ -2420,6 +2531,85 @@ mod tests {
 
         prompt_once(&agent, &session_id).await;
         assert_eq!(factory.built(), vec!["anthropic/opus"]);
+    }
+
+    #[tokio::test]
+    async fn a_thinking_level_is_offered_chosen_and_kept_across_models() {
+        use srud_protocol::srud::methods::{ThinkingConfig, ThinkingLevel};
+
+        let (agent, _factory) = providers_agent(vec![ModelEvent::TextDelta { delta: "ok".into() }]);
+        initialize(&agent).await;
+        let _home = home();
+        agent
+            .provider_store()
+            .expect("a provider store")
+            .upsert(ProviderInput {
+                id: "thinking".into(),
+                name: "Thinking".into(),
+                base_url: "https://thinking.example/v1".into(),
+                api_key: Some("sk-thinking".into()),
+                models: vec![Model {
+                    id: "m".into(),
+                    name: None,
+                    modalities: Vec::new(),
+                    context_window: None,
+                    thinking: Some(ThinkingConfig {
+                        default: ThinkingLevel::High,
+                        levels: [
+                            (ThinkingLevel::Low, "low".to_owned()),
+                            (ThinkingLevel::Medium, "medium".to_owned()),
+                            (ThinkingLevel::High, "high".to_owned()),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    }),
+                }],
+            })
+            .expect("a valid provider");
+
+        let session_id = new_session_in(&agent, "").await;
+        let result = choose(&agent, &session_id, "thinking/m").await;
+        assert_eq!(result["configOptions"][1]["id"], json!("reasoning"));
+        assert_eq!(result["configOptions"][1]["currentValue"], json!("high"));
+
+        let result = result_of(
+            agent
+                .handle(request(
+                    SESSION_SET_CONFIG_OPTION,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "configId": "reasoning",
+                        "value": "low",
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(result["configOptions"][1]["currentValue"], json!("low"));
+
+        // A model that declares no thinking offers no level, and the stored
+        // choice survives the switch so switching back restores it.
+        let result = choose(&agent, &session_id, "openai/small").await;
+        assert_eq!(
+            result["configOptions"].as_array().expect("options").len(),
+            1
+        );
+        let result = choose(&agent, &session_id, "thinking/m").await;
+        assert_eq!(result["configOptions"][1]["currentValue"], json!("low"));
+
+        // A level the model does not declare is refused rather than recorded.
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_SET_CONFIG_OPTION,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "configId": "reasoning",
+                        "value": "extreme",
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
     }
 
     #[tokio::test]

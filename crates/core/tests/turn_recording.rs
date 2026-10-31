@@ -135,6 +135,7 @@ fn describe(entry: &SessionEvent) -> String {
         SessionEvent::System { .. } => "system".into(),
         SessionEvent::Title { .. } => "title".into(),
         SessionEvent::Model { .. } => "model".into(),
+        SessionEvent::Thinking { .. } => "thinking".into(),
         SessionEvent::TurnStarted { .. } => "turn_started".into(),
         SessionEvent::TurnEnded { .. } => "turn_ended".into(),
         SessionEvent::UsageRecorded { .. } => "usage".into(),

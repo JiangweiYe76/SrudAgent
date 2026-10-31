@@ -19,7 +19,6 @@
 
 use std::collections::BTreeMap;
 
-use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::{
     ChatCompletionMessageToolCall, ChatCompletionMessageToolCallChunk,
@@ -33,6 +32,7 @@ use async_openai::types::chat::{
     ChatCompletionTools, CompletionUsage, CreateChatCompletionRequest,
     CreateChatCompletionRequestArgs, FunctionCall, FunctionObject, ImageUrl,
 };
+use async_openai::Client;
 use futures::StreamExt;
 use srud_core::client::{
     ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream, TokenUsage,
@@ -41,7 +41,8 @@ use srud_core::tools::ToolDefinition;
 use srud_core::types::Role;
 use tokio_util::sync::CancellationToken;
 
-use super::{ClientConfig, connect};
+use super::{connect, ClientConfig};
+use srud_core::thinking::ThinkingRequest;
 
 /// A client for the Chat Completions endpoint.
 ///
@@ -50,14 +51,20 @@ use super::{ClientConfig, connect};
 pub struct ChatClient {
     client: Client<OpenAIConfig>,
     model: String,
+    thinking: Option<ThinkingRequest>,
 }
 
 impl ChatClient {
     /// Creates a client from explicit settings.
     #[must_use]
     pub fn new(settings: ClientConfig) -> Self {
+        let thinking = settings.thinking.clone();
         let (client, model) = connect(settings);
-        Self { client, model }
+        Self {
+            client,
+            model,
+            thinking,
+        }
     }
 
     /// Creates a client from the environment.
@@ -83,12 +90,16 @@ impl ModelClient for ChatClient {
         request: ModelRequest,
         cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
-        let sdk_request = to_request(&self.model, &request);
+        let mut body = serde_json::to_value(to_request(&self.model, &request))
+            .map_err(|error| ModelError::Config(error.to_string()))?;
+        if let Some(thinking) = &self.thinking {
+            apply_thinking(&mut body, thinking);
+        }
 
         let mut source = self
             .client
             .chat()
-            .create_stream_byot::<_, StreamChunk>(sdk_request)
+            .create_stream_byot::<_, StreamChunk>(body)
             .await
             .map_err(|error| ModelError::Rejected(error.to_string()))?;
 
@@ -348,6 +359,33 @@ pub fn to_request(model: &str, request: &ModelRequest) -> CreateChatCompletionRe
         })
         .build()
         .unwrap_or_default()
+}
+
+/// Writes a thinking selection into a chat-completions request body.
+///
+/// The SDK's typed request has no field for the vendor toggle these endpoints
+/// read (`enable_thinking`), and its `reasoning_effort` enum is narrower than
+/// the values some providers accept. The request is therefore serialized first
+/// and the selection written here.
+fn apply_thinking(body: &mut serde_json::Value, thinking: &ThinkingRequest) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    // Which family the endpoint belongs to is not recorded, so every request
+    // carries the toggle: an endpoint that reads it turns thinking on or off,
+    // and one that does not ignores the field. The level's own value goes beside
+    // it, and only while thinking is on — an effort beside a disabled toggle
+    // would ask the endpoint to think again.
+    object.insert(
+        "enable_thinking".to_owned(),
+        serde_json::Value::Bool(!thinking.off),
+    );
+    if !thinking.off {
+        object.insert(
+            "reasoning_effort".to_owned(),
+            serde_json::Value::String(thinking.value.clone()),
+        );
+    }
 }
 
 /// Maps recorded request items onto API messages.
@@ -1033,5 +1071,42 @@ mod tests {
         assert_eq!(json["type"], "function");
         assert_eq!(json["function"]["name"], "read_file");
         assert!(json["function"]["parameters"].is_object());
+    }
+
+    fn request_body() -> serde_json::Value {
+        let request = ModelRequest {
+            items: Vec::new(),
+            tools: Vec::new(),
+            instructions: None,
+        };
+        serde_json::to_value(to_request("gpt-x", &request)).expect("a request serializes")
+    }
+
+    #[test]
+    fn a_thinking_selection_writes_the_toggle_and_the_effort() {
+        let mut body = request_body();
+        apply_thinking(
+            &mut body,
+            &ThinkingRequest {
+                value: "max".into(),
+                off: false,
+            },
+        );
+        assert_eq!(body["enable_thinking"], true);
+        assert_eq!(body["reasoning_effort"], "max");
+
+        let mut off = request_body();
+        apply_thinking(
+            &mut off,
+            &ThinkingRequest {
+                value: "none".into(),
+                off: true,
+            },
+        );
+        assert_eq!(off["enable_thinking"], false);
+        assert!(
+            off.get("reasoning_effort").is_none(),
+            "off is the toggle, not an effort"
+        );
     }
 }

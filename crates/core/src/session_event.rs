@@ -158,6 +158,22 @@ pub enum SessionEvent {
         model: Option<String>,
     },
 
+    /// The thinking level this session sends, as last chosen.
+    ///
+    /// Written whenever the choice changes, and a reader takes the last one.
+    /// `None` clears it, which is not the same as no record at all.
+    ///
+    /// Its own record rather than a field on [`Model`](Self::Model) because the
+    /// level is chosen independently of the model and outlives a model switch
+    /// that still offers it. The value is the model-agnostic level, not the
+    /// endpoint's wire value: the latter belongs to the model that declared it,
+    /// and a session that resumes under another model has to be re-projected.
+    Thinking {
+        /// The level, or `None` when the session holds no level.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<String>,
+    },
+
     /// A turn began. Has no wire counterpart.
     TurnStarted {
         /// Which turn.
@@ -277,6 +293,12 @@ impl SessionEvent {
         Self::Model { model }
     }
 
+    /// Builds a thinking-level change. `None` records a cleared selection.
+    #[must_use]
+    pub fn thinking(level: Option<String>) -> Self {
+        Self::Thinking { level }
+    }
+
     /// Builds a history-entry record.
     #[must_use]
     pub fn item(turn_id: TurnId, message_id: Option<MessageId>, item: ResponseItem) -> Self {
@@ -289,15 +311,17 @@ impl SessionEvent {
 
     /// The turn this record belongs to, if it belongs to one.
     ///
-    /// The session's own record, the system instruction, the title and the model
-    /// do not: all four are written at session scope, outside any turn.
+    /// The session's own record, the system instruction, the title, the model
+    /// and the thinking level do not: all five are written at session scope,
+    /// outside any turn.
     #[must_use]
     pub fn turn_id(&self) -> Option<TurnId> {
         match self {
             Self::Session { .. }
             | Self::System { .. }
             | Self::Title { .. }
-            | Self::Model { .. } => None,
+            | Self::Model { .. }
+            | Self::Thinking { .. } => None,
             Self::TurnStarted { turn_id }
             | Self::Item { turn_id, .. }
             | Self::TurnEnded { turn_id, .. }

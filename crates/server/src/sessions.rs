@@ -59,6 +59,10 @@ struct Tracked {
     /// configuration when the session is created, and changed only by the client
     /// that selects another one.
     model: Option<String>,
+    /// The thinking level this session sends, as last chosen. Seeded from the
+    /// model's default when it declares thinking, and re-projected when the
+    /// model changes.
+    thinking: Option<String>,
     /// Whether the working directory is one this agent created, and so may
     /// remove. A directory the client named belongs to the user.
     workspace_is_ours: bool,
@@ -319,6 +323,19 @@ impl SessionManager {
         cwd: Option<PathBuf>,
         model: Option<String>,
     ) -> Result<SessionId, CreateError> {
+        self.create_with_thinking(cwd, model, None).await
+    }
+
+    /// Registers a fresh session with its initial thinking level.
+    ///
+    /// `thinking` is recorded before the session is announced, beside the model,
+    /// so a resumed session reads the same pair it started with.
+    pub async fn create_with_thinking(
+        &self,
+        cwd: Option<PathBuf>,
+        model: Option<String>,
+        thinking: Option<String>,
+    ) -> Result<SessionId, CreateError> {
         let session_id = srud_core::types::SessionId::new();
         let (cwd, workspace_is_ours) = match usable_directory(cwd) {
             Some(cwd) => (cwd, false),
@@ -367,6 +384,14 @@ impl SessionManager {
                     source: std::io::Error::other(source),
                 })?;
         }
+        if let Some(level) = &thinking {
+            log.record(&SessionEvent::thinking(Some(level.clone())))
+                .await
+                .map_err(|source| CreateError::Log {
+                    what: "the session's thinking level".into(),
+                    source: std::io::Error::other(source),
+                })?;
+        }
 
         self.sessions
             .lock()
@@ -378,6 +403,7 @@ impl SessionManager {
                     log: Arc::new(log),
                     title: None,
                     model,
+                    thinking,
                     workspace_is_ours,
                 },
             );
@@ -459,6 +485,7 @@ impl SessionManager {
                     log: Arc::new(log),
                     title: loaded.title.clone(),
                     model: loaded.model.clone(),
+                    thinking: loaded.thinking.clone(),
                     // A directory this agent made is one it may remove again; the
                     // recorded cwd says which it was.
                     workspace_is_ours: workspace_for(loaded.session_id)
@@ -610,6 +637,45 @@ impl SessionManager {
             .expect("session map lock poisoned")
             .get(id.0.as_ref())
             .and_then(|tracked| tracked.model.clone())
+    }
+
+    /// Sets the thinking level a session sends, returning whether it existed.
+    ///
+    /// Like [`set_model`](Self::set_model), the value is recorded before it is
+    /// applied: a level that only ever lived in memory would change back on the
+    /// next load. A session that switches to a model declaring no thinking keeps
+    /// the level it had, so switching back restores it.
+    ///
+    /// # Errors
+    ///
+    /// If the change could not be recorded.
+    pub async fn set_thinking(
+        &self,
+        id: &SessionId,
+        level: Option<String>,
+    ) -> Result<bool, RecordError> {
+        let _changing = self.settings.lock().await;
+        let Some(log) = self.log_of(id) else {
+            return Ok(false);
+        };
+        SessionLog::record(log.as_ref(), &SessionEvent::thinking(level.clone())).await?;
+
+        let mut sessions = self.sessions.lock().expect("session map lock poisoned");
+        let Some(tracked) = sessions.get_mut(id.0.as_ref()) else {
+            return Ok(false);
+        };
+        tracked.thinking = level;
+        Ok(true)
+    }
+
+    /// Reads the thinking level a session sends, if one is chosen.
+    #[must_use]
+    pub fn thinking(&self, id: &SessionId) -> Option<String> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .and_then(|tracked| tracked.thinking.clone())
     }
 
     /// Reads a session's display title, if it has one.

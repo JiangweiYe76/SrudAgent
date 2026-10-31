@@ -9,6 +9,8 @@
 //! Like all ACP messages they carry a reserved `_meta` field; SrudAgent's own
 //! data goes under `_meta.srud` via [`crate::srud::meta::SrudMeta`].
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::acp::{ContentBlock, Meta, SessionId};
@@ -163,6 +165,105 @@ pub struct ProviderModel {
     /// Absent when the model has no configured window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// The thinking levels this model accepts, when the user declared them.
+    /// Absent means the model has no thinking control and requests carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+}
+
+/// The thinking controls a user declared for one model.
+///
+/// The keys of `levels` are the model-agnostic levels SrudAgent selects
+/// between; their values are what this endpoint's wire expects. A level left
+/// out is one this model does not support.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThinkingConfig {
+    /// The level a new session starts on. Must name one of `levels`.
+    pub default: ThinkingLevel,
+    /// Level to wire value, for the levels this model supports.
+    ///
+    /// `off` is the exception: a request for it writes the disabled toggle, and
+    /// the value recorded here is not sent.
+    #[serde(default)]
+    pub levels: BTreeMap<ThinkingLevel, String>,
+}
+
+/// A thinking level a model is declared with, regardless of its wire values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingLevel {
+    /// Thinking off.
+    Off,
+    /// The least thinking a model can do while still thinking.
+    Minimal,
+    /// Low effort.
+    Low,
+    /// Medium effort.
+    Medium,
+    /// High effort.
+    High,
+    /// Above high, where a model has that tier.
+    Xhigh,
+    /// The most effort a model offers.
+    Max,
+}
+
+impl ThinkingLevel {
+    /// Every level, weakest to strongest.
+    ///
+    /// The order is the one used to project a selection onto a model that no
+    /// longer offers it: a reader walks this list.
+    pub const ALL: [Self; 7] = [
+        Self::Off,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::Xhigh,
+        Self::Max,
+    ];
+
+    /// The stable spelling of this level.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl std::fmt::Display for ThinkingLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ThinkingLevel {
+    type Err = String;
+
+    /// Parses the stable spelling, case-insensitively.
+    ///
+    /// The value comes from a log a user may have hand-edited, so it is matched
+    /// rather than trusted: an unknown level is reported, not coerced.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "minimal" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            other => Err(format!("unknown thinking level `{other}`")),
+        }
+    }
 }
 
 /// Something a model accepts as input, besides the text it always takes.
@@ -431,6 +532,7 @@ mod tests {
                 name: Some("GPT-4o".into()),
                 modalities: vec![Modality::Image],
                 context_window: Some(128_000),
+                thinking: None,
             }],
         }
     }
@@ -468,6 +570,71 @@ mod tests {
         // A model written before this field existed reads as text-only.
         let older: ProviderModel = serde_json::from_value(json!({ "id": "plain" })).unwrap();
         assert!(older.modalities.is_empty());
+    }
+
+    #[test]
+    fn a_thinking_map_round_trips_with_level_keys() {
+        let model: ProviderModel = serde_json::from_value(json!({
+            "id": "m",
+            "thinking": {
+                "default": "high",
+                "levels": { "low": "low", "xhigh": "high" }
+            }
+        }))
+        .unwrap();
+        let thinking = model.thinking.clone().expect("the map was declared");
+        assert_eq!(thinking.default, ThinkingLevel::High);
+        assert_eq!(
+            thinking.levels.get(&ThinkingLevel::Low),
+            Some(&"low".to_owned())
+        );
+
+        let value = serde_json::to_value(&model).unwrap();
+        assert_eq!(value["thinking"]["levels"]["xhigh"], json!("high"));
+    }
+
+    #[test]
+    fn a_recorded_wire_shape_is_ignored() {
+        // An unrecognized key in a declaration is ignored rather than making the
+        // record unreadable: the levels survive, and the key is not written back.
+        let model: ProviderModel = serde_json::from_value(json!({
+            "id": "m",
+            "thinking": {
+                "default": "high",
+                "levels": { "high": "high" },
+                "wire": "bailian"
+            }
+        }))
+        .expect("a retired field does not make the record unreadable");
+
+        assert_eq!(
+            model.thinking.as_ref().map(|thinking| thinking.default),
+            Some(ThinkingLevel::High)
+        );
+        let value = serde_json::to_value(&model).unwrap();
+        assert!(
+            value["thinking"].get("wire").is_none(),
+            "the retired field is not written back"
+        );
+    }
+
+    #[test]
+    fn an_unknown_thinking_level_is_rejected() {
+        let error = serde_json::from_value::<ProviderModel>(json!({
+            "id": "m",
+            "thinking": { "default": "extreme", "levels": { "high": "high" } }
+        }));
+        assert!(
+            error.is_err(),
+            "a level this build cannot select is refused"
+        );
+    }
+
+    #[test]
+    fn a_level_parses_from_its_wire_spelling() {
+        assert_eq!("xhigh".parse::<ThinkingLevel>(), Ok(ThinkingLevel::Xhigh));
+        assert_eq!(ThinkingLevel::Max.to_string(), "max");
+        assert!("extreme".parse::<ThinkingLevel>().is_err());
     }
 
     #[test]

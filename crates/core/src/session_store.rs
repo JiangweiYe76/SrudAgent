@@ -211,6 +211,9 @@ pub struct Loaded {
     /// happened. A caller offering the choice again is the one that decides how
     /// to present a reference that no longer resolves.
     pub model: Option<String>,
+    /// The thinking level the session sends, as last chosen. `None` when the
+    /// session never chose one, or when thinking stopped being controlled.
+    pub thinking: Option<String>,
     /// The history the model should see next, oldest first.
     pub history: Vec<ResponseItem>,
     /// What a client replaying the session should be shown, oldest first.
@@ -297,6 +300,7 @@ fn summarize_log(log: &ReadLog) -> Result<Summary, LoadError> {
             // description either: it is what the *conversation* runs on, and a
             // listing only names sessions.
             SessionEvent::Model { .. }
+            | SessionEvent::Thinking { .. }
             | SessionEvent::System { .. }
             | SessionEvent::TurnStarted { .. }
             | SessionEvent::Item { .. }
@@ -399,6 +403,9 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     // reason the title is: it changes after the session exists, so the last
     // record is the only one that says what is true now.
     let mut model = None;
+    // The thinking level the session sends, as last chosen. Same rule: the last
+    // record is what is true now.
+    let mut thinking = None;
     // Turns the log opened and never closed. A turn's end record can fail to
     // write while the turn itself still ends, so more than one can be open.
     let mut open: Vec<TurnId> = Vec::new();
@@ -410,6 +417,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         match &entry.event {
             SessionEvent::Title { title: last } => title = last.clone(),
             SessionEvent::Model { model: last } => model = last.clone(),
+            SessionEvent::Thinking { level } => thinking = level.clone(),
             SessionEvent::TurnStarted { turn_id } => open.push(*turn_id),
             SessionEvent::TurnEnded { turn_id, reason } => {
                 // A turn ends once. A log carrying a second end for one is
@@ -473,6 +481,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         version,
         title,
         model,
+        thinking,
         history,
         conversation,
         turn_ends,
@@ -1235,6 +1244,43 @@ mod tests {
         let loaded = rebuild(&log, true).expect("a session");
 
         assert_eq!(loaded.model.as_deref(), Some("deleted-provider/gone"));
+    }
+
+    #[test]
+    fn the_last_thinking_level_wins() {
+        // The level can change independently of the model, so a rebuild takes the
+        // last record rather than the first.
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::thinking(Some("high".into())),
+            SessionEvent::thinking(Some("low".into())),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.thinking.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn a_cleared_thinking_level_clears_it() {
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::thinking(Some("high".into())),
+            SessionEvent::thinking(None),
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.thinking, None);
+    }
+
+    #[test]
+    fn a_session_without_a_thinking_record_has_none() {
+        let log = log_of(vec![opening(), said(TurnId::new(), "hello")]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.thinking, None);
     }
 
     #[test]

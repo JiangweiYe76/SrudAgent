@@ -5,6 +5,7 @@ import { Sidebar } from './components/Sidebar';
 import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 import { ModelSelect } from './components/ModelSelect';
+import { ThinkingSelect } from './components/ThinkingSelect';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
 import {
@@ -15,7 +16,7 @@ import {
   isBusy,
   isReopening,
 } from './lib/sessionStore';
-import { useProviderStore, draftModelOptions } from './lib/providers';
+import { useProviderStore, draftModelOptions, draftThinkingOptions } from './lib/providers';
 import { useTheme, useThemeStore } from './lib/theme';
 import { actionForEvent, useShortcutStore } from './lib/shortcuts';
 import { suppressSelectAll, suppressWebviewContextMenu } from './lib/webview';
@@ -38,6 +39,7 @@ function App() {
   const removeFollowup = useSessionStore((s) => s.removeFollowup);
   const stopTurn = useSessionStore((s) => s.stopTurn);
   const setModel = useSessionStore((s) => s.setModel);
+  const setThinking = useSessionStore((s) => s.setThinking);
   const renameSession = useSessionStore((s) => s.renameSession);
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const init = useSessionStore((s) => s.init);
@@ -122,6 +124,22 @@ function App() {
   );
   const modelOptions = isDraft ? draftOptions : (active?.model ?? null);
 
+  // A draft's thinking choices come from the catalog too, so a level the model
+  // does not declare is never offered. A level already chosen is kept when the
+  // model still declares it, and falls back to that model's default when not.
+  const draftThinking = useMemo(
+    () =>
+      isDraft
+        ? draftThinkingOptions(
+            providers,
+            draftChoice ?? '',
+            active?.thinking?.currentValue ?? null,
+          )
+        : null,
+    [isDraft, draftChoice, active?.thinking?.currentValue, providers],
+  );
+  const thinkingOptions = isDraft ? draftThinking : (active?.thinking ?? null);
+
   // The ring shows context pressure from the moment the session names a model,
   // not only after the first report: the window comes from the catalog, and
   // occupancy reads as zero until the agent says otherwise. Once reports
@@ -165,6 +183,13 @@ function App() {
               options={modelOptions}
               disabled={reopening}
               onSelect={setModel}
+            />
+            {/* The level the selected model runs at. A model that declares no
+                thinking control has nothing to pick, and the selector hides. */}
+            <ThinkingSelect
+              options={thinkingOptions}
+              disabled={reopening}
+              onSelect={setThinking}
             />
             <Button
               variant="ghost"
