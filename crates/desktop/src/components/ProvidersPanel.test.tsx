@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 //
-// The panel is a list and two dialogs, and it is where a credential is typed in,
-// so the test that matters is what a save sends back: a masked key read from the
-// agent must not travel back as though it were the key. The rest pins the shape
-// of the flow — a provider is added as a provider, its models are added after,
-// and the default says so when nobody has chosen one.
+// The panel is one master-detail surface: the list picks, the pane edits in
+// place, and nothing here opens a dialog of its own. It is where a credential
+// is typed in, so the test that matters is what a save sends back — a masked
+// key read from the agent must not travel back as though it were the key. The
+// rest pins the shape of the flow: a provider is added as a provider, its
+// models are added after, and the default says so when nobody has chosen one.
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
@@ -28,8 +29,8 @@ const PROVIDER = {
   apiKey: 'sk-…1234',
   hasKey: true,
   models: [
-    { id: 'gpt-4o', name: 'GPT-4o' },
-    { id: 'gpt-4o-mini', name: 'GPT-4o mini' },
+    { id: 'gpt-4o', name: 'GPT-4o', modalities: [] },
+    { id: 'gpt-4o-mini', name: 'GPT-4o mini', modalities: [] },
   ],
 };
 
@@ -77,39 +78,9 @@ afterEach(() => {
 });
 
 async function render(): Promise<void> {
-  const React = await import('react');
   const { ProvidersPanel } = await import('./ProvidersPanel');
-  const { ProviderFormModal } = await import('./ProviderFormModal');
-  const { ModelsModal } = await import('./ModelsModal');
-  const useState = React.useState;
-  function Wrapper() {
-    const [form, setForm] = useState<any>(null);
-    const [modelsFor, setModelsFor] = useState<any>(null);
-    return React.createElement(
-      React.Fragment,
-      null,
-      React.createElement(ProvidersPanel, {
-        form,
-        onFormChange: setForm,
-        modelsFor,
-        onModelsForChange: setModelsFor,
-      }),
-      form
-        ? React.createElement(ProviderFormModal, {
-            provider: form.provider,
-            onClose: () => setForm(null),
-          })
-        : null,
-      modelsFor
-        ? React.createElement(ModelsModal, {
-            provider: modelsFor,
-            onClose: () => setModelsFor(null),
-          })
-        : null,
-    );
-  }
   await act(async () => {
-    root.render(React.createElement(Wrapper));
+    root.render(<ProvidersPanel />);
   });
   await vi.waitFor(() => {
     expect(document.body.textContent).toContain('OpenAI');
@@ -130,7 +101,7 @@ async function click(element: HTMLElement): Promise<void> {
   });
 }
 
-// The input of the field labelled `label`. The form's fields are `<label>`s
+// The input of the field labelled `label`. The pane's fields are `<label>`s
 // containing their own caption, which is also how the component is built.
 function inputByLabel(label: string): HTMLInputElement {
   const found = [...document.querySelectorAll('label')]
@@ -148,14 +119,6 @@ async function type(element: HTMLInputElement, value: string): Promise<void> {
     set.call(element, value);
     element.dispatchEvent(new Event('input', { bubbles: true }));
   });
-}
-
-/** The dialog on top — the one the user is actually looking at. */
-function topButton(label: string): HTMLButtonElement {
-  const dialogs = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')];
-  const top = dialogs[dialogs.length - 1];
-  if (!top) throw new Error('no dialog is open');
-  return button(label, top);
 }
 
 function defaultTrigger(): HTMLButtonElement {
@@ -191,14 +154,36 @@ function setRequest(): { provider: Record<string, unknown> } {
   return found.params as { provider: Record<string, unknown> };
 }
 
+/** The detail pane — the right column, where every field and model row lives. */
+function detailPane(): HTMLElement {
+  const pane = [...document.querySelectorAll('div')].find((d) =>
+    d.className.includes('border-l'),
+  );
+  if (!pane) throw new Error('no detail pane on the page');
+  return pane;
+}
+
+/** The model rows' edit buttons, the remove buttons filtered out. */
+function modelRowButtons(): HTMLButtonElement[] {
+  return [...detailPane().querySelectorAll<HTMLButtonElement>('ul li button')].filter(
+    (b) => b.getAttribute('aria-label') !== 'Remove model',
+  );
+}
+
+/** What the detail pane's model rows currently show, top to bottom. */
+function modelRows(): string[] {
+  return modelRowButtons().map((row) => row.querySelector('span')?.textContent ?? '');
+}
+
 describe('ProvidersPanel', () => {
-  it('lists the configured providers with the key masked', async () => {
+  it('shows the first provider in the pane, and the list keeps the mask', async () => {
     await render();
-    expect(document.body.textContent).toContain('OpenAI');
     // The mask is what the agent handed over, and all this ever sees.
     expect(document.body.textContent).toContain('sk-…1234');
-    // The model count belongs to the button that opens them.
-    expect(button('Manage models').textContent).toContain('2 model(s)');
+    // The first provider is already being edited: no extra click to get there.
+    expect(inputByLabel('Id').value).toBe('openai');
+    expect(inputByLabel('Name').value).toBe('OpenAI');
+    expect(inputByLabel('Base URL').value).toBe('https://api.example/v1');
   });
 
   it('says the default is not chosen when nobody has chosen one', async () => {
@@ -245,9 +230,12 @@ describe('ProvidersPanel', () => {
 
   it('never writes a masked key back as though it were the key', async () => {
     await render();
-    await click(button('Edit provider'));
-    expect(document.body.textContent).toContain('Editing openai');
-    // Nothing typed: the form holds the provider as the agent reported it.
+    // The key field holds nothing: the mask is where the value would be.
+    const key = inputByLabel('API key');
+    expect(key.type).toBe('password');
+    expect(key.value).toBe('');
+    expect(key.placeholder).toBe('sk-…1234');
+
     await click(button('Save'));
 
     await vi.waitFor(() => {
@@ -257,7 +245,7 @@ describe('ProvidersPanel', () => {
     expect(provider.id).toBe('openai');
     // Absent, not the mask: absent is what "keep what is stored" means.
     expect(provider.apiKey).toBeUndefined();
-    // Saving the provider does not touch the models it is not showing.
+    // Saving the provider carries its models through untouched.
     expect(provider.models).toEqual([
       { id: 'gpt-4o', name: 'GPT-4o', modalities: [] },
       { id: 'gpt-4o-mini', name: 'GPT-4o mini', modalities: [] },
@@ -265,22 +253,11 @@ describe('ProvidersPanel', () => {
     expect(provider.baseUrl).toBe('https://api.example/v1');
   });
 
-  it('closes the form once a save lands', async () => {
-    await render();
-    await click(button('Edit provider'));
-    expect(document.body.textContent).toContain('Editing openai');
-
-    await click(button('Save'));
-
-    await vi.waitFor(() => {
-      expect(document.body.textContent).not.toContain('Editing openai');
-    });
-  });
-
   it('adds a provider that has no model yet', async () => {
     await render();
     await click(button('Add provider'));
-    expect(document.body.textContent).toContain('Add a provider');
+    expect(inputByLabel('Id').value).toBe('');
+    expect(inputByLabel('Name').value).toBe('');
 
     await type(inputByLabel('Id'), 'local');
     await type(inputByLabel('Name'), 'Local');
@@ -302,16 +279,17 @@ describe('ProvidersPanel', () => {
 
   it('adds a model to a provider that is already there', async () => {
     await render();
-    await click(button('Manage models'));
-    expect(document.body.textContent).toContain('Models of OpenAI');
+    // The list first shows the models the provider offers.
+    expect(modelRows()).toEqual(['GPT-4o', 'GPT-4o mini']);
 
     await click(button('Add model'));
     await type(inputByLabel('Model id'), 'o3');
     await type(inputByLabel('Label'), 'o3');
-    // The model dialog is the top one, so its Save is the one that closes it.
-    await click(topButton('Save'));
     await click(button('Save'));
+    // The model joined the draft's list, and the pane is back to the provider.
+    expect(modelRows()).toEqual(['GPT-4o', 'GPT-4o mini', 'o3']);
 
+    await click(button('Save'));
     await vi.waitFor(() => {
       expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
     });
@@ -329,20 +307,77 @@ describe('ProvidersPanel', () => {
     expect(setRequest().provider.apiKey).toBeUndefined();
   });
 
-  it('writes nothing when the form is cancelled', async () => {
+  it('changes a model in place rather than appending a second one', async () => {
     await render();
-    await click(button('Edit provider'));
-    await type(inputByLabel('Name'), 'Renamed');
+    await click(modelRowButtons()[0]);
 
+    expect(document.body.textContent).toContain('Editing gpt-4o');
+    await type(inputByLabel('Model id'), 'gpt-4.1');
+    await type(inputByLabel('Label'), 'GPT-4.1');
+    await click(button('Save'));
+    await click(button('Save'));
+
+    await vi.waitFor(() => {
+      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+    });
+    expect(setRequest().provider.models).toEqual([
+      { id: 'gpt-4.1', name: 'GPT-4.1', modalities: [] },
+      { id: 'gpt-4o-mini', name: 'GPT-4o mini', modalities: [] },
+    ]);
+  });
+
+  it('removes a model from the draft without a round trip', async () => {
+    await render();
+    const remove = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.getAttribute('aria-label') === 'Remove model',
+    );
+    if (!remove) throw new Error('no remove button');
+    await click(remove);
+    expect(modelRows()).toEqual(['GPT-4o mini']);
+
+    await click(button('Save'));
+    await vi.waitFor(() => {
+      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+    });
+    expect(setRequest().provider.models).toEqual([
+      { id: 'gpt-4o-mini', name: 'GPT-4o mini', modalities: [] },
+    ]);
+    expect(setRequest().provider.apiKey).toBeUndefined();
+  });
+
+  it('takes a model back when the model form is cancelled', async () => {
+    await render();
+    await click(button('Add model'));
+    await type(inputByLabel('Model id'), 'o3');
     await click(button('Cancel'));
 
-    expect(document.body.textContent).not.toContain('Editing openai');
+    expect(modelRows()).toEqual(['GPT-4o', 'GPT-4o mini']);
     expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(false);
   });
 
-  it('opens a fresh form, not the one that was just dismissed', async () => {
+  it('takes the model form back from its header, discarding what was typed', async () => {
     await render();
-    await click(button('Edit provider'));
+    await click(button('Add model'));
+    await type(inputByLabel('Model id'), 'o3');
+    // The arrow beside the title, visible wherever the scroll has got to.
+    await click(button('Back'));
+
+    expect(modelRows()).toEqual(['GPT-4o', 'GPT-4o mini']);
+    expect(inputByLabel('Base URL').value).toBe('https://api.example/v1');
+    expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(false);
+  });
+
+  it('puts the fields back when an edit is cancelled', async () => {
+    await render();
+    await type(inputByLabel('Name'), 'Renamed');
+    await click(button('Cancel'));
+
+    expect(inputByLabel('Name').value).toBe('OpenAI');
+    expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(false);
+  });
+
+  it('opens a fresh pane for an add, not the one that was just dismissed', async () => {
+    await render();
     await type(inputByLabel('Name'), 'Renamed');
     await click(button('Cancel'));
 
@@ -350,5 +385,15 @@ describe('ProvidersPanel', () => {
     await click(button('Add provider'));
     expect(inputByLabel('Id').value).toBe('');
     expect(inputByLabel('Name').value).toBe('');
+
+    // And cancelling the add returns to the provider that was being shown.
+    await click(button('Cancel'));
+    expect(inputByLabel('Name').value).toBe('OpenAI');
+  });
+
+  it('says what a provider with no model to offer is missing', async () => {
+    catalog = { providers: [{ ...PROVIDER, models: [] }], default: null };
+    await render();
+    expect(document.body.textContent).toContain('cannot be used');
   });
 });
