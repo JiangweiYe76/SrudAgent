@@ -1,10 +1,13 @@
+import { memo, useEffect, useRef, useState } from 'react';
 import {
-  memo,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
-import { Brain, Check, ChevronDown, Copy, Loader2, RotateCcw, Wrench } from 'lucide-react';
+  Brain,
+  Check,
+  ChevronDown,
+  Copy,
+  Loader2,
+  RotateCcw,
+  Wrench,
+} from 'lucide-react';
 import type { Attachment, Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
@@ -63,13 +66,19 @@ function MetaRow({ text, ts, className = '', onRegenerate }: MetaRowProps) {
   };
 
   return (
-    <div className={`flex items-center gap-2 text-[11px] text-muted-foreground ${className}`}>
+    <div
+      className={`flex items-center gap-2 text-[11px] text-muted-foreground ${className}`}
+    >
       <button
         className="flex cursor-pointer items-center rounded p-0.5 transition-colors hover:bg-item-hover hover:text-foreground"
         onClick={copy}
         title={t('msg.copy')}
       >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        {copied ? (
+          <Check className="h-3.5 w-3.5" />
+        ) : (
+          <Copy className="h-3.5 w-3.5" />
+        )}
       </button>
       {onRegenerate && (
         <button
@@ -146,7 +155,9 @@ function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
       <div className="rounded-lg border border-border bg-muted text-[12.5px]">
         <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
           <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="shrink-0 text-muted-foreground">{t('thought.title')}</span>
+          <span className="shrink-0 text-muted-foreground">
+            {t('thought.title')}
+          </span>
           <span className="flex-1" />
           {live && <ThinkingDots />}
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
@@ -250,9 +261,15 @@ export const MessageList = memo(function MessageList({
       <div ref={listRef} className="flex flex-1 flex-col overflow-y-auto">
         <div className="m-auto flex items-center gap-2 text-sm text-muted-foreground">
           {reopening && (
-            <Loader2 className="h-4 w-4 animate-spin" role="status" aria-live="polite" />
+            <Loader2
+              className="h-4 w-4 animate-spin"
+              role="status"
+              aria-live="polite"
+            />
           )}
-          <span>{t(reopening ? 'empty.loadingSession' : 'empty.startChat')}</span>
+          <span>
+            {t(reopening ? 'empty.loadingSession' : 'empty.startChat')}
+          </span>
         </div>
       </div>
     );
@@ -266,7 +283,8 @@ export const MessageList = memo(function MessageList({
         style={{ paddingBottom: bottomInset }}
       >
         {turns.map((turn, index) => {
-          const lastText = turn.steps[turn.steps.length - 1]?.assistantText ?? '';
+          const lastText =
+            turn.steps[turn.steps.length - 1]?.assistantText ?? '';
           // Whether there is anything to copy or time-stamp. A turn can carry
           // only the question, or nothing at all — both are what a re-answer
           // leaves behind in the log — and neither has an answer of its own to
@@ -331,7 +349,10 @@ export const MessageList = memo(function MessageList({
                     the group is drawn after the turn's own input and before
                     its steps, and its meta carries the turn's start time. */}
                 {(turn.steeredInputs ?? []).map((text, index) => (
-                  <div key={index} className="group flex w-full flex-col items-end gap-1">
+                  <div
+                    key={index}
+                    className="group flex w-full flex-col items-end gap-1"
+                  >
                     <MessageContextMenu text={text}>
                       <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
                         {text}
@@ -348,7 +369,10 @@ export const MessageList = memo(function MessageList({
               {turn.steps.map((step) => (
                 <div key={step.id} className="flex flex-col gap-2">
                   {step.thought && (
-                    <ThoughtBlock thought={step.thought} live={isThinking(turn, step)} />
+                    <ThoughtBlock
+                      thought={step.thought}
+                      live={isThinking(turn, step)}
+                    />
                   )}
                   {step.assistantText && (
                     <MessageContextMenu text={step.assistantText}>
@@ -364,7 +388,9 @@ export const MessageList = memo(function MessageList({
                       <div className="rounded-lg border border-border bg-muted text-[12.5px]">
                         <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
                           <Wrench className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="font-mono shrink-0 text-foreground">{tc.name}</span>
+                          <span className="font-mono shrink-0 text-foreground">
+                            {tc.name}
+                          </span>
                           {/* The same mark the thinking header uses, and in the same
                               place: a spacer, then the dots against the chevron.
                               A call whose arguments are a whole file is most of
@@ -387,7 +413,10 @@ export const MessageList = memo(function MessageList({
                             came back finds only what went in. The two payloads
                             are both JSON and look alike, so each is labelled. */}
                         <CollapsibleContent className="flex flex-col gap-3 border-t border-border px-3 py-2">
-                          <JsonBlock label={t('toolCall.input')} value={tc.args} />
+                          <JsonBlock
+                            label={t('toolCall.input')}
+                            value={tc.args}
+                          />
                           <JsonBlock
                             label={t('toolCall.output')}
                             value={tc.result ?? ''}
@@ -420,7 +449,9 @@ export const MessageList = memo(function MessageList({
                   <MetaRow
                     text={lastText}
                     ts={turn.endedAt ?? turn.createdAt}
-                    onRegenerate={regenerable ? () => onRegenerate(turn) : undefined}
+                    onRegenerate={
+                      regenerable ? () => onRegenerate(turn) : undefined
+                    }
                   />
                   {turn.endReason !== 'completed' && (
                     <div

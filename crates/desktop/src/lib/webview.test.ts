@@ -15,7 +15,10 @@ afterEach(() => {
 
 /** Dispatches a right-click and hands back the event, for `defaultPrevented`. */
 function rightClick(target: Element): MouseEvent {
-  const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+  const event = new MouseEvent('contextmenu', {
+    bubbles: true,
+    cancelable: true,
+  });
   target.dispatchEvent(event);
   return event;
 }
@@ -96,14 +99,20 @@ describe('suppressing select-all', () => {
   it('keeps select-all in a text field', () => {
     stop = suppressSelectAll();
 
-    expect(pressA(append('textarea'), { ctrlKey: true }).defaultPrevented).toBe(false);
-    expect(pressA(append('input'), { metaKey: true }).defaultPrevented).toBe(false);
+    expect(pressA(append('textarea'), { ctrlKey: true }).defaultPrevented).toBe(
+      false,
+    );
+    expect(pressA(append('input'), { metaKey: true }).defaultPrevented).toBe(
+      false,
+    );
   });
 
   it('keeps select-all inside editable content', () => {
     stop = suppressSelectAll();
 
-    expect(pressA(editableWithChild(), { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(
+      pressA(editableWithChild(), { ctrlKey: true }).defaultPrevented,
+    ).toBe(false);
   });
 
   it('leaves other key presses alone', () => {
@@ -111,7 +120,9 @@ describe('suppressing select-all', () => {
     const paragraph = append('p');
 
     expect(pressA(paragraph).defaultPrevented).toBe(false);
-    expect(pressA(paragraph, { ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(false);
+    expect(
+      pressA(paragraph, { ctrlKey: true, shiftKey: true }).defaultPrevented,
+    ).toBe(false);
   });
 
   it('stops cancelling once the guard is removed', () => {

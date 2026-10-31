@@ -13,7 +13,11 @@ import type {
 } from './types';
 import { t } from './i18n';
 import { loadDrafts, saveDrafts } from './drafts';
-import { draftModelOptions, draftThinkingOptions, useProviderStore } from './providers';
+import {
+  draftModelOptions,
+  draftThinkingOptions,
+  useProviderStore,
+} from './providers';
 import {
   cancelTurn,
   deleteSession as requestDelete,
@@ -54,7 +58,12 @@ function textOf(block: unknown): string | null {
 
 function imageOf(block: unknown): Attachment | null {
   const b = block as Json | undefined;
-  if (b && b.type === 'image' && typeof b.data === 'string' && typeof b.mimeType === 'string') {
+  if (
+    b &&
+    b.type === 'image' &&
+    typeof b.data === 'string' &&
+    typeof b.mimeType === 'string'
+  ) {
     return { id: uid('img'), mime: b.mimeType, data: b.data };
   }
   return null;
@@ -153,8 +162,12 @@ function replacingTurn(turns: Turn[]): number {
 // update's id is adopted into it, so both paths end up with the same shape. A
 // replay has no such turn, so one is opened with its text still empty for the
 // user message to fill.
-function locateTurn(turns: Turn[], turnId: string | null): { turns: Turn[]; index: number } | null {
-  const named = turnId === null ? -1 : turns.findIndex((tt) => tt.backendTurnId === turnId);
+function locateTurn(
+  turns: Turn[],
+  turnId: string | null,
+): { turns: Turn[]; index: number } | null {
+  const named =
+    turnId === null ? -1 : turns.findIndex((tt) => tt.backendTurnId === turnId);
   if (named >= 0) return { turns, index: named };
 
   // The answer a replacement is waiting for, named by the agent's first update
@@ -173,7 +186,10 @@ function locateTurn(turns: Turn[], turnId: string | null): { turns: Turn[]; inde
   const unclaimed = unclaimedTurn(turns);
   if (unclaimed >= 0) {
     const next = [...turns];
-    next[unclaimed] = { ...next[unclaimed], backendTurnId: turnId ?? undefined };
+    next[unclaimed] = {
+      ...next[unclaimed],
+      backendTurnId: turnId ?? undefined,
+    };
     return { turns: next, index: unclaimed };
   }
 
@@ -219,7 +235,11 @@ function withoutOutput(turn: Turn): Turn {
 // `replaying` marks the updates a `session/load` hands over: they carry a
 // conversation from the past, so they must not restamp the session as though
 // it had just been active.
-function applyUpdate(session: Session, params: Json, replaying: boolean): Session | null {
+function applyUpdate(
+  session: Session,
+  params: Json,
+  replaying: boolean,
+): Session | null {
   const update = params.update as Json | undefined;
   if (!update) return null;
   const kind = String(update.sessionUpdate ?? '');
@@ -235,18 +255,28 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
     // discard names.
     const waiting = replacingTurn(session.turns);
     const at =
-      waiting >= 0 ? waiting : session.turns.findIndex((tt) => tt.backendTurnId === discarded);
+      waiting >= 0
+        ? waiting
+        : session.turns.findIndex((tt) => tt.backendTurnId === discarded);
     if (at < 0) return null;
     const next = [...session.turns];
     next[at] = withoutOutput(next[at]);
-    return { ...session, turns: next, updatedAt: replaying ? session.updatedAt : Date.now() };
+    return {
+      ...session,
+      turns: next,
+      updatedAt: replaying ? session.updatedAt : Date.now(),
+    };
   }
 
   // A title change is session-level, not turn-level, so it applies whether or
   // not a turn is open — the first prompt names the session before any output.
   if (kind === 'session_info_update') {
     const title = typeof update.title === 'string' ? update.title : null;
-    return { ...session, title, updatedAt: replaying ? session.updatedAt : Date.now() };
+    return {
+      ...session,
+      title,
+      updatedAt: replaying ? session.updatedAt : Date.now(),
+    };
   }
 
   // A usage report is session-level too: it describes the context the session
@@ -262,7 +292,8 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
     // differently, and a missing field means "not reported", not "unknown".
     const step = (field: string) =>
       typeof breakdown?.[field] === 'number' ? breakdown[field] : 0;
-    const total = (field: keyof UsageState) => (session.usage?.[field] ?? 0) + step(field);
+    const total = (field: keyof UsageState) =>
+      (session.usage?.[field] ?? 0) + step(field);
     return {
       ...session,
       usage: {
@@ -297,9 +328,12 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
 
   // Read before a turn is located, so a turn is never opened for an update that
   // turns out to carry nothing.
-  const userText = kind === 'user_message_chunk' ? textOf(update.content) : null;
-  const userImage = kind === 'user_message_chunk' ? imageOf(update.content) : null;
-  if (kind === 'user_message_chunk' && userText === null && userImage === null) return null;
+  const userText =
+    kind === 'user_message_chunk' ? textOf(update.content) : null;
+  const userImage =
+    kind === 'user_message_chunk' ? imageOf(update.content) : null;
+  if (kind === 'user_message_chunk' && userText === null && userImage === null)
+    return null;
 
   const found = locateTurn(session.turns, turnIdOf(params));
   if (!found) return null;
@@ -328,7 +362,10 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
       }
     }
   } else {
-    const steps = turn.steps.map((st) => ({ ...st, toolCalls: [...st.toolCalls] }));
+    const steps = turn.steps.map((st) => ({
+      ...st,
+      toolCalls: [...st.toolCalls],
+    }));
     const last = steps[steps.length - 1];
 
     if (kind === 'agent_thought_chunk') {
@@ -338,7 +375,12 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
       // sampling, and thinking is what that sampling produced first. Reasoning
       // seen after the step's tool calls belongs to the next sampling.
       if (!last || last.toolCalls.length > 0) {
-        steps.push({ id: uid('st'), thought: text, assistantText: '', toolCalls: [] });
+        steps.push({
+          id: uid('st'),
+          thought: text,
+          assistantText: '',
+          toolCalls: [],
+        });
       } else {
         last.thought = (last.thought ?? '') + text;
       }
@@ -378,7 +420,8 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
           // An update that arrives at all means the agent has moved past naming
           // the call, whether or not it says where it moved to.
           if (!isPending(update)) tc.pending = false;
-          if (update.rawInput !== undefined) tc.args = JSON.stringify(update.rawInput);
+          if (update.rawInput !== undefined)
+            tc.args = JSON.stringify(update.rawInput);
           tc.result = resultOf(update);
           // The backend states whether the tool failed rather than leaving it to
           // be read off the text, which the UI needs before it can render
@@ -404,7 +447,11 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
   // mutated: the store compares by reference to decide what to re-render.
   const next = [...found.turns];
   next[index] = turn;
-  return { ...session, turns: next, updatedAt: replaying ? session.updatedAt : Date.now() };
+  return {
+    ...session,
+    turns: next,
+    updatedAt: replaying ? session.updatedAt : Date.now(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -499,7 +546,11 @@ interface SessionState {
   // `sessionId` names the conversation to run in; the visible box leaves it
   // out and the active session is used. Images are sent with the text and
   // cannot be queued: a turn already running takes text only.
-  sendTurn: (userInput: string, sessionId?: string, attachments?: Attachment[]) => void;
+  sendTurn: (
+    userInput: string,
+    sessionId?: string,
+    attachments?: Attachment[],
+  ) => void;
   queueFollowup: (text: string) => void;
   removeFollowup: (index: number) => void;
   steerFollowup: (index: number) => void;
@@ -515,13 +566,18 @@ interface SessionState {
 }
 
 // A session's conversation is on its way in.
-export function isReopening(state: Pick<SessionState, 'reopeningCount'>): boolean {
+export function isReopening(
+  state: Pick<SessionState, 'reopeningCount'>,
+): boolean {
   return state.reopeningCount > 0;
 }
 
 // What a session's input box shows: the draft filed under its key, or empty
 // when it has none.
-export function draftFor(state: Pick<SessionState, 'sessions' | 'drafts'>, id: string): string {
+export function draftFor(
+  state: Pick<SessionState, 'sessions' | 'drafts'>,
+  id: string,
+): string {
   return state.drafts[draftKeyOf(state.sessions, id)] ?? '';
 }
 
@@ -550,7 +606,9 @@ function beginReopen(backendId: string) {
 function endReopen(backendId: string) {
   replaying.delete(backendId);
   // Floored, so a stray end cannot leave the prompt locked with nothing in flight.
-  useSessionStore.setState((s) => ({ reopeningCount: Math.max(0, s.reopeningCount - 1) }));
+  useSessionStore.setState((s) => ({
+    reopeningCount: Math.max(0, s.reopeningCount - 1),
+  }));
 }
 
 // A session is busy while its newest turn has not been closed. Cancellation is
@@ -579,7 +637,10 @@ function listedDrafts(sessions: Session[]): Record<string, string> {
   return drafts;
 }
 
-function withoutDraft(drafts: Record<string, string>, key: string): Record<string, string> {
+function withoutDraft(
+  drafts: Record<string, string>,
+  key: string,
+): Record<string, string> {
   if (!(key in drafts)) return drafts;
   const next = { ...drafts };
   delete next[key];
@@ -666,7 +727,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         await initialize();
         onNotify((params) => {
           const target = String(params.sessionId ?? '');
-          const isTest = typeof process !== 'undefined' && (process.env?.VITEST || process.env?.NODE_ENV === 'test');
+          const isTest =
+            typeof process !== 'undefined' &&
+            (process.env?.VITEST || process.env?.NODE_ENV === 'test');
 
           if (isTest) {
             // Tests expect synchronous application: fire() is called and the
@@ -761,7 +824,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // the first load is still in flight must not ask for the same conversation
     // again, and waiting for the reply would leave that window open.
     useSessionStore.setState((s) => ({
-      sessions: s.sessions.map((sess) => (sess.id === id ? { ...sess, loaded: true } : sess)),
+      sessions: s.sessions.map((sess) =>
+        sess.id === id ? { ...sess, loaded: true } : sess,
+      ),
     }));
     beginReopen(backendId);
     // How each replayed turn ended arrives on the response; the updates carry no
@@ -780,7 +845,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // A session the agent will not name is one this app cannot show, and
         // showing it as an empty conversation would be a lie. It goes, and the
         // sidebar is one row shorter rather than one wrong.
-        const gone = err instanceof RpcFailure && err.code === SESSION_NOT_FOUND;
+        const gone =
+          err instanceof RpcFailure && err.code === SESSION_NOT_FOUND;
         if (!gone) {
           useSessionStore.setState({ initError: String(err) });
           return;
@@ -813,7 +879,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   sendTurn: (userInput, target, images) => {
     const state = get();
-    const session = state.sessions.find((s) => s.id === (target ?? state.activeId));
+    const session = state.sessions.find(
+      (s) => s.id === (target ?? state.activeId),
+    );
     // A turn refused mid-replay would be written into a conversation that is only
     // half back, and the two would end up interleaved.
     if (!session || state.reopeningCount > 0) return;
@@ -844,7 +912,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       delete attachments[draftKey];
       return {
         sessions: s.sessions.map((sess) =>
-          sess.id === sessionId ? { ...sess, turns: [...sess.turns, turn], updatedAt: now } : sess,
+          sess.id === sessionId
+            ? { ...sess, turns: [...sess.turns, turn], updatedAt: now }
+            : sess,
         ),
         drafts: withoutDraft(s.drafts, draftKey),
         attachments,
@@ -853,7 +923,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     saveDrafts(get().drafts);
 
     void (async () => {
-      let backendId = get().sessions.find((s) => s.id === sessionId)?.backendId ?? null;
+      let backendId =
+        get().sessions.find((s) => s.id === sessionId)?.backendId ?? null;
       if (!backendId) {
         try {
           // No working directory chosen yet: the app has no directory picker,
@@ -907,7 +978,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               useSessionStore.setState({ initError: String(err) });
             }
           }
-          const draftTitle = get().sessions.find((s) => s.id === sessionId)?.title?.trim() || '';
+          const draftTitle =
+            get()
+              .sessions.find((s) => s.id === sessionId)
+              ?.title?.trim() || '';
           useSessionStore.setState((s) => {
             // The draft moves to the backend id. Text typed while the backend
             // session was being created is still under the local id here.
@@ -951,7 +1025,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       try {
-        const reason = await sendPrompt(backendId, userInput, attachments ?? []);
+        const reason = await sendPrompt(
+          backendId,
+          userInput,
+          attachments ?? [],
+        );
         closeTurn(sessionId, turn.id, mapStopReason(reason));
       } catch (err) {
         closeTurn(sessionId, turn.id, 'error', String(err));
@@ -964,7 +1042,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!isBusy(session) || !session?.backendId) return;
     // The turn is not closed here: `session/cancel` only signals the token, and
     // the open `session/prompt` is what resolves it, as `interrupted`.
-    void cancelTurn(session.backendId).catch((err) => set({ initError: String(err) }));
+    void cancelTurn(session.backendId).catch((err) =>
+      set({ initError: String(err) }),
+    );
   },
 
   queueFollowup: (text) => {
@@ -974,7 +1054,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session) return;
     set((s) => ({
       sessions: s.sessions.map((sess) =>
-        sess.id === session.id ? { ...sess, followups: [...(sess.followups ?? []), trimmed] } : sess,
+        sess.id === session.id
+          ? { ...sess, followups: [...(sess.followups ?? []), trimmed] }
+          : sess,
       ),
     }));
     // Clear the input box once queued.
@@ -989,7 +1071,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => ({
       sessions: s.sessions.map((sess) =>
         sess.id === session.id
-          ? { ...sess, followups: (sess.followups ?? []).filter((_, i) => i !== index) }
+          ? {
+              ...sess,
+              followups: (sess.followups ?? []).filter((_, i) => i !== index),
+            }
           : sess,
       ),
     }));
@@ -1005,7 +1090,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set((s) => ({
         sessions: s.sessions.map((sess) =>
           sess.id === session.id
-            ? { ...sess, followups: (sess.followups ?? []).filter((_, i) => i !== index) }
+            ? {
+                ...sess,
+                followups: (sess.followups ?? []).filter((_, i) => i !== index),
+              }
             : sess,
         ),
       }));
@@ -1034,7 +1122,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (isBusy(session)) return;
     const backendId = session.backendId;
     const latest = session.turns[session.turns.length - 1];
-    if (!latest || latest.id !== turn.id || latest.endReason === undefined) return;
+    if (!latest || latest.id !== turn.id || latest.endReason === undefined)
+      return;
     const turnId = turn.backendTurnId;
     // A turn the agent never named is one it never ran, so there is nothing on
     // its side to take back.
@@ -1057,7 +1146,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return {
           ...sess,
           turns: sess.turns.map((tt) =>
-            tt.id === turn.id ? { ...withoutOutput(tt), backendTurnId: undefined } : tt,
+            tt.id === turn.id
+              ? { ...withoutOutput(tt), backendTurnId: undefined }
+              : tt,
           ),
           updatedAt: now,
         };
@@ -1078,7 +1169,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         set((s) => ({
           sessions: s.sessions.map((sess) =>
             sess.id === sessionId
-              ? { ...sess, turns: sess.turns.map((tt) => (tt.id === turn.id ? turn : tt)) }
+              ? {
+                  ...sess,
+                  turns: sess.turns.map((tt) =>
+                    tt.id === turn.id ? turn : tt,
+                  ),
+                }
               : sess,
           ),
           initError: String(err),
@@ -1169,7 +1265,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // It is pushed to the backend when the draft materializes.
       const next = title.trim() || null;
       set((s) => ({
-        sessions: s.sessions.map((sess) => (sess.id === id ? { ...sess, title: next } : sess)),
+        sessions: s.sessions.map((sess) =>
+          sess.id === id ? { ...sess, title: next } : sess,
+        ),
       }));
       return;
     }
@@ -1234,9 +1332,16 @@ function removeSession(id: string) {
     const attachments = { ...s.attachments };
     delete attachments[key];
     const unreadIds = s.unreadIds.filter((x) => x !== id);
-    if (s.activeId !== id) return { sessions: remaining, drafts, attachments, unreadIds };
+    if (s.activeId !== id)
+      return { sessions: remaining, drafts, attachments, unreadIds };
     movedTo = remaining[0]?.id ?? '';
-    return { sessions: remaining, activeId: movedTo, drafts, attachments, unreadIds };
+    return {
+      sessions: remaining,
+      activeId: movedTo,
+      drafts,
+      attachments,
+      unreadIds,
+    };
   });
   if (!removed) return;
   saveDrafts(useSessionStore.getState().drafts);
@@ -1266,7 +1371,9 @@ function offers(options: ModelOptions, value: string): boolean {
 // the reply lands.
 function setModelOf(localId: string, model: ModelOptions | null) {
   useSessionStore.setState((s) => ({
-    sessions: s.sessions.map((sess) => (sess.id === localId ? { ...sess, model } : sess)),
+    sessions: s.sessions.map((sess) =>
+      sess.id === localId ? { ...sess, model } : sess,
+    ),
   }));
 }
 
@@ -1275,11 +1382,18 @@ function setModelOf(localId: string, model: ModelOptions | null) {
 // switch to such a model.
 function setThinkingOf(localId: string, thinking: ThinkingOptions | null) {
   useSessionStore.setState((s) => ({
-    sessions: s.sessions.map((sess) => (sess.id === localId ? { ...sess, thinking } : sess)),
+    sessions: s.sessions.map((sess) =>
+      sess.id === localId ? { ...sess, thinking } : sess,
+    ),
   }));
 }
 
-function closeTurn(sessionId: string, turnId: string, endReason: TurnEndReason, error?: string) {
+function closeTurn(
+  sessionId: string,
+  turnId: string,
+  endReason: TurnEndReason,
+  error?: string,
+) {
   useSessionStore.setState((s) => ({
     sessions: s.sessions.map((sess) => {
       if (sess.id !== sessionId) return sess;
@@ -1319,7 +1433,9 @@ function closeReplayedTurns(sessionId: string, turns: LoadedTurnEnd[]) {
       let changed = false;
       const nextTurns = session.turns.map((turn) => {
         const reason =
-          turn.backendTurnId === undefined ? undefined : ended.get(turn.backendTurnId);
+          turn.backendTurnId === undefined
+            ? undefined
+            : ended.get(turn.backendTurnId);
         if (reason === undefined || turn.endReason !== undefined) return turn;
         changed = true;
         return { ...turn, endReason: reason, endedAt: Date.now() };

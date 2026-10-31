@@ -72,19 +72,23 @@ const en = {
   'settings.models': 'Models',
   'settings.about': 'About',
   'settings.theme': 'Theme',
-  'settings.theme.hint': 'Follows your system preference unless you pick a side.',
+  'settings.theme.hint':
+    'Follows your system preference unless you pick a side.',
   'settings.theme.system': 'System',
   'settings.theme.light': 'Light',
   'settings.theme.dark': 'Dark',
   'settings.zoom': 'Zoom',
-  'settings.zoom.hint': 'Scales the whole window — text, icons and spacing together.',
+  'settings.zoom.hint':
+    'Scales the whole window — text, icons and spacing together.',
   'settings.shortcuts': 'Shortcuts',
 
-  'shortcuts.hint': 'Click a binding and press the keys to replace it. Escape cancels.',
+  'shortcuts.hint':
+    'Click a binding and press the keys to replace it. Escape cancels.',
   'shortcuts.session.new': 'New session',
   'shortcuts.settings.open': 'Open settings',
   'shortcuts.recording': 'Press keys…',
-  'shortcuts.needModifier': 'Hold Ctrl, Alt or Shift as well — a key on its own would fire while typing.',
+  'shortcuts.needModifier':
+    'Hold Ctrl, Alt or Shift as well — a key on its own would fire while typing.',
   'shortcuts.taken': 'Already bound to “{name}”.',
   'shortcuts.reset': 'Reset',
   'settings.about.line': 'SrudAgent 0.1.0 — an AI agent runtime in Rust.',
@@ -98,7 +102,8 @@ const en = {
   'providers.title': 'Providers',
   'providers.hint': 'Endpoints your sessions can draw models from.',
   'providers.loading': 'Loading…',
-  'providers.empty': 'No provider is configured. Add one to give sessions a model.',
+  'providers.empty':
+    'No provider is configured. Add one to give sessions a model.',
   'providers.modelCount': '{n} model(s)',
   'providers.add': 'Add provider',
   'providers.edit': 'Edit provider',
@@ -116,27 +121,32 @@ const en = {
   'providers.field.name': 'Name',
   'providers.field.baseUrl': 'Base URL',
   'providers.field.apiKey': 'API key',
-  'providers.field.apiKey.keep': 'Leave it as it is to keep the stored key; clear it to remove the key.',
+  'providers.field.apiKey.keep':
+    'Leave it as it is to keep the stored key; clear it to remove the key.',
   'providers.field.apiKey.new': 'Stored on this machine, readable only by you.',
   'providers.models.manage': 'Manage models',
   'providers.models.title': 'Models of {name}',
   'providers.models.hint': 'What this endpoint can be asked for.',
   'providers.models.of': '{id}',
   'providers.model.add': 'Add model',
-  'providers.model.empty': 'Nothing yet. Without a model this provider cannot be used.',
+  'providers.model.empty':
+    'Nothing yet. Without a model this provider cannot be used.',
   'providers.model.edit': 'Edit model',
   'providers.model.remove': 'Remove model',
   'providers.model.form.add': 'Add a model',
   'providers.model.form.edit': 'Editing {id}',
   'providers.model.field.id': 'Model id',
   'providers.model.field.name': 'Label',
-  'providers.model.field.name.hint': 'What the picker shows. The id stands in when there is none.',
+  'providers.model.field.name.hint':
+    'What the picker shows. The id stands in when there is none.',
   'providers.model.field.accepts': 'Accepts',
-  'providers.model.field.accepts.hint': 'Besides text. Nothing selected is a text-only model.',
+  'providers.model.field.accepts.hint':
+    'Besides text. Nothing selected is a text-only model.',
   'providers.model.field.context': 'Context window',
   'providers.model.field.context.hint':
     'Maximum tokens in context, as tokens. Blank hides the usage ring.',
-  'providers.model.badContext': 'The context window must be a whole number of tokens above zero.',
+  'providers.model.badContext':
+    'The context window must be a whole number of tokens above zero.',
   'providers.model.field.thinking': 'Thinking',
   'providers.model.thinking.default': 'Default level',
   'providers.model.thinking.levels': 'Levels',
@@ -144,18 +154,23 @@ const en = {
   'providers.model.thinking.add': 'Add level',
   'providers.model.thinking.remove': 'Remove level',
   'providers.model.thinking.choose': 'Choose a level',
-  'providers.model.thinking.badValue': 'Every level needs the value the endpoint receives.',
-  'providers.model.thinking.badDuplicate': 'Each level may only be listed once.',
-  'providers.model.thinking.badDefault': 'The default must be one of the listed levels.',
+  'providers.model.thinking.badValue':
+    'Every level needs the value the endpoint receives.',
+  'providers.model.thinking.badDuplicate':
+    'Each level may only be listed once.',
+  'providers.model.thinking.badDefault':
+    'The default must be one of the listed levels.',
   'providers.modality.image': 'Image',
   'providers.modality.audio': 'Audio',
   'providers.modality.video': 'Video',
-  'providers.model.badId': "A model id must not contain `/` — it is what separates a model from its provider.",
+  'providers.model.badId':
+    'A model id must not contain `/` — it is what separates a model from its provider.',
   'providers.model.duplicate': 'This provider already offers `{id}`.',
   'providers.key.set': 'key {key}',
   'providers.key.none': 'no key',
 
-  'chat.placeholder': 'Type a message… (Enter to send, Shift+Enter for newline)',
+  'chat.placeholder':
+    'Type a message… (Enter to send, Shift+Enter for newline)',
   'chat.send': 'Send',
   'chat.steer': 'Steer',
   'chat.stop': 'Stop',
@@ -174,7 +189,8 @@ const en = {
   'usage.reasoning': 'Reasoning output',
   'usage.note': 'Totals accumulate over every step this session reported.',
 
-  'mock.reply': '(mock) Got it. Real replies will appear here once the backend is wired up.',
+  'mock.reply':
+    '(mock) Got it. Real replies will appear here once the backend is wired up.',
 } as const;
 
 type Key = keyof typeof en;

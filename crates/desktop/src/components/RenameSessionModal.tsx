@@ -11,7 +11,12 @@ interface RenameSessionModalProps {
   onRename: (title: string) => void;
 }
 
-export function RenameSessionModal({ open, title, onClose, onRename }: RenameSessionModalProps) {
+export function RenameSessionModal({
+  open,
+  title,
+  onClose,
+  onRename,
+}: RenameSessionModalProps) {
   const [draft, setDraft] = useState(title ?? '');
   const inputRef = useRef<HTMLInputElement>(null);
 

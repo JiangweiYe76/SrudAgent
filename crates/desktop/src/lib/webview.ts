@@ -11,7 +11,9 @@
  *
  * Returns a function that removes the listener.
  */
-export function suppressWebviewContextMenu(target: Document = document): () => void {
+export function suppressWebviewContextMenu(
+  target: Document = document,
+): () => void {
   const listener = (event: MouseEvent) => {
     event.preventDefault();
   };
@@ -42,7 +44,8 @@ export function suppressSelectAll(target: Document = document): () => void {
 
 /** Whether a key press is the select-all shortcut, Ctrl+A or Cmd+A. */
 function isSelectAll(event: KeyboardEvent): boolean {
-  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return false;
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey)
+    return false;
 
   // The physical key survives non-Latin layouts, where `key` is not "a".
   return event.code === 'KeyA' || event.key.toLowerCase() === 'a';
@@ -55,7 +58,8 @@ export function isTextEntry(target: EventTarget | null): boolean {
   // Checked both ways: `isContentEditable` is not implemented everywhere, and the
   // attribute also identifies the editable ancestor of a clicked child.
   const editable = target.closest('[contenteditable]');
-  const inEditable = editable !== null && editable.getAttribute('contenteditable') !== 'false';
+  const inEditable =
+    editable !== null && editable.getAttribute('contenteditable') !== 'false';
 
   return (
     target.isContentEditable ||

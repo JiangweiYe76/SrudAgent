@@ -18,7 +18,9 @@ let root: Root;
 beforeAll(() => {
   // React refuses to flush effects inside `act` unless the environment says it is
   // being driven deliberately; without this every render logs a warning.
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 /** A diagram the renderer has drawn, as opposed to an icon in the bar. */
@@ -56,7 +58,9 @@ async function settle(ms = 5000): Promise<void> {
 
 /** Clicks a control in the block's bar, as a reader would. */
 function click(title: string): void {
-  const button = container.querySelector<HTMLButtonElement>(`button[title="${title}"]`);
+  const button = container.querySelector<HTMLButtonElement>(
+    `button[title="${title}"]`,
+  );
   expect(button, `no control titled "${title}"`).not.toBeNull();
   act(() => button!.click());
 }
@@ -71,18 +75,14 @@ function renderInto(markdown: string, streaming = false): void {
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(
-      <Markdown streaming={streaming}>{markdown}</Markdown>,
-    );
+    root.render(<Markdown streaming={streaming}>{markdown}</Markdown>);
   });
 }
 
 /** Re-renders the same block, as a growing message would. */
 function update(markdown: string, streaming = false): void {
   act(() => {
-    root.render(
-      <Markdown streaming={streaming}>{markdown}</Markdown>,
-    );
+    root.render(<Markdown streaming={streaming}>{markdown}</Markdown>);
   });
 }
 
@@ -91,7 +91,8 @@ describe('mermaid while streaming', () => {
   // CommonMark treats input that ends inside a fence as a complete code block.
   // Reporting a parse error for it would show the reader a red box for every
   // chunk of a diagram that is coming out perfectly well.
-  const partial = 'Here you go:\n\n```mermaid\ngraph LR\n  A[Start] --> B\n  B -->';
+  const partial =
+    'Here you go:\n\n```mermaid\ngraph LR\n  A[Start] --> B\n  B -->';
 
   it('holds a placeholder rather than reporting the half-written chart broken', async () => {
     renderInto(partial, true);
@@ -144,7 +145,9 @@ describe('mermaid while streaming', () => {
     renderInto(partial, true);
     click('Show code');
 
-    expect(container.querySelector('.mermaid-source')!.textContent).toContain('graph LR');
+    expect(container.querySelector('.mermaid-source')!.textContent).toContain(
+      'graph LR',
+    );
   });
 });
 
@@ -152,10 +155,13 @@ describe('mermaid routing', () => {
   // Static markup, so these describe the first render and nothing else — which is
   // the point: routing is decided during the markdown pass, before any effect has
   // had a chance to run. What the diagram then does needs a DOM and is below.
-  const render = (markdown: string) => renderToStaticMarkup(<Markdown>{markdown}</Markdown>);
+  const render = (markdown: string) =>
+    renderToStaticMarkup(<Markdown>{markdown}</Markdown>);
 
   it('routes a mermaid fence to the diagram, not the code path', () => {
-    const html = render('```mermaid\ngraph LR\n  A[Start] --> B{Condition?}\n```');
+    const html = render(
+      '```mermaid\ngraph LR\n  A[Start] --> B{Condition?}\n```',
+    );
 
     // The switch control exists only on the diagram path.
     expect(html).toContain('Show code');
@@ -188,7 +194,9 @@ describe('mermaid', () => {
     mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
 
     await expect(
-      mermaid.parse('graph LR\n  A[Start] --> B{Condition?}\n  B -->|yes| C[Do thing]\n'),
+      mermaid.parse(
+        'graph LR\n  A[Start] --> B{Condition?}\n  B -->|yes| C[Do thing]\n',
+      ),
     ).resolves.toBeTruthy();
   });
 

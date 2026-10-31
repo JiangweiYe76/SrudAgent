@@ -14,7 +14,15 @@
 // model list must not carry the save out of view, and the model form's way
 // back must not depend on where the scroll has got to.
 import { useState } from 'react';
-import { ArrowLeft, Image, Layers, Music, Plus, Trash2, Video } from 'lucide-react';
+import {
+  ArrowLeft,
+  Image,
+  Layers,
+  Music,
+  Plus,
+  Trash2,
+  Video,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Field, TextInput } from '@/components/ui/field';
 import { PasswordInput } from '@/components/ui/password-input';
@@ -33,7 +41,8 @@ const MODALITY_ICONS: Record<string, ReactNode> = {
 
 // The pane's starting state for a provider, or for a new one when given none.
 export function draftOf(provider: Provider | null): ProviderDraft {
-  if (!provider) return { id: '', name: '', baseUrl: '', apiKey: '', models: [] };
+  if (!provider)
+    return { id: '', name: '', baseUrl: '', apiKey: '', models: [] };
   return {
     id: provider.id,
     name: provider.name,
@@ -53,25 +62,34 @@ interface ProviderDetailProps {
   onCancel: () => void;
 }
 
-export function ProviderDetail({ provider, onSaved, onCancel }: ProviderDetailProps) {
+export function ProviderDetail({
+  provider,
+  onSaved,
+  onCancel,
+}: ProviderDetailProps) {
   const save = useProviderStore((s) => s.save);
   const error = useProviderStore((s) => s.error);
 
   const [draft, setDraft] = useState(() => draftOf(provider));
   // The model form replaces the pane's content while it is open: an index into
   // the draft's models, or `null` for one that is not there yet.
-  const [modelForm, setModelForm] = useState<{ index: number | null } | null>(null);
+  const [modelForm, setModelForm] = useState<{ index: number | null } | null>(
+    null,
+  );
 
   const editing = provider !== null;
   const canSave =
-    draft.id.trim() !== '' && draft.name.trim() !== '' && draft.baseUrl.trim() !== '';
+    draft.id.trim() !== '' &&
+    draft.name.trim() !== '' &&
+    draft.baseUrl.trim() !== '';
 
   // One slot, two verbs: adding appends, changing replaces in place. Doing it
   // here rather than in the form keeps the form a form and nothing else.
   function putModel(next: ProviderModel) {
     setDraft((current) => {
       const index = modelForm?.index ?? null;
-      if (index === null) return { ...current, models: [...current.models, next] };
+      if (index === null)
+        return { ...current, models: [...current.models, next] };
       return {
         ...current,
         models: current.models.map((model, i) => (i === index ? next : model)),
@@ -100,7 +118,8 @@ export function ProviderDetail({ provider, onSaved, onCancel }: ProviderDetailPr
   }
 
   if (modelForm) {
-    const current = modelForm.index === null ? null : (draft.models[modelForm.index] ?? null);
+    const current =
+      modelForm.index === null ? null : (draft.models[modelForm.index] ?? null);
     return (
       <div className="flex min-h-0 flex-1 flex-col gap-3">
         <div className="flex shrink-0 items-center gap-1.5">
@@ -177,7 +196,9 @@ export function ProviderDetail({ provider, onSaved, onCancel }: ProviderDetailPr
           label={t('providers.field.apiKey')}
           hint={
             <span className="text-[11px] text-muted-foreground">
-              {editing ? t('providers.field.apiKey.keep') : t('providers.field.apiKey.new')}
+              {editing
+                ? t('providers.field.apiKey.keep')
+                : t('providers.field.apiKey.new')}
             </span>
           }
         >
@@ -235,7 +256,10 @@ export function ProviderDetail({ provider, onSaved, onCancel }: ProviderDetailPr
                         {model.modalities.length > 0 && (
                           <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
                             {model.modalities.map((modality) => (
-                              <span key={modality} title={t(`providers.modality.${modality}`)}>
+                              <span
+                                key={modality}
+                                title={t(`providers.modality.${modality}`)}
+                              >
                                 {MODALITY_ICONS[modality]}
                               </span>
                             ))}

@@ -73,7 +73,11 @@
   --bg: var(--color-neutral-900);
   --bg-elevated: var(--color-neutral-800);
   --bg-hover: var(--color-neutral-700);
-  --border: color-mix(in oklab, var(--color-neutral-700) 70%, var(--color-neutral-900));
+  --border: color-mix(
+    in oklab,
+    var(--color-neutral-700) 70%,
+    var(--color-neutral-900)
+  );
   --text: var(--color-neutral-100);
   --text-dim: var(--color-neutral-400);
   --accent: var(--color-blue-500);
@@ -101,7 +105,11 @@
   }
 
   body {
-    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-family:
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      sans-serif;
     background: var(--bg);
     color: var(--text);
   }
@@ -429,7 +437,6 @@
       border-radius: 6px;
     }
   }
-
 
   /* Syntax highlighting.
      `rehype-highlight` emits highlight.js class names; these map them onto the

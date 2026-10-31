@@ -98,8 +98,12 @@ export function Sidebar({
 
   // Read from `sessions` on every render, so a session closed while a dialog is
   // open resolves to undefined instead of acting on one that is gone.
-  const renameTarget = renamingId ? sessions.find((s) => s.id === renamingId) : undefined;
-  const deleteTarget = deletingId ? sessions.find((s) => s.id === deletingId) : undefined;
+  const renameTarget = renamingId
+    ? sessions.find((s) => s.id === renamingId)
+    : undefined;
+  const deleteTarget = deletingId
+    ? sessions.find((s) => s.id === deletingId)
+    : undefined;
   const deleteTurns = deleteWarning(deleteTarget);
 
   return (
@@ -143,15 +147,21 @@ export function Sidebar({
               {/* The title and its timestamp stack; the actions centre against
                   both lines rather than sitting on the title alone. */}
               <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
-                <span className="w-full truncate text-[13px]">{displayTitle(s)}</span>
-                <span className="text-[11px] text-muted-foreground">{formatTime(s.updatedAt)}</span>
+                <span className="w-full truncate text-[13px]">
+                  {displayTitle(s)}
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  {formatTime(s.updatedAt)}
+                </span>
               </span>
               {(streaming || unread) && (
                 // Deliberately no `role="status"`: that is the deleting
                 // spinner's contract, and tests read it as such. The state
                 // travels in the title instead.
                 <span
-                  title={streaming ? t('sidebar.streaming') : t('sidebar.unread')}
+                  title={
+                    streaming ? t('sidebar.streaming') : t('sidebar.unread')
+                  }
                   className={`h-2 w-2 shrink-0 rounded-full ${
                     streaming ? 'animate-presence-dot bg-accent' : 'bg-success'
                   }`}

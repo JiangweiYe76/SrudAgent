@@ -5,7 +5,15 @@
 // pinning are the agent's own refusal rules caught next to the field, what a
 // declaration means — an empty level list is a model with no thinking control —
 // and that a model reopens with what it was saved with.
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeAll,
+  beforeEach,
+  afterEach,
+} from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import type { ProviderModel } from '@/lib/acp';
@@ -22,7 +30,9 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 beforeEach(() => {
@@ -40,20 +50,31 @@ afterEach(() => {
 let onSave: (model: ProviderModel) => void;
 let onCancel: () => void;
 
-async function renderForm(model: ProviderModel | null, taken: string[] = []): Promise<void> {
+async function renderForm(
+  model: ProviderModel | null,
+  taken: string[] = [],
+): Promise<void> {
   const { ModelForm } = await import('./ModelForm');
   onSave = vi.fn<(model: ProviderModel) => void>();
   onCancel = vi.fn<() => void>();
   await act(async () => {
     root.render(
-      <ModelForm model={model} taken={taken} onSave={onSave} onCancel={onCancel} />,
+      <ModelForm
+        model={model}
+        taken={taken}
+        onSave={onSave}
+        onCancel={onCancel}
+      />,
     );
   });
 }
 
 function button(label: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
-    (b) => b.getAttribute('aria-label') === label || b.textContent?.trim() === label,
+  const found = [
+    ...document.querySelectorAll<HTMLButtonElement>('button'),
+  ].find(
+    (b) =>
+      b.getAttribute('aria-label') === label || b.textContent?.trim() === label,
   );
   if (!found) throw new Error(`no button labelled ${label}`);
   return found;
@@ -76,7 +97,9 @@ function inputByLabel(label: string): HTMLInputElement {
 // The trigger of a select control, which is a menu button rather than a native
 // `<select>`.
 function selectTrigger(label: string): HTMLButtonElement {
-  const found = document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  const found = document.querySelector<HTMLButtonElement>(
+    `button[aria-label="${label}"]`,
+  );
   if (!found) throw new Error(`no select labelled ${label}`);
   return found;
 }
@@ -90,7 +113,10 @@ function inputByPlaceholder(placeholder: string): HTMLInputElement {
 }
 
 async function type(element: HTMLInputElement, value: string): Promise<void> {
-  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  const set = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  )!.set!;
   await act(async () => {
     set.call(element, value);
     element.dispatchEvent(new Event('input', { bubbles: true }));
@@ -158,7 +184,10 @@ describe('ModelForm', () => {
 
     // Untouched, the list survives a save in the order the protocol lists it.
     await click(button('Save'));
-    expect(onSave).toHaveBeenCalledWith({ id: 'omni', modalities: ['image', 'audio'] });
+    expect(onSave).toHaveBeenCalledWith({
+      id: 'omni',
+      modalities: ['image', 'audio'],
+    });
   });
 
   it('records the thinking levels a model was configured with', async () => {
@@ -198,8 +227,11 @@ describe('ModelForm', () => {
 
     // Rows are listed weakest to strongest, whatever order they were stored in.
     expect(
-      [...document.querySelectorAll<HTMLButtonElement>('button[aria-label="Level"]')][0]
-        .textContent,
+      [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          'button[aria-label="Level"]',
+        ),
+      ][0].textContent,
     ).toBe('Off');
     expect(selectTrigger('Default level').textContent).toBe('Max');
 

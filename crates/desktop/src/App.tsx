@@ -16,7 +16,11 @@ import {
   isBusy,
   isReopening,
 } from './lib/sessionStore';
-import { useProviderStore, draftModelOptions, draftThinkingOptions } from './lib/providers';
+import {
+  useProviderStore,
+  draftModelOptions,
+  draftThinkingOptions,
+} from './lib/providers';
 import { useTheme, useThemeStore } from './lib/theme';
 import { actionForEvent, useShortcutStore } from './lib/shortcuts';
 import { suppressSelectAll, suppressWebviewContextMenu } from './lib/webview';
@@ -62,7 +66,10 @@ function App() {
   // plus that 38, so the layout holds steady until the observer reports a real
   // measurement.
   const [composerHeight, setComposerHeight] = useState(140);
-  const onComposerHeight = useCallback((height: number) => setComposerHeight(height), []);
+  const onComposerHeight = useCallback(
+    (height: number) => setComposerHeight(height),
+    [],
+  );
 
   useTheme();
   const theme = useThemeStore((s) => s.mode);
@@ -77,7 +84,12 @@ function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       // A control that already claimed the key keeps it, a held key counts once,
       // and a settings row recording a binding must not fire the one it replaces.
-      if (event.defaultPrevented || event.repeat || useShortcutStore.getState().recording) return;
+      if (
+        event.defaultPrevented ||
+        event.repeat ||
+        useShortcutStore.getState().recording
+      )
+        return;
       const id = actionForEvent(bindings, event);
       if (!id) return;
       event.preventDefault();
@@ -118,7 +130,9 @@ function App() {
   // on. Memoized because `ModelSelect` closes on a new options object, and a
   // draft re-renders for reasons that do not change its choice.
   const isDraft = active?.backendId === null;
-  const draftChoice = isDraft ? (active?.model?.currentValue ?? defaultModel) : null;
+  const draftChoice = isDraft
+    ? (active?.model?.currentValue ?? defaultModel)
+    : null;
   const draftOptions = useMemo(
     () => (isDraft ? draftModelOptions(providers, draftChoice) : null),
     [isDraft, draftChoice, providers],
@@ -175,7 +189,9 @@ function App() {
       />
       <main className="relative flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-5 text-sm font-medium">
-          <span className="truncate">{active ? displayTitle(active) : 'SrudAgent'}</span>
+          <span className="truncate">
+            {active ? displayTitle(active) : 'SrudAgent'}
+          </span>
           <div className="flex shrink-0 items-center gap-1">
             {/* The session's model, next to the session it changes. A draft has
                 no agent selector yet and is shown the catalog's; a session the
@@ -234,7 +250,10 @@ function App() {
           onHeightChange={onComposerHeight}
         />
       </main>
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
       <Toaster theme={theme} position="top-center" />
     </div>
   );
@@ -243,11 +262,15 @@ function App() {
 // The configured window of the model a reference names, or undefined when the
 // reference is empty, malformed, or names a model that is gone. A reference is
 // spelled `providerId/modelId`, and model ids never carry a slash.
-function contextWindowOf(providers: Provider[], reference: string): number | undefined {
+function contextWindowOf(
+  providers: Provider[],
+  reference: string,
+): number | undefined {
   const slash = reference.lastIndexOf('/');
   if (slash <= 0) return undefined;
   const provider = providers.find((p) => p.id === reference.slice(0, slash));
-  return provider?.models.find((m) => m.id === reference.slice(slash + 1))?.contextWindow;
+  return provider?.models.find((m) => m.id === reference.slice(slash + 1))
+    ?.contextWindow;
 }
 
 export default App;

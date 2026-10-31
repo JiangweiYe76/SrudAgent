@@ -1,4 +1,9 @@
-import { useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react';
+import {
+  useEffect,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactElement,
+} from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   ContextMenuContent,
@@ -55,7 +60,11 @@ export function ContextMenu({
       </ContextMenuTrigger>
       <ContextMenuContent aria-label={label}>
         {items.map(({ label: itemLabel, icon: Icon, disabled, onSelect }) => (
-          <ContextMenuItem key={itemLabel} disabled={disabled} onSelect={onSelect}>
+          <ContextMenuItem
+            key={itemLabel}
+            disabled={disabled}
+            onSelect={onSelect}
+          >
             {Icon && <Icon className="h-3.5 w-3.5 text-muted-foreground" />}
             {itemLabel}
           </ContextMenuItem>

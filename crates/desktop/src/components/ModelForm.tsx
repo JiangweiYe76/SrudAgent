@@ -44,7 +44,9 @@ interface ThinkingRow {
 // out of the config has no row: the editor only shows what the model accepts.
 function thinkingRowsOf(config: ThinkingConfig | undefined): ThinkingRow[] {
   if (!config) return [];
-  return THINKING_LEVELS.filter((level) => config.levels[level] !== undefined).map((level) => ({
+  return THINKING_LEVELS.filter(
+    (level) => config.levels[level] !== undefined,
+  ).map((level) => ({
     level,
     value: config.levels[level] ?? '',
   }));
@@ -53,7 +55,9 @@ function thinkingRowsOf(config: ThinkingConfig | undefined): ThinkingRow[] {
 export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
   const [id, setId] = useState(() => model?.id ?? '');
   const [name, setName] = useState(() => model?.name ?? '');
-  const [modalities, setModalities] = useState<Modality[]>(() => model?.modalities ?? []);
+  const [modalities, setModalities] = useState<Modality[]>(
+    () => model?.modalities ?? [],
+  );
   const [context, setContext] = useState(() =>
     model?.contextWindow === undefined ? '' : String(model.contextWindow),
   );
@@ -69,7 +73,9 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
   // number of tokens above zero, which is what the agent will store.
   const contextTrimmed = context.trim();
   const contextNumber =
-    contextTrimmed === '' ? undefined : Number(contextTrimmed.replace(/_/g, ''));
+    contextTrimmed === ''
+      ? undefined
+      : Number(contextTrimmed.replace(/_/g, ''));
   const contextProblem =
     contextNumber !== undefined &&
     (!Number.isInteger(contextNumber) || contextNumber <= 0)
@@ -78,34 +84,37 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
   // The agent's own rules, in the same words it would refuse with: an id cannot
   // be blank, cannot carry `/` (which separates a reference from its provider),
   // and cannot be listed twice under one provider.
-  const problem =
-    trimmed.includes('/')
-      ? t('providers.model.badId')
-      : taken.includes(trimmed)
-        ? t('providers.model.duplicate', { id: trimmed })
-        : contextProblem;
+  const problem = trimmed.includes('/')
+    ? t('providers.model.badId')
+    : taken.includes(trimmed)
+      ? t('providers.model.duplicate', { id: trimmed })
+      : contextProblem;
 
   // A declaration is only checked once there is something to declare: an empty
   // list means this model has no thinking control, which is a model saved
   // without a `thinking` field rather than an error. Once a level exists, each
   // one needs a wire value, no level may appear twice, and the default has to
   // name one of them.
-  const thinkingProblem =
-    thinkingRows.some((row) => row.value.trim() === '')
-      ? t('providers.model.thinking.badValue')
-      : thinkingRows.some((row, index) =>
-            thinkingRows.some((other, i) => i !== index && other.level === row.level),
-          )
-        ? t('providers.model.thinking.badDuplicate')
-        : thinkingRows.length > 0 && !thinkingRows.some((row) => row.level === thinkingDefault)
-          ? t('providers.model.thinking.badDefault')
-          : null;
+  const thinkingProblem = thinkingRows.some((row) => row.value.trim() === '')
+    ? t('providers.model.thinking.badValue')
+    : thinkingRows.some((row, index) =>
+          thinkingRows.some(
+            (other, i) => i !== index && other.level === row.level,
+          ),
+        )
+      ? t('providers.model.thinking.badDuplicate')
+      : thinkingRows.length > 0 &&
+          !thinkingRows.some((row) => row.level === thinkingDefault)
+        ? t('providers.model.thinking.badDefault')
+        : null;
 
   function save() {
     const label = name.trim();
     const kept = MODALITIES.filter((modality) => modalities.includes(modality));
     const thinking: ThinkingConfig | undefined =
-      thinkingProblem === null && thinkingRows.length > 0 && thinkingDefault !== ''
+      thinkingProblem === null &&
+      thinkingRows.length > 0 &&
+      thinkingDefault !== ''
         ? {
             default: thinkingDefault,
             levels: thinkingRows.reduce<Partial<Record<ThinkingLevel, string>>>(
@@ -131,7 +140,8 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
   function levelOptions(row: ThinkingRow) {
     return THINKING_LEVELS.filter(
       (level) =>
-        level === row.level || !thinkingRows.some((other) => other.level === level),
+        level === row.level ||
+        !thinkingRows.some((other) => other.level === level),
     ).map((level) => ({ value: level, label: thinkingLabel(level) }));
   }
 
@@ -194,7 +204,11 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
             </span>
           }
         >
-          <TextInput value={context} placeholder="128000" onChange={setContext} />
+          <TextInput
+            value={context}
+            placeholder="128000"
+            onChange={setContext}
+          />
         </Field>
 
         <div className="flex flex-col gap-2 border-t border-border pt-3">
@@ -214,7 +228,9 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
                       onChange={(level) =>
                         setThinkingRows((rows) =>
                           rows.map((entry, i) =>
-                            i === index ? { ...entry, level: level as ThinkingLevel } : entry,
+                            i === index
+                              ? { ...entry, level: level as ThinkingLevel }
+                              : entry,
                           ),
                         )
                       }
@@ -225,7 +241,9 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
                       placeholder={row.level}
                       onChange={(value) =>
                         setThinkingRows((rows) =>
-                          rows.map((entry, i) => (i === index ? { ...entry, value } : entry)),
+                          rows.map((entry, i) =>
+                            i === index ? { ...entry, value } : entry,
+                          ),
                         )
                       }
                     />
@@ -235,7 +253,9 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
                       title={t('providers.model.thinking.remove')}
                       aria-label={t('providers.model.thinking.remove')}
                       onClick={() =>
-                        setThinkingRows((rows) => rows.filter((_, i) => i !== index))
+                        setThinkingRows((rows) =>
+                          rows.filter((_, i) => i !== index),
+                        )
                       }
                     >
                       <Trash2 className="h-3.5 w-3.5 text-destructive" />
@@ -265,7 +285,9 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
                     ? thinkingDefault
                     : ''
                 }
-                onChange={(value) => setThinkingDefault(value as ThinkingLevel | '')}
+                onChange={(value) =>
+                  setThinkingDefault(value as ThinkingLevel | '')
+                }
                 placeholder={t('providers.model.thinking.choose')}
                 options={thinkingRows.map((row) => ({
                   value: row.level,
@@ -300,7 +322,9 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
         </Button>
         <Button
           onClick={save}
-          disabled={trimmed === '' || problem !== null || thinkingProblem !== null}
+          disabled={
+            trimmed === '' || problem !== null || thinkingProblem !== null
+          }
         >
           {t('providers.form.save')}
         </Button>

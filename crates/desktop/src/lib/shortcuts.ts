@@ -18,8 +18,16 @@ export interface ShortcutAction {
 }
 
 export const SHORTCUT_ACTIONS: ShortcutAction[] = [
-  { id: 'session.new', labelKey: 'shortcuts.session.new', defaultBinding: 'mod+n' },
-  { id: 'settings.open', labelKey: 'shortcuts.settings.open', defaultBinding: 'mod+,' },
+  {
+    id: 'session.new',
+    labelKey: 'shortcuts.session.new',
+    defaultBinding: 'mod+n',
+  },
+  {
+    id: 'settings.open',
+    labelKey: 'shortcuts.settings.open',
+    defaultBinding: 'mod+,',
+  },
 ];
 
 export const DEFAULT_BINDINGS = SHORTCUT_ACTIONS.reduce(
@@ -35,7 +43,15 @@ const KEY_ALIASES: Record<string, string> = { '+': 'plus' };
 
 // Keys that only ever modify another key. A press of one of these is not a
 // binding, it is the user still reaching for one.
-const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph', 'OS']);
+const MODIFIER_KEYS = new Set([
+  'Shift',
+  'Control',
+  'Alt',
+  'Meta',
+  'CapsLock',
+  'AltGraph',
+  'OS',
+]);
 
 export function isMac(): boolean {
   return typeof navigator !== 'undefined' && /mac/i.test(navigator.userAgent);
@@ -59,7 +75,12 @@ export function parseBinding(binding: string): ParsedBinding | null {
   const modifiers = parts.slice(0, -1);
   if (new Set(modifiers).size !== modifiers.length) return null;
   if (!modifiers.every((modifier) => MODIFIERS.includes(modifier))) return null;
-  return { key, modifiers: [...modifiers].sort((a, b) => MODIFIERS.indexOf(a) - MODIFIERS.indexOf(b)) };
+  return {
+    key,
+    modifiers: [...modifiers].sort(
+      (a, b) => MODIFIERS.indexOf(a) - MODIFIERS.indexOf(b),
+    ),
+  };
 }
 
 /** The spelling a parsed binding is stored and compared in. */
@@ -72,7 +93,8 @@ export function canonicalBinding(binding: string): string | null {
 export function bindingFromEvent(event: KeyboardEvent): string | null {
   if (MODIFIER_KEYS.has(event.key)) return null;
   const key = event.key.toLowerCase();
-  if (key === 'dead' || key === 'unidentified' || key === 'process') return null;
+  if (key === 'dead' || key === 'unidentified' || key === 'process')
+    return null;
   const modifiers: string[] = [];
   if (isMac() ? event.metaKey : event.ctrlKey) modifiers.push('mod');
   if (event.altKey) modifiers.push('alt');
@@ -81,7 +103,11 @@ export function bindingFromEvent(event: KeyboardEvent): string | null {
 }
 
 const MAC_SYMBOLS: Record<string, string> = { mod: '⌘', alt: '⌥', shift: '⇧' };
-const OTHER_NAMES: Record<string, string> = { mod: 'Ctrl', alt: 'Alt', shift: 'Shift' };
+const OTHER_NAMES: Record<string, string> = {
+  mod: 'Ctrl',
+  alt: 'Alt',
+  shift: 'Shift',
+};
 const KEY_LABELS: Record<string, string> = {
   arrowleft: '←',
   arrowright: '→',
@@ -101,8 +127,14 @@ export function formatBinding(binding: string, mac = isMac()): string {
   const parsed = parseBinding(binding);
   if (!parsed) return binding;
   const key = KEY_LABELS[parsed.key] ?? parsed.key.toUpperCase();
-  if (mac) return parsed.modifiers.map((modifier) => MAC_SYMBOLS[modifier]).join('') + key;
-  return [...parsed.modifiers.map((modifier) => OTHER_NAMES[modifier]), key].join('+');
+  if (mac)
+    return (
+      parsed.modifiers.map((modifier) => MAC_SYMBOLS[modifier]).join('') + key
+    );
+  return [
+    ...parsed.modifiers.map((modifier) => OTHER_NAMES[modifier]),
+    key,
+  ].join('+');
 }
 
 /** The action already bound to `binding`, if another one is. */
@@ -113,7 +145,11 @@ export function conflictFor(
 ): ShortcutAction | null {
   const target = canonicalBinding(binding);
   if (!target) return null;
-  return SHORTCUT_ACTIONS.find((action) => action.id !== id && bindings[action.id] === target) ?? null;
+  return (
+    SHORTCUT_ACTIONS.find(
+      (action) => action.id !== id && bindings[action.id] === target,
+    ) ?? null
+  );
 }
 
 /** The action a key press triggers, or null when it triggers none. */
@@ -123,7 +159,10 @@ export function actionForEvent(
 ): ShortcutId | null {
   const binding = bindingFromEvent(event);
   if (!binding) return null;
-  return SHORTCUT_ACTIONS.find((action) => bindings[action.id] === binding)?.id ?? null;
+  return (
+    SHORTCUT_ACTIONS.find((action) => bindings[action.id] === binding)?.id ??
+    null
+  );
 }
 
 const STORAGE_KEY = 'srud.shortcuts';

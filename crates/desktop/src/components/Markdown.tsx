@@ -7,7 +7,9 @@ import rehypeHighlight from 'rehype-highlight';
 import { common } from 'lowlight';
 import mermaidLang from '@/lib/highlight/mermaid';
 import rehypeCodeLines, { textOf, type HastNode } from '@/lib/rehypeCodeLines';
-import rehypeSourceOffsets, { rememberMarkdownSource } from '@/lib/markdownSource';
+import rehypeSourceOffsets, {
+  rememberMarkdownSource,
+} from '@/lib/markdownSource';
 import remarkDisplayMath from '@/lib/remarkDisplayMath';
 import { t } from '@/lib/i18n';
 import { Mermaid } from '@/components/Mermaid';
@@ -28,8 +30,9 @@ import 'katex/dist/katex.min.css';
  * the caller's cue to leave the label out rather than print an empty one.
  */
 function languageOf(node: HastNode | undefined): string | undefined {
-  const className = (node?.children?.[0] as { properties?: { className?: unknown } } | undefined)
-    ?.properties?.className;
+  const className = (
+    node?.children?.[0] as { properties?: { className?: unknown } } | undefined
+  )?.properties?.className;
   const classes = Array.isArray(className) ? className.map(String) : [];
   const declared = classes.find((name) => name.startsWith('language-'));
   return declared?.slice('language-'.length).toLowerCase();
@@ -65,7 +68,14 @@ function CodeBlock({
   // children go along so its code view is highlighted and numbered like any
   // other fence, rather than the plain string the renderer needs.
   if (language === 'mermaid') {
-    return <Mermaid chart={source} code={children} streaming={streaming} className={className} />;
+    return (
+      <Mermaid
+        chart={source}
+        code={children}
+        streaming={streaming}
+        className={className}
+      />
+    );
   }
 
   return (
@@ -189,7 +199,10 @@ export function Markdown({
           // discard the source positions copying needs.
           rehypeSourceOffsets,
           rehypeKatex,
-          [rehypeHighlight, { detect: false, languages: { ...common, mermaid: mermaidLang } }],
+          [
+            rehypeHighlight,
+            { detect: false, languages: { ...common, mermaid: mermaidLang } },
+          ],
           [rehypeCodeLines, {}],
         ]}
         components={{

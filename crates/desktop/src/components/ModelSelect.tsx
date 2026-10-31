@@ -60,7 +60,10 @@ export function ModelSelect({ options, disabled, onSelect }: ModelSelectProps) {
         <span className="truncate">{current}</span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-h-[420px] min-w-[240px] overflow-y-auto">
+      <DropdownMenuContent
+        align="end"
+        className="max-h-[420px] min-w-[240px] overflow-y-auto"
+      >
         {options.groups.map((group) => {
           const unavailable = group.id === UNAVAILABLE_GROUP;
           return (
@@ -75,18 +78,24 @@ export function ModelSelect({ options, disabled, onSelect }: ModelSelectProps) {
                   key={choice.value}
                   // Picking what the session already runs on would change
                   // nothing, and a stale entry names a model that is gone.
-                  disabled={unavailable || choice.value === options.currentValue}
+                  disabled={
+                    unavailable || choice.value === options.currentValue
+                  }
                   onSelect={() => onSelect(choice.value)}
                   className={unavailable ? 'text-destructive' : undefined}
                 >
                   <Check
                     className={cn(
                       'h-3.5 w-3.5 shrink-0',
-                      choice.value === options.currentValue ? 'opacity-100' : 'opacity-0',
+                      choice.value === options.currentValue
+                        ? 'opacity-100'
+                        : 'opacity-0',
                     )}
                   />
                   <span className="truncate">
-                    {unavailable ? t('models.unavailable', { model: choice.name }) : choice.name}
+                    {unavailable
+                      ? t('models.unavailable', { model: choice.name })
+                      : choice.name}
                   </span>
                 </DropdownMenuItem>
               ))}
@@ -102,7 +111,9 @@ export function ModelSelect({ options, disabled, onSelect }: ModelSelectProps) {
 // nothing offers it — a provider deleted since the session chose it.
 function labelOf(options: ModelOptions): string {
   for (const group of options.groups) {
-    const found = group.choices.find((choice) => choice.value === options.currentValue);
+    const found = group.choices.find(
+      (choice) => choice.value === options.currentValue,
+    );
     if (found) return found.name;
   }
   return options.currentValue;

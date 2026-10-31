@@ -40,7 +40,12 @@ export function isLine(node: HastNode): boolean {
 }
 
 function line(children: HastNode[]): HastNode {
-  return { type: 'element', tagName: 'span', properties: { className: [LINE_CLASS] }, children };
+  return {
+    type: 'element',
+    tagName: 'span',
+    properties: { className: [LINE_CLASS] },
+    children,
+  };
 }
 
 /**
@@ -131,7 +136,8 @@ export default function rehypeCodeLines(): (tree: HastNode) => void {
           const lines = groupIntoLines(code.children);
           // A fence ending in a newline yields a trailing empty line, which
           // would number one line past the code the model actually wrote.
-          if (lines.length > 1 && lines[lines.length - 1].length === 0) lines.pop();
+          if (lines.length > 1 && lines[lines.length - 1].length === 0)
+            lines.pop();
           // Wrapped rather than mapped directly: `map` passes the index as the
           // second argument, which would be read here as the line's contents.
           code.children = lines.map((contents) => line(contents));

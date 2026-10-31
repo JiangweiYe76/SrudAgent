@@ -73,7 +73,9 @@ export function DropdownMenuSeparator({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Separator>) {
   return (
     <DropdownMenuPrimitive.Separator
-      className={['-mx-1 my-1 h-px bg-border', className].filter(Boolean).join(' ')}
+      className={['-mx-1 my-1 h-px bg-border', className]
+        .filter(Boolean)
+        .join(' ')}
       {...props}
     />
   );
@@ -85,7 +87,10 @@ export function DropdownMenuShortcut({
 }: React.ComponentProps<'span'>) {
   return (
     <span
-      className={['ml-auto text-xs tracking-widest text-muted-foreground', className]
+      className={[
+        'ml-auto text-xs tracking-widest text-muted-foreground',
+        className,
+      ]
         .filter(Boolean)
         .join(' ')}
       {...props}

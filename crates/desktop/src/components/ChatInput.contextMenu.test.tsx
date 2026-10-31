@@ -77,9 +77,9 @@ function openMenu(start = 0, end = 0): MouseEvent {
 }
 
 function item(label: string): HTMLElement {
-  const found = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
-    (button) => button.textContent?.trim() === label,
-  );
+  const found = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+  ).find((button) => button.textContent?.trim() === label);
   if (!found) throw new Error(`no menu item: ${label}`);
   return found;
 }
@@ -129,7 +129,10 @@ describe('the composer context menu', () => {
   });
 
   it('pastes text the host reads at the remembered caret', async () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
     vi.mocked(invoke).mockResolvedValueOnce({ kind: 'text', text: 'pasted' });
 
     const onValueChange = render('ac');
@@ -138,8 +141,12 @@ describe('the composer context menu', () => {
     openMenu(1, 1);
     choose('Paste');
 
-    await vi.waitFor(() => expect(onValueChange).toHaveBeenCalledWith('apastedc'));
-    expect(invoke).toHaveBeenCalledWith('read_clipboard', { limit: 10 * 1024 * 1024 });
+    await vi.waitFor(() =>
+      expect(onValueChange).toHaveBeenCalledWith('apastedc'),
+    );
+    expect(invoke).toHaveBeenCalledWith('read_clipboard', {
+      limit: 10 * 1024 * 1024,
+    });
   });
 
   it('selects the whole draft', async () => {

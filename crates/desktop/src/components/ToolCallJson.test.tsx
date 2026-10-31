@@ -55,7 +55,9 @@ function render(toolCall: ToolCall): HTMLElement {
  * an empty element and pass.
  */
 function openToolCall(): void {
-  const trigger = container.querySelector<HTMLButtonElement>('button[data-state="closed"]')!;
+  const trigger = container.querySelector<HTMLButtonElement>(
+    'button[data-state="closed"]',
+  )!;
   act(() => {
     trigger.click();
   });
@@ -78,19 +80,28 @@ function highlightedClasses(): string[] {
  * A payload that is not JSON renders as a `span` rather than a `pre`, so both are
  * read: this is what tells a coloured block from a plain-text one.
  */
-function payloadUnder(label: 'Input' | 'Output'): { text: string; coloured: boolean } {
+function payloadUnder(label: 'Input' | 'Output'): {
+  text: string;
+  coloured: boolean;
+} {
   const block = [...container.querySelectorAll('div')].find(
     (node) => node.firstElementChild?.textContent === label,
   )!;
   const body = block.querySelector('pre, span.font-mono')!;
-  return { text: body.textContent ?? '', coloured: body.querySelector('[class*="hljs-"]') !== null };
+  return {
+    text: body.textContent ?? '',
+    coloured: body.querySelector('[class*="hljs-"]') !== null,
+  };
 }
 
 beforeEach(() => {
   // Without this, `act` refuses to run and the click below updates state without
   // rendering, so every assertion would read the panel as it was before the click.
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  globalThis.ResizeObserver ??= NoopResizeObserver as unknown as typeof ResizeObserver;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
+  globalThis.ResizeObserver ??=
+    NoopResizeObserver as unknown as typeof ResizeObserver;
   container = document.createElement('div');
 });
 
@@ -101,7 +112,12 @@ afterEach(() => {
 
 describe('an opened tool call', () => {
   it('colours the arguments it was given', () => {
-    render({ id: 'tc1', name: 'shell', args: '{"command":"ls -la"}', pending: false });
+    render({
+      id: 'tc1',
+      name: 'shell',
+      args: '{"command":"ls -la"}',
+      pending: false,
+    });
     openToolCall();
 
     expect(highlightedClasses()).toContain('hljs-attr');
@@ -112,7 +128,8 @@ describe('an opened tool call', () => {
     render({
       id: 'tc1',
       name: 'shell',
-      args: '{"command":"ls -la"}', pending: false,
+      args: '{"command":"ls -la"}',
+      pending: false,
       result: '{"stdout":"total 8\\n","exit_code":0}',
     });
     openToolCall();
@@ -123,16 +140,29 @@ describe('an opened tool call', () => {
   });
 
   it('shows both sides under a label each', () => {
-    render({ id: 'tc1', name: 'shell', args: '{"command":"ls"}', pending: false, result: '{"exit_code":0}' });
+    render({
+      id: 'tc1',
+      name: 'shell',
+      args: '{"command":"ls"}',
+      pending: false,
+      result: '{"exit_code":0}',
+    });
     openToolCall();
 
-    const labels = [...container.querySelectorAll('span')].map((s) => s.textContent);
+    const labels = [...container.querySelectorAll('span')].map(
+      (s) => s.textContent,
+    );
     expect(labels).toContain('Input');
     expect(labels).toContain('Output');
   });
 
   it('puts the arguments on their own lines', () => {
-    render({ id: 'tc1', name: 'shell', args: '{"command":"ls"}', pending: false });
+    render({
+      id: 'tc1',
+      name: 'shell',
+      args: '{"command":"ls"}',
+      pending: false,
+    });
     openToolCall();
 
     // The payload arrives as one line. A block that stayed on one line would be
@@ -146,12 +176,15 @@ describe('an opened tool call', () => {
     render({
       id: 'tc1',
       name: 'shell',
-      args: '{"command":"rm -rf x"}', pending: false,
+      args: '{"command":"rm -rf x"}',
+      pending: false,
       result: 'rm is not available through this tool.',
     });
     openToolCall();
 
-    expect(container.textContent).toContain('rm is not available through this tool.');
+    expect(container.textContent).toContain(
+      'rm is not available through this tool.',
+    );
     // Scoped to the result block: the arguments are valid JSON and are expected to
     // be coloured, so a panel-wide check would only ever see their punctuation.
     // The sentence has a full stop in it, and marking that up as JSON punctuation
@@ -162,7 +195,12 @@ describe('an opened tool call', () => {
   });
 
   it('says so when there is no result yet', () => {
-    render({ id: 'tc1', name: 'shell', args: '{"command":"ls"}', pending: false });
+    render({
+      id: 'tc1',
+      name: 'shell',
+      args: '{"command":"ls"}',
+      pending: false,
+    });
     openToolCall();
 
     expect(container.textContent).toContain('(no result)');
@@ -172,8 +210,16 @@ describe('an opened tool call', () => {
     // The read tool pointed at a markdown file returns one. Rendering this
     // through the markdown pipeline would end the block at the fence and show
     // the rest of the JSON as prose.
-    const result = JSON.stringify({ content: '# Title\n\n```js\nconst x = 1;\n```\n' });
-    render({ id: 'tc1', name: 'read', args: '{"path":"/tmp/a.md"}', pending: false, result });
+    const result = JSON.stringify({
+      content: '# Title\n\n```js\nconst x = 1;\n```\n',
+    });
+    render({
+      id: 'tc1',
+      name: 'read',
+      args: '{"path":"/tmp/a.md"}',
+      pending: false,
+      result,
+    });
     openToolCall();
 
     expect(payloadUnder('Output').text).toContain('```js');
@@ -183,7 +229,13 @@ describe('an opened tool call', () => {
   it('leaves out the input side of a tool that takes no arguments', () => {
     // A label over an empty space reads as a payload that failed to load, which
     // is a different thing from a tool that has no arguments to show.
-    render({ id: 'tc1', name: 'now', args: '', pending: false, result: '{"ok":true}' });
+    render({
+      id: 'tc1',
+      name: 'now',
+      args: '',
+      pending: false,
+      result: '{"ok":true}',
+    });
     openToolCall();
 
     expect(container.textContent).not.toContain('Input');
@@ -191,7 +243,12 @@ describe('an opened tool call', () => {
   });
 
   it('offers no copy button for a side that has nothing to copy', () => {
-    render({ id: 'tc1', name: 'shell', args: '{"command":"ls"}', pending: false });
+    render({
+      id: 'tc1',
+      name: 'shell',
+      args: '{"command":"ls"}',
+      pending: false,
+    });
     openToolCall();
 
     // Counted by the copy button's own title, not by `button[title]`: that would

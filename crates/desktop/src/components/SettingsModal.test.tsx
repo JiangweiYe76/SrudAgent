@@ -1,5 +1,13 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  afterEach,
+  vi,
+} from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { SettingsModal } from './SettingsModal';
@@ -26,25 +34,31 @@ function render(): void {
 
 /** The zoom buttons, in the order the settings offer them. */
 function zoomButtons(): HTMLButtonElement[] {
-  return [...document.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')].filter((b) =>
-    b.textContent?.endsWith('%'),
-  );
+  return [
+    ...document.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'),
+  ].filter((b) => b.textContent?.endsWith('%'));
 }
 
 /** Clicks the button labelled with `label`, e.g. `'150%'`. */
 async function choose(label: string): Promise<void> {
   await act(async () => {
-    zoomButtons().find((b) => b.textContent === label)!.click();
+    zoomButtons()
+      .find((b) => b.textContent === label)!
+      .click();
   });
 }
 
 /** The pressed state of the button labelled with `label`. */
 function isChosen(label: string): string | null {
-  return zoomButtons().find((b) => b.textContent === label)!.getAttribute('aria-pressed');
+  return zoomButtons()
+    .find((b) => b.textContent === label)!
+    .getAttribute('aria-pressed');
 }
 
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 beforeEach(() => {

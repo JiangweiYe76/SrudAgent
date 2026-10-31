@@ -16,7 +16,9 @@ let root: Root;
 
 function render(options: ModelOptions | null, disabled = false): void {
   act(() => {
-    root.render(<ModelSelect options={options} disabled={disabled} onSelect={() => {}} />);
+    root.render(
+      <ModelSelect options={options} disabled={disabled} onSelect={() => {}} />,
+    );
   });
 }
 
@@ -37,12 +39,18 @@ const CONFIGURED: ModelOptions = {
         { value: 'openai/gpt-4o-mini', name: 'GPT-4o mini' },
       ],
     },
-    { id: 'deepseek', name: 'DeepSeek', choices: [{ value: 'deepseek/chat', name: 'Chat' }] },
+    {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      choices: [{ value: 'deepseek/chat', name: 'Chat' }],
+    },
   ],
 };
 
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 afterEach(() => {

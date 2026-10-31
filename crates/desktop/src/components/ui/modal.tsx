@@ -22,7 +22,9 @@ export function ModalContent({
 }) {
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className={cn('fixed inset-0 z-50 bg-black/40', overlayClassName)} />
+      <DialogPrimitive.Overlay
+        className={cn('fixed inset-0 z-50 bg-black/40', overlayClassName)}
+      />
       <DialogPrimitive.Content
         aria-describedby={undefined}
         className={cn(
@@ -32,7 +34,9 @@ export function ModalContent({
         {...props}
       >
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-          <DialogPrimitive.Title className="text-sm font-semibold">{title}</DialogPrimitive.Title>
+          <DialogPrimitive.Title className="text-sm font-semibold">
+            {title}
+          </DialogPrimitive.Title>
           <DialogPrimitive.Close
             title={t('common.close')}
             aria-label={t('common.close')}

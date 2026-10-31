@@ -59,7 +59,11 @@ export function PasswordInput({
         onClick={() => setVisible((current) => !current)}
         className="absolute top-1/2 right-0.5 h-6 w-6 -translate-y-1/2"
       >
-        {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+        {visible ? (
+          <EyeOff className="h-3.5 w-3.5" />
+        ) : (
+          <Eye className="h-3.5 w-3.5" />
+        )}
       </Button>
     </div>
   );

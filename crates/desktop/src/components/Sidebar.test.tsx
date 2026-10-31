@@ -35,7 +35,11 @@ function session(id: string): Session {
   };
 }
 
-function render(sessions: Session[], deletingIds: string[] = [], unreadIds: string[] = []): void {
+function render(
+  sessions: Session[],
+  deletingIds: string[] = [],
+  unreadIds: string[] = [],
+): void {
   act(() => {
     root.render(
       <Sidebar
@@ -54,7 +58,9 @@ function render(sessions: Session[], deletingIds: string[] = [], unreadIds: stri
 
 /** The session rows, in order. */
 function rows(): HTMLButtonElement[] {
-  return Array.from(container.querySelectorAll<HTMLButtonElement>('nav > button'));
+  return Array.from(
+    container.querySelectorAll<HTMLButtonElement>('nav > button'),
+  );
 }
 
 beforeAll(() => {
@@ -82,7 +88,9 @@ describe('Sidebar deleting rows', () => {
     expect(untouched.getAttribute('aria-disabled')).toBeNull();
     expect(untouched.className).not.toContain('opacity-60');
     expect(untouched.querySelector('[role="status"]')).toBeNull();
-    expect(untouched.querySelector('[aria-label="Session actions"]')).not.toBeNull();
+    expect(
+      untouched.querySelector('[aria-label="Session actions"]'),
+    ).not.toBeNull();
   });
 
   it('renders every row with its actions when no delete is in flight', () => {
@@ -91,14 +99,18 @@ describe('Sidebar deleting rows', () => {
     for (const row of rows()) {
       expect(row.getAttribute('aria-disabled')).toBeNull();
       expect(row.querySelector('[role="status"]')).toBeNull();
-      expect(row.querySelector('[aria-label="Session actions"]')).not.toBeNull();
+      expect(
+        row.querySelector('[aria-label="Session actions"]'),
+      ).not.toBeNull();
     }
   });
 
   it('marks a streaming row with a pulsing dot and an unread row with a plain one', () => {
     // An open last turn is all "streaming" means to the sidebar.
     const busy = session('s1');
-    busy.turns = [{ id: 't1', userInput: 'hi', steps: [], createdAt: Date.now() }];
+    busy.turns = [
+      { id: 't1', userInput: 'hi', steps: [], createdAt: Date.now() },
+    ];
     mount();
     render([busy, session('s2')], [], ['s2']);
     const [streaming, unread] = rows();

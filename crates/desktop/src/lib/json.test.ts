@@ -75,7 +75,9 @@ describe('readJson', () => {
     // The read tool returns file content with its own line breaks inside it.
     // Highlighted text is split per line elsewhere in the app, so a break landing
     // inside a string is the case that could drop or duplicate content.
-    const { text, tree } = readJson('{"content":"NAME=\\"Arch\\"\\nID=arch\\n"}');
+    const { text, tree } = readJson(
+      '{"content":"NAME=\\"Arch\\"\\nID=arch\\n"}',
+    );
     expect(textIn(tree!)).toBe(text);
     expect(classesIn(tree!)).toContain('hljs-string');
   });

@@ -95,7 +95,9 @@ export function ToggleGroup<T extends string>({
             aria-pressed={on}
             onClick={() =>
               onChange(
-                on ? value.filter((v) => v !== option.value) : [...value, option.value],
+                on
+                  ? value.filter((v) => v !== option.value)
+                  : [...value, option.value],
               )
             }
             className={cn(

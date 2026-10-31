@@ -43,7 +43,9 @@ function classesOf(node: SourceNode): string[] {
 function rangeOf(node: SourceNode): [number, number] | null {
   const start = node.position?.start?.offset;
   const end = node.position?.end?.offset;
-  return typeof start === 'number' && typeof end === 'number' ? [start, end] : null;
+  return typeof start === 'number' && typeof end === 'number'
+    ? [start, end]
+    : null;
 }
 
 function isMath(node: SourceNode): boolean {
@@ -58,7 +60,10 @@ function isMathBlock(node: SourceNode): boolean {
   );
 }
 
-function withRange(properties: Record<string, unknown>, range: [number, number]) {
+function withRange(
+  properties: Record<string, unknown>,
+  range: [number, number],
+) {
   properties[SOURCE_START] = String(range[0]);
   properties[SOURCE_END] = String(range[1]);
   return properties;
@@ -104,7 +109,8 @@ export default function rehypeSourceOffsets(): (tree: SourceNode) => void {
         // inside it.
         if (
           inert ||
-          (node.type === 'element' && (node.tagName === 'pre' || node.tagName === 'code'))
+          (node.type === 'element' &&
+            (node.tagName === 'pre' || node.tagName === 'code'))
         ) {
           next.push(child);
           continue;
@@ -135,7 +141,14 @@ export default function rehypeSourceOffsets(): (tree: SourceNode) => void {
         // `rehype-katex` replaces the element it renders, so the range has to
         // live on a wrapper around it. Block math keeps a block wrapper.
         const block = mathBlock || classesOf(child).includes('math-display');
-        next.push(wrapper(block ? 'div' : 'span', range, { [SOURCE_MATH]: 'true' }, child));
+        next.push(
+          wrapper(
+            block ? 'div' : 'span',
+            range,
+            { [SOURCE_MATH]: 'true' },
+            child,
+          ),
+        );
         continue;
       }
 
@@ -187,17 +200,27 @@ function boundaryOffset(
         return Math.min(start + within, end);
       }
     }
-    return edgeOf(text.parentElement, edge) ?? rootEdge(root, edge, text.parentElement);
+    return (
+      edgeOf(text.parentElement, edge) ??
+      rootEdge(root, edge, text.parentElement)
+    );
   }
 
-  return edgeOf(node instanceof Element ? node : null, edge) ?? rootEdge(root, edge, node);
+  return (
+    edgeOf(node instanceof Element ? node : null, edge) ??
+    rootEdge(root, edge, node)
+  );
 }
 
 /**
  * The first or last source range when a boundary sits on the message wrapper
  * itself, which carries no position of its own.
  */
-function rootEdge(root: Element, edge: 'start' | 'end', node: Node | null): number | null {
+function rootEdge(
+  root: Element,
+  edge: 'start' | 'end',
+  node: Node | null,
+): number | null {
   if (node !== root) return null;
 
   const units = root.querySelectorAll(`[${SOURCE_START}]`);
@@ -224,11 +247,19 @@ export function sourceOfSelection(
   if (selection.rangeCount === 0) return null;
 
   const range = selection.getRangeAt(0);
-  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
+  if (
+    !root.contains(range.startContainer) ||
+    !root.contains(range.endContainer)
+  ) {
     return null;
   }
 
-  const start = boundaryOffset(range.startContainer, range.startOffset, 'start', root);
+  const start = boundaryOffset(
+    range.startContainer,
+    range.startOffset,
+    'start',
+    root,
+  );
   const end = boundaryOffset(range.endContainer, range.endOffset, 'end', root);
   if (start === null || end === null || start >= end) return null;
 
@@ -268,7 +299,8 @@ function selectionSource(target: Document): string | null {
 
 /** Whether a key press is the copy shortcut, Ctrl+C or Cmd+C. */
 function isCopyShortcut(event: KeyboardEvent): boolean {
-  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return false;
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey)
+    return false;
 
   // The physical key survives non-Latin layouts, where `key` is not "c".
   return event.code === 'KeyC' || event.key.toLowerCase() === 'c';
@@ -287,7 +319,9 @@ function isCopyShortcut(event: KeyboardEvent): boolean {
  *
  * Returns a function that removes the listeners.
  */
-export function preserveMarkdownWhenCopying(target: Document = document): () => void {
+export function preserveMarkdownWhenCopying(
+  target: Document = document,
+): () => void {
   const onKeyDown = (event: KeyboardEvent) => {
     if (!isCopyShortcut(event) || isTextEntry(event.target)) return;
 

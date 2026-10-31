@@ -27,7 +27,10 @@ describe('loadDrafts', () => {
   });
 
   it('keeps the text entries and drops the rest', () => {
-    localStorage.setItem('srud.drafts', JSON.stringify({ S1: 'text', S2: 7, S3: null }));
+    localStorage.setItem(
+      'srud.drafts',
+      JSON.stringify({ S1: 'text', S2: 7, S3: null }),
+    );
     expect(loadDrafts()).toEqual({ S1: 'text' });
   });
 });
@@ -35,7 +38,9 @@ describe('loadDrafts', () => {
 describe('saveDrafts', () => {
   it('writes the map it is given', () => {
     saveDrafts({ S1: 'text' });
-    expect(JSON.parse(localStorage.getItem('srud.drafts')!)).toEqual({ S1: 'text' });
+    expect(JSON.parse(localStorage.getItem('srud.drafts')!)).toEqual({
+      S1: 'text',
+    });
   });
 
   it('leaves the drafts alone when the webview refuses the write', () => {

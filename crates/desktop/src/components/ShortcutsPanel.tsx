@@ -22,7 +22,10 @@ export function ShortcutsPanel() {
   const resetBinding = useShortcutStore((s) => s.resetBinding);
   // The last refusal, kept with the row it belongs to, so it appears under the
   // keys the user is working on rather than at the foot of the list.
-  const [error, setError] = useState<{ id: ShortcutId; message: string } | null>(null);
+  const [error, setError] = useState<{
+    id: ShortcutId;
+    message: string;
+  } | null>(null);
   const listeningRef = useRef<HTMLButtonElement>(null);
 
   // A button click does not put the button in focus on every platform, and a
@@ -31,7 +34,10 @@ export function ShortcutsPanel() {
     if (recording) listeningRef.current?.focus();
   }, [recording]);
 
-  const capture = (event: React.KeyboardEvent<HTMLButtonElement>, id: ShortcutId) => {
+  const capture = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    id: ShortcutId,
+  ) => {
     // Both halves matter: the dialog would read Escape as "close me", and the
     // window listener would read the new keys as the bindings they already are.
     event.preventDefault();
@@ -49,7 +55,10 @@ export function ShortcutsPanel() {
     }
     const taken = conflictFor(bindings, id, binding);
     if (taken) {
-      setError({ id, message: t('shortcuts.taken', { name: t(taken.labelKey) }) });
+      setError({
+        id,
+        message: t('shortcuts.taken', { name: t(taken.labelKey) }),
+      });
       return;
     }
     setBinding(id, binding);
@@ -80,7 +89,9 @@ export function ShortcutsPanel() {
                       if (listening) endRecording();
                       else beginRecording(action.id);
                     }}
-                    onKeyDown={(event) => listening && capture(event, action.id)}
+                    onKeyDown={(event) =>
+                      listening && capture(event, action.id)
+                    }
                     onBlur={() => {
                       if (listening) endRecording();
                     }}
@@ -92,7 +103,9 @@ export function ShortcutsPanel() {
                         : 'border-border text-muted-foreground hover:bg-item-hover hover:text-foreground',
                     )}
                   >
-                    {listening ? t('shortcuts.recording') : formatBinding(bindings[action.id])}
+                    {listening
+                      ? t('shortcuts.recording')
+                      : formatBinding(bindings[action.id])}
                   </button>
                   {/* Only where there is something to undo: a default row with a
                       reset beside it reads as a button that would do nothing. */}
@@ -109,7 +122,9 @@ export function ShortcutsPanel() {
                   )}
                 </div>
               </div>
-              {rowError && <span className="text-xs text-destructive">{rowError}</span>}
+              {rowError && (
+                <span className="text-xs text-destructive">{rowError}</span>
+              )}
             </div>
           );
         })}
