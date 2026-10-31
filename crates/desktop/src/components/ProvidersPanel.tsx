@@ -1,5 +1,14 @@
+// Providers and their models, as one master-detail pane.
+//
+// The left column is the list; the right is the chosen provider, edited in
+// place — its fields, and beneath them its models. Nothing here opens a dialog
+// of its own: the settings dialog is the only layer, and the detail pane is
+// where every field lives.
+//
+// The panel is a thin skin over the agent's own methods: every call answers
+// with the whole catalog, so it holds a selection and nothing else.
 import { useEffect, useState } from 'react';
-import { Check, ChevronDown, Layers, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -7,26 +16,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { ProviderDetail } from '@/components/ProviderDetail';
 import { defaultChoices, useProviderStore } from '@/lib/providers';
-import type { Provider } from '@/lib/acp';
 import { cn } from '@/lib/utils';
 import { t } from '@/lib/i18n';
 
-// Providers, their credentials and their models.
-//
-// The panel is a thin skin over the agent's own methods: every call answers with
-// the whole catalog, so it holds a list and nothing else. Changing a provider
-// happens in the provider dialog and its models in the models dialog, both of
-// which the panel only decides to open — and which it mounts only while open, so
-// a visit never inherits the last one's fields.
-interface ProvidersPanelProps {
-  form: { provider: Provider | null } | null;
-  onFormChange: (form: { provider: Provider | null } | null) => void;
-  modelsFor: Provider | null;
-  onModelsForChange: (provider: Provider | null) => void;
-}
-
-export function ProvidersPanel({ form, onFormChange, modelsFor, onModelsForChange }: ProvidersPanelProps) {
+export function ProvidersPanel() {
   const providers = useProviderStore((s) => s.providers);
   const defaultModel = useProviderStore((s) => s.defaultModel);
   const loaded = useProviderStore((s) => s.loaded);
@@ -35,10 +30,32 @@ export function ProvidersPanel({ form, onFormChange, modelsFor, onModelsForChang
   const remove = useProviderStore((s) => s.remove);
   const setDefault = useProviderStore((s) => s.setDefault);
   const [busy, setBusy] = useState(false);
+  // Which provider the detail pane shows, by id; `null` is "none yet". The
+  // pane itself is the only place fields are edited, so this is all the
+  // state the list keeps.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The selection survives on a provider that exists. The first load selects
+  // the first provider, so the pane is never empty while there is something to
+  // show; a provider deleted elsewhere empties the pane rather than showing a
+  // stale one.
+  useEffect(() => {
+    if (!loaded) return;
+    setSelectedId((current) =>
+      current !== null && providers.some((provider) => provider.id === current)
+        ? current
+        : (providers[0]?.id ?? null),
+    );
+  }, [loaded, providers]);
+
+  const selected = adding
+    ? null
+    : (providers.find((provider) => provider.id === selectedId) ?? null);
 
   const choices = defaultChoices(providers);
   // A stored default can name a model that is not on offer any more — a provider
@@ -53,7 +70,7 @@ export function ProvidersPanel({ form, onFormChange, modelsFor, onModelsForChang
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
       {/* First, because it is the one thing here that every new session inherits
           without anyone choosing it again. */}
       <div className="flex flex-col gap-1">
@@ -119,84 +136,98 @@ export function ProvidersPanel({ form, onFormChange, modelsFor, onModelsForChang
         </DropdownMenu>
       </div>
 
-      <div className="flex flex-col gap-3">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-sm">{t('providers.title')}</span>
-            <span className="text-xs text-muted-foreground">{t('providers.hint')}</span>
-          </div>
-          <Button onClick={() => onFormChange({ provider: null })} className="shrink-0">
+      <div className="flex min-h-0 flex-1 gap-4">
+        <div className="flex w-[220px] shrink-0 flex-col gap-1.5">
+          <Button
+            variant={adding ? 'default' : 'outline'}
+            className="shrink-0"
+            aria-pressed={adding}
+            onClick={() => setAdding(true)}
+          >
             <Plus className="h-3.5 w-3.5" />
             {t('providers.add')}
           </Button>
+
+          {error && (
+            <p className="m-0 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {error}
+            </p>
+          )}
+
+          {!loaded ? (
+            <span className="text-xs text-muted-foreground">{t('providers.loading')}</span>
+          ) : providers.length === 0 ? (
+            <span className="text-xs text-muted-foreground">{t('providers.empty')}</span>
+          ) : (
+            <ul className="m-0 flex min-h-0 list-none flex-col gap-1 overflow-y-auto p-0">
+              {providers.map((provider) => (
+                <li
+                  key={provider.id}
+                  className={cn(
+                    'flex items-center gap-1 rounded-lg border border-border pr-1',
+                    !adding && selectedId === provider.id && 'border-accent bg-item-hover',
+                  )}
+                >
+                  <button
+                    type="button"
+                    aria-current={!adding && selectedId === provider.id}
+                    onClick={() => {
+                      setAdding(false);
+                      setSelectedId(provider.id);
+                    }}
+                    className="flex min-w-0 flex-1 cursor-pointer flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left outline-none transition-colors hover:bg-item-hover"
+                  >
+                    <span className="w-full truncate text-[13px]">{provider.name}</span>
+                    <span className="w-full truncate text-[11px] text-muted-foreground">
+                      {provider.id} · {t('providers.modelCount', { n: provider.models.length })} ·{' '}
+                      {provider.hasKey
+                        ? t('providers.key.set', { key: provider.apiKey ?? '' })
+                        : t('providers.key.none')}
+                    </span>
+                  </button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    title={t('providers.delete')}
+                    aria-label={t('providers.delete')}
+                    disabled={busy}
+                    onClick={() => void removeProvider(provider.id)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
-        {error && !form && !modelsFor && (
-          <p className="m-0 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
-          </p>
-        )}
-
-        {!loaded ? (
-          <span className="text-xs text-muted-foreground">{t('providers.loading')}</span>
-        ) : providers.length === 0 ? (
-          <span className="text-xs text-muted-foreground">{t('providers.empty')}</span>
-        ) : (
-          <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
-            {providers.map((provider) => (
-              <li
-                key={provider.id}
-                className={cn(
-                  'flex items-center gap-3 rounded-lg border border-border px-3 py-2',
-                  form?.provider?.id === provider.id && 'border-accent',
-                )}
-              >
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-[13px]">{provider.name}</span>
-                  <span className="truncate text-[11px] text-muted-foreground">
-                    {provider.id} · {provider.baseUrl} ·{' '}
-                    {provider.hasKey
-                      ? t('providers.key.set', { key: provider.apiKey ?? '' })
-                      : t('providers.key.none')}
-                  </span>
-                </div>
-                {/* Its own dialog, because a provider is added before it has any
-                    model and the two are edited at different times. */}
-                <Button
-                  variant="outline"
-                  className="h-7 shrink-0 px-2 text-xs"
-                  title={t('providers.models.manage')}
-                  aria-label={t('providers.models.manage')}
-                  onClick={() => onModelsForChange(provider)}
-                >
-                  <Layers className="h-3.5 w-3.5" />
-                  {t('providers.modelCount', { n: provider.models.length })}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  title={t('providers.edit')}
-                  aria-label={t('providers.edit')}
-                  onClick={() => onFormChange({ provider })}
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  title={t('providers.delete')}
-                  aria-label={t('providers.delete')}
-                  disabled={busy}
-                  onClick={() => void removeProvider(provider.id)}
-                >
-                  <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className="flex min-w-0 flex-1 border-l border-border pl-4">
+          {adding ? (
+            <ProviderDetail
+              key="new"
+              provider={null}
+              onSaved={(id) => {
+                setAdding(false);
+                setSelectedId(id);
+              }}
+              onCancel={() => setAdding(false)}
+            />
+          ) : selected ? (
+            <ProviderDetail
+              key={selected.id}
+              provider={selected}
+              // An existing provider has nowhere else to go: a cancel resets
+              // the fields in the pane itself, and a save keeps it there.
+              onSaved={() => {}}
+              onCancel={() => {}}
+            />
+          ) : (
+            !loaded && (
+              <span className="text-xs text-muted-foreground">{t('providers.loading')}</span>
+            )
+          )}
+        </div>
       </div>
-
     </div>
   );
 }

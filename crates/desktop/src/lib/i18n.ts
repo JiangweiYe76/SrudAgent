@@ -61,6 +61,7 @@ const en = {
 
   'common.close': 'Close',
   'common.cancel': 'Cancel',
+  'common.back': 'Back',
   'common.delete': 'Delete',
   'common.reveal': 'Show value',
   'common.conceal': 'Hide value',
