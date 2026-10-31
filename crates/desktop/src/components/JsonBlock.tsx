@@ -43,7 +43,8 @@ export function JsonBlock({
   // A failure is prose by design, so it is shown as prose. A success that is not
   // JSON is not prose at all — it is a payload that lost its structure, and saying
   // so beats colouring a sentence as though it were an object.
-  const asProse = isError === true || (isError === undefined && payload.unparsable);
+  const asProse =
+    isError === true || (isError === undefined && payload.unparsable);
   // A failure's own words are what it is: re-indenting them would reflow prose
   // that was written to be read, and it would imply the text had been parsed.
   const displayed = asProse && isError === true ? value : payload.text;

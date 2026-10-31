@@ -52,7 +52,10 @@ function box(): HTMLTextAreaElement {
 function type(text: string) {
   // Through the native setter: React's value tracker swallows a direct
   // assignment, so the change event would carry the old text.
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    'value',
+  )!.set!;
   setter.call(box(), text);
   act(() => {
     box().dispatchEvent(new Event('input', { bubbles: true }));
@@ -61,7 +64,9 @@ function type(text: string) {
 
 function press(key: string, shift = false) {
   act(() => {
-    box().dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey: shift, bubbles: true }));
+    box().dispatchEvent(
+      new KeyboardEvent('keydown', { key, shiftKey: shift, bubbles: true }),
+    );
   });
 }
 
@@ -79,7 +84,9 @@ function image(id = 'img1'): Attachment {
 function paste(file: File) {
   const item = { kind: 'file', type: file.type, getAsFile: () => file };
   const event = new Event('paste', { bubbles: true, cancelable: true });
-  Object.defineProperty(event, 'clipboardData', { value: { items: [item], files: [] } });
+  Object.defineProperty(event, 'clipboardData', {
+    value: { items: [item], files: [] },
+  });
   act(() => {
     box().dispatchEvent(event);
   });
@@ -94,7 +101,8 @@ function pastePath(path: string) {
     value: {
       items: [],
       files: [],
-      getData: (type: string) => (type === 'text/uri-list' ? `file://${path}` : ''),
+      getData: (type: string) =>
+        type === 'text/uri-list' ? `file://${path}` : '',
     },
   });
   act(() => {
@@ -148,21 +156,27 @@ describe('ChatInput', () => {
     const { onSend } = render({ value: '   ' });
     press('Enter');
     expect(onSend).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-label="Send"]')!.hasAttribute('disabled')).toBe(true);
+    expect(
+      container.querySelector('[aria-label="Send"]')!.hasAttribute('disabled'),
+    ).toBe(true);
   });
 
   it('sends nothing while a turn is in flight', () => {
     const { onSend } = render({ value: 'too early', busy: true });
     press('Enter');
     expect(onSend).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-label="Send"]')!.hasAttribute('disabled')).toBe(true);
+    expect(
+      container.querySelector('[aria-label="Send"]')!.hasAttribute('disabled'),
+    ).toBe(true);
   });
 
   it('turns a pasted image into an attachment', async () => {
     const onAttachmentsChange = vi.fn();
     render({ onAttachmentsChange });
     const event = paste(new File(['abc'], 'shot.png', { type: 'image/png' }));
-    await vi.waitFor(() => expect(onAttachmentsChange).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(onAttachmentsChange).toHaveBeenCalledTimes(1),
+    );
     const [images] = onAttachmentsChange.mock.calls[0] as [Attachment[]];
     expect(images).toHaveLength(1);
     expect(images[0].mime).toBe('image/png');
@@ -172,14 +186,22 @@ describe('ChatInput', () => {
   });
 
   it('reads an image the clipboard names by path', async () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
-    vi.mocked(invoke).mockResolvedValueOnce({ mime: 'image/png', data: 'YWJj' });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      mime: 'image/png',
+      data: 'YWJj',
+    });
     const onAttachmentsChange = vi.fn();
     render({ onAttachmentsChange });
 
     const event = pastePath('/home/me/a shot.png');
 
-    await vi.waitFor(() => expect(onAttachmentsChange).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(onAttachmentsChange).toHaveBeenCalledTimes(1),
+    );
     // The path would otherwise be pasted into the box as text.
     expect(event.defaultPrevented).toBe(true);
     const [images] = onAttachmentsChange.mock.calls[0] as [Attachment[]];
@@ -192,23 +214,37 @@ describe('ChatInput', () => {
   });
 
   it('asks the host for a paste that arrives empty', async () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
-    vi.mocked(invoke).mockResolvedValueOnce({ kind: 'image', mime: 'image/png', data: 'YWJj' });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      kind: 'image',
+      mime: 'image/png',
+      data: 'YWJj',
+    });
     const onAttachmentsChange = vi.fn();
     render({ onAttachmentsChange });
 
     const event = pasteEmpty();
 
-    await vi.waitFor(() => expect(onAttachmentsChange).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(onAttachmentsChange).toHaveBeenCalledTimes(1),
+    );
     // The default handling is what would write the copied path into the box.
     expect(event.defaultPrevented).toBe(true);
     const [images] = onAttachmentsChange.mock.calls[0] as [Attachment[]];
     expect(images[0]).toMatchObject({ mime: 'image/png', data: 'YWJj' });
-    expect(invoke).toHaveBeenCalledWith('read_clipboard', { limit: 10 * 1024 * 1024 });
+    expect(invoke).toHaveBeenCalledWith('read_clipboard', {
+      limit: 10 * 1024 * 1024,
+    });
   });
 
   it('writes back text the host read from an empty paste', async () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
     vi.mocked(invoke).mockResolvedValueOnce({ kind: 'text', text: 'hello' });
     const onValueChange = vi.fn();
     render({ onValueChange });
@@ -230,7 +266,9 @@ describe('ChatInput', () => {
     const kept = image('img1');
     const dropped = image('img2');
     const { onAttachmentsChange } = render({ attachments: [kept, dropped] });
-    expect(container.querySelectorAll('[aria-label="Remove image"]')).toHaveLength(2);
+    expect(
+      container.querySelectorAll('[aria-label="Remove image"]'),
+    ).toHaveLength(2);
     click('[aria-label="Remove image"]');
     expect(onAttachmentsChange).toHaveBeenCalledWith([dropped]);
   });
@@ -246,13 +284,17 @@ describe('ChatInput', () => {
     const { onSend } = render({ attachments: [image()], busy: true });
     press('Enter');
     expect(onSend).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-label="Send"]')!.hasAttribute('disabled')).toBe(true);
+    expect(
+      container.querySelector('[aria-label="Send"]')!.hasAttribute('disabled'),
+    ).toBe(true);
   });
 
   it('opens an attached image large', () => {
     render({ attachments: [image()] });
     click('[aria-label="Image preview"]');
-    expect(document.body.querySelector('img[alt="Image preview"]')).not.toBeNull();
+    expect(
+      document.body.querySelector('img[alt="Image preview"]'),
+    ).not.toBeNull();
   });
 
   it('lists waiting messages as separate lines', () => {
@@ -262,7 +304,9 @@ describe('ChatInput', () => {
       onSteerFollowup: vi.fn(),
       onRemoveFollowup: vi.fn(),
     });
-    const steerButtons = Array.from(container.querySelectorAll('[aria-label="Steer"]'));
+    const steerButtons = Array.from(
+      container.querySelectorAll('[aria-label="Steer"]'),
+    );
     expect(steerButtons).toHaveLength(2);
     expect(container.textContent).toContain('first waiting');
     expect(container.textContent).toContain('second waiting');
@@ -272,12 +316,16 @@ describe('ChatInput', () => {
 
   it('stops a running turn and nothing else', () => {
     const stopped = render({ value: 'typing anyway', busy: true });
-    expect(container.querySelector('[aria-label="Stop"]')!.hasAttribute('disabled')).toBe(false);
+    expect(
+      container.querySelector('[aria-label="Stop"]')!.hasAttribute('disabled'),
+    ).toBe(false);
     click('[aria-label="Stop"]');
     expect(stopped.onStop).toHaveBeenCalled();
 
     const idle = render();
-    expect(container.querySelector('[aria-label="Stop"]')!.hasAttribute('disabled')).toBe(true);
+    expect(
+      container.querySelector('[aria-label="Stop"]')!.hasAttribute('disabled'),
+    ).toBe(true);
     click('[aria-label="Stop"]');
     expect(idle.onStop).not.toHaveBeenCalled();
   });

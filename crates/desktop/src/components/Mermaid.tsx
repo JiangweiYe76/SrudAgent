@@ -61,7 +61,11 @@ function reasonOf(error: unknown): string {
  */
 function Generating() {
   return (
-    <div className="mermaid-diagram mermaid-generating" role="status" aria-busy="true">
+    <div
+      className="mermaid-diagram mermaid-generating"
+      role="status"
+      aria-busy="true"
+    >
       <div className="mermaid-skeleton" aria-hidden="true">
         <span className="mermaid-skeleton-bar" />
         <span className="mermaid-skeleton-bar" />
@@ -106,7 +110,9 @@ export function Mermaid({
     void (async () => {
       try {
         const { default: mermaid } = await import('mermaid');
-        mermaid.initialize(configFor(document.documentElement.classList.contains('dark')));
+        mermaid.initialize(
+          configFor(document.documentElement.classList.contains('dark')),
+        );
         const { svg } = await mermaid.render(`mermaid-${id}`, chart);
         if (live) setState({ status: 'ready', svg });
       } catch (error) {
@@ -143,7 +149,11 @@ export function Mermaid({
       onClick={() => setView(next)}
       title={next === 'code' ? t('mermaid.showCode') : t('mermaid.showDiagram')}
     >
-      {next === 'code' ? <Code2 className="h-3.5 w-3.5" /> : <Workflow className="h-3.5 w-3.5" />}
+      {next === 'code' ? (
+        <Code2 className="h-3.5 w-3.5" />
+      ) : (
+        <Workflow className="h-3.5 w-3.5" />
+      )}
     </button>
   );
 
@@ -156,7 +166,9 @@ export function Mermaid({
         <>
           {/* Why the diagram is not there, when there isn't one. The source is
               already on screen below it, so the reader is never left hunting. */}
-          {state.status === 'failed' && <p className="mermaid-error">{state.error}</p>}
+          {state.status === 'failed' && (
+            <p className="mermaid-error">{state.error}</p>
+          )}
           {/* The highlighted nodes rather than the chart string: the code view is
               a code view, so it gets the same colours and line numbers as any
               other fence instead of a plain-text wall. */}
@@ -167,7 +179,10 @@ export function Mermaid({
         // inserted as markup rather than parsed by React. The chart is model
         // output, but `securityLevel: 'strict'` above is what makes it inert:
         // mermaid escapes labels rather than rendering them.
-        <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: state.svg }} />
+        <div
+          className="mermaid-diagram"
+          dangerouslySetInnerHTML={{ __html: state.svg }}
+        />
       ) : (
         // Pending can mean two things: the message is still arriving, or mermaid
         // is a moment behind it. Both are the same thing to a reader — a diagram

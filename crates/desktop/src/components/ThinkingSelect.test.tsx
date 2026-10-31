@@ -16,7 +16,13 @@ let root: Root;
 
 function render(options: ThinkingOptions | null, disabled = false): void {
   act(() => {
-    root.render(<ThinkingSelect options={options} disabled={disabled} onSelect={() => {}} />);
+    root.render(
+      <ThinkingSelect
+        options={options}
+        disabled={disabled}
+        onSelect={() => {}}
+      />,
+    );
   });
 }
 
@@ -36,7 +42,9 @@ const DECLARED: ThinkingOptions = {
 };
 
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 afterEach(() => {

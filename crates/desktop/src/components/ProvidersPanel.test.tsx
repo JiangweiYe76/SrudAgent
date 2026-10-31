@@ -6,18 +6,30 @@
 // key read from the agent must not travel back as though it were the key. The
 // rest pins the shape of the flow: a provider is added as a provider, its
 // models are added after, and the default says so when nobody has chosen one.
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeAll,
+  beforeEach,
+  afterEach,
+} from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 
 const mocks = vi.hoisted(() => ({
-  invoke: async (_cmd: string, _args?: Record<string, unknown>): Promise<unknown> => {
+  invoke: async (
+    _cmd: string,
+    _args?: Record<string, unknown>,
+  ): Promise<unknown> => {
     throw new Error('invoke not configured');
   },
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (cmd: string, args?: Record<string, unknown>) => mocks.invoke(cmd, args),
+  invoke: (cmd: string, args?: Record<string, unknown>) =>
+    mocks.invoke(cmd, args),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
@@ -42,7 +54,9 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 beforeEach(async () => {
@@ -87,9 +101,13 @@ async function render(): Promise<void> {
   });
 }
 
-function button(label: string, scope: ParentNode = document.body): HTMLButtonElement {
+function button(
+  label: string,
+  scope: ParentNode = document.body,
+): HTMLButtonElement {
   const found = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(
-    (b) => b.getAttribute('aria-label') === label || b.textContent?.trim() === label,
+    (b) =>
+      b.getAttribute('aria-label') === label || b.textContent?.trim() === label,
   );
   if (!found) throw new Error(`no button labelled ${label}`);
   return found;
@@ -114,7 +132,10 @@ function inputByLabel(label: string): HTMLInputElement {
 // Types into a controlled input the way a browser does: through the native
 // value setter, so React's own value tracker sees the change.
 async function type(element: HTMLInputElement, value: string): Promise<void> {
-  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  const set = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  )!.set!;
   await act(async () => {
     set.call(element, value);
     element.dispatchEvent(new Event('input', { bubbles: true }));
@@ -141,15 +162,17 @@ async function openDefaultMenu(): Promise<void> {
 }
 
 function menuItem(label: string): HTMLElement {
-  const found = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
-    (item) => item.textContent?.trim() === label,
-  );
+  const found = [
+    ...document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+  ].find((item) => item.textContent?.trim() === label);
   if (!found) throw new Error(`no menu item labelled ${label}`);
   return found;
 }
 
 function setRequest(): { provider: Record<string, unknown> } {
-  const found = requests.find((r) => r.method === '_srud/unstable/provider/set');
+  const found = requests.find(
+    (r) => r.method === '_srud/unstable/provider/set',
+  );
   if (!found) throw new Error('no write was sent');
   return found.params as { provider: Record<string, unknown> };
 }
@@ -165,14 +188,16 @@ function detailPane(): HTMLElement {
 
 /** The model rows' edit buttons, the remove buttons filtered out. */
 function modelRowButtons(): HTMLButtonElement[] {
-  return [...detailPane().querySelectorAll<HTMLButtonElement>('ul li button')].filter(
-    (b) => b.getAttribute('aria-label') !== 'Remove model',
-  );
+  return [
+    ...detailPane().querySelectorAll<HTMLButtonElement>('ul li button'),
+  ].filter((b) => b.getAttribute('aria-label') !== 'Remove model');
 }
 
 /** What the detail pane's model rows currently show, top to bottom. */
 function modelRows(): string[] {
-  return modelRowButtons().map((row) => row.querySelector('span')?.textContent ?? '');
+  return modelRowButtons().map(
+    (row) => row.querySelector('span')?.textContent ?? '',
+  );
 }
 
 describe('ProvidersPanel', () => {
@@ -216,15 +241,25 @@ describe('ProvidersPanel', () => {
 
     // The model already in force is listed, but picking it again would change
     // nothing.
-    expect(menuItem('OpenAI · GPT-4o').getAttribute('data-disabled')).not.toBeNull();
-    expect(menuItem('OpenAI · GPT-4o mini').getAttribute('data-disabled')).toBeNull();
+    expect(
+      menuItem('OpenAI · GPT-4o').getAttribute('data-disabled'),
+    ).not.toBeNull();
+    expect(
+      menuItem('OpenAI · GPT-4o mini').getAttribute('data-disabled'),
+    ).toBeNull();
 
     await click(menuItem('OpenAI · GPT-4o mini'));
 
     await vi.waitFor(() => {
-      expect(requests.some((r) => r.method === '_srud/unstable/provider/set_default')).toBe(true);
+      expect(
+        requests.some(
+          (r) => r.method === '_srud/unstable/provider/set_default',
+        ),
+      ).toBe(true);
     });
-    const request = requests.find((r) => r.method === '_srud/unstable/provider/set_default');
+    const request = requests.find(
+      (r) => r.method === '_srud/unstable/provider/set_default',
+    );
     expect(request?.params).toEqual({ model: 'openai/gpt-4o-mini' });
   });
 
@@ -239,7 +274,9 @@ describe('ProvidersPanel', () => {
     await click(button('Save'));
 
     await vi.waitFor(() => {
-      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+      expect(
+        requests.some((r) => r.method === '_srud/unstable/provider/set'),
+      ).toBe(true);
     });
     const { provider } = setRequest();
     expect(provider.id).toBe('openai');
@@ -266,7 +303,9 @@ describe('ProvidersPanel', () => {
     await click(button('Save'));
 
     await vi.waitFor(() => {
-      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+      expect(
+        requests.some((r) => r.method === '_srud/unstable/provider/set'),
+      ).toBe(true);
     });
     expect(setRequest().provider).toEqual({
       id: 'local',
@@ -291,7 +330,9 @@ describe('ProvidersPanel', () => {
 
     await click(button('Save'));
     await vi.waitFor(() => {
-      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+      expect(
+        requests.some((r) => r.method === '_srud/unstable/provider/set'),
+      ).toBe(true);
     });
     // The provider travels whole, and its key stays where it is.
     expect(setRequest().provider).toEqual({
@@ -318,7 +359,9 @@ describe('ProvidersPanel', () => {
     await click(button('Save'));
 
     await vi.waitFor(() => {
-      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+      expect(
+        requests.some((r) => r.method === '_srud/unstable/provider/set'),
+      ).toBe(true);
     });
     expect(setRequest().provider.models).toEqual([
       { id: 'gpt-4.1', name: 'GPT-4.1', modalities: [] },
@@ -328,16 +371,18 @@ describe('ProvidersPanel', () => {
 
   it('removes a model from the draft without a round trip', async () => {
     await render();
-    const remove = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
-      (b) => b.getAttribute('aria-label') === 'Remove model',
-    );
+    const remove = [
+      ...document.querySelectorAll<HTMLButtonElement>('button'),
+    ].find((b) => b.getAttribute('aria-label') === 'Remove model');
     if (!remove) throw new Error('no remove button');
     await click(remove);
     expect(modelRows()).toEqual(['GPT-4o mini']);
 
     await click(button('Save'));
     await vi.waitFor(() => {
-      expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(true);
+      expect(
+        requests.some((r) => r.method === '_srud/unstable/provider/set'),
+      ).toBe(true);
     });
     expect(setRequest().provider.models).toEqual([
       { id: 'gpt-4o-mini', name: 'GPT-4o mini', modalities: [] },
@@ -352,7 +397,9 @@ describe('ProvidersPanel', () => {
     await click(button('Cancel'));
 
     expect(modelRows()).toEqual(['GPT-4o', 'GPT-4o mini']);
-    expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(false);
+    expect(
+      requests.some((r) => r.method === '_srud/unstable/provider/set'),
+    ).toBe(false);
   });
 
   it('takes the model form back from its header, discarding what was typed', async () => {
@@ -364,7 +411,9 @@ describe('ProvidersPanel', () => {
 
     expect(modelRows()).toEqual(['GPT-4o', 'GPT-4o mini']);
     expect(inputByLabel('Base URL').value).toBe('https://api.example/v1');
-    expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(false);
+    expect(
+      requests.some((r) => r.method === '_srud/unstable/provider/set'),
+    ).toBe(false);
   });
 
   it('puts the fields back when an edit is cancelled', async () => {
@@ -373,7 +422,9 @@ describe('ProvidersPanel', () => {
     await click(button('Cancel'));
 
     expect(inputByLabel('Name').value).toBe('OpenAI');
-    expect(requests.some((r) => r.method === '_srud/unstable/provider/set')).toBe(false);
+    expect(
+      requests.some((r) => r.method === '_srud/unstable/provider/set'),
+    ).toBe(false);
   });
 
   it('opens a fresh pane for an add, not the one that was just dismissed', async () => {

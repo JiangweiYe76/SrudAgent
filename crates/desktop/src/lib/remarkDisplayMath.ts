@@ -28,7 +28,9 @@ interface VFileLike {
 function rangeOf(node: MarkdownNode): [number, number] | null {
   const start = node.position?.start?.offset;
   const end = node.position?.end?.offset;
-  return typeof start === 'number' && typeof end === 'number' ? [start, end] : null;
+  return typeof start === 'number' && typeof end === 'number'
+    ? [start, end]
+    : null;
 }
 
 /** Whether an inline math node was written with `$$` delimiters. */
@@ -74,12 +76,17 @@ function blockMath(node: MarkdownNode): MarkdownNode {
 
 function hasContent(children: MarkdownNode[]): boolean {
   return children.some(
-    (child) => child.type !== 'text' || (typeof child.value === 'string' && child.value.trim() !== ''),
+    (child) =>
+      child.type !== 'text' ||
+      (typeof child.value === 'string' && child.value.trim() !== ''),
   );
 }
 
 /** Splits a paragraph around the display formulas it contains. */
-function splitParagraph(paragraph: MarkdownNode, source: string): MarkdownNode[] {
+function splitParagraph(
+  paragraph: MarkdownNode,
+  source: string,
+): MarkdownNode[] {
   const children = paragraph.children ?? [];
   if (!children.some((child) => isDisplayMath(child, source))) {
     return [paragraph];
@@ -89,7 +96,8 @@ function splitParagraph(paragraph: MarkdownNode, source: string): MarkdownNode[]
   let inline: MarkdownNode[] = [];
 
   const flush = () => {
-    if (hasContent(inline)) result.push({ type: 'paragraph', children: inline });
+    if (hasContent(inline))
+      result.push({ type: 'paragraph', children: inline });
     inline = [];
   };
 
@@ -127,7 +135,10 @@ function promote(node: MarkdownNode, source: string): void {
  *
  * Returns a transformer, as `unified` expects from a remark plugin.
  */
-export default function remarkDisplayMath(): (tree: MarkdownNode, file: VFileLike) => void {
+export default function remarkDisplayMath(): (
+  tree: MarkdownNode,
+  file: VFileLike,
+) => void {
   return (tree, file) => {
     const source = typeof file.value === 'string' ? file.value : '';
     promote(tree, source);

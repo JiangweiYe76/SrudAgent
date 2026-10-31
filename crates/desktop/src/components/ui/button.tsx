@@ -9,7 +9,8 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default: 'bg-accent text-white hover:bg-accent-hover',
-        ghost: 'bg-transparent text-muted-foreground hover:bg-item-hover hover:text-foreground',
+        ghost:
+          'bg-transparent text-muted-foreground hover:bg-item-hover hover:text-foreground',
         outline: 'border border-border bg-transparent hover:bg-item-hover',
         destructive: 'bg-destructive text-white hover:bg-destructive/90',
       },
@@ -31,7 +32,18 @@ export interface ButtonProps
   asChild?: boolean;
 }
 
-export function Button({ className, variant, size, asChild = false, ...props }: ButtonProps) {
+export function Button({
+  className,
+  variant,
+  size,
+  asChild = false,
+  ...props
+}: ButtonProps) {
   const Comp = asChild ? Slot : 'button';
-  return <Comp className={cn(buttonVariants({ variant, size, className }))} {...props} />;
+  return (
+    <Comp
+      className={cn(buttonVariants({ variant, size, className }))}
+      {...props}
+    />
+  );
 }

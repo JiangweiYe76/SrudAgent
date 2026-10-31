@@ -374,7 +374,10 @@ mod tests {
 
     /// The context these tests hand to tools; none of them look at it.
     fn ctx() -> ToolContext {
-        ToolContext { cwd: PathBuf::from("workspace"), cancel: tokio_util::sync::CancellationToken::new() }
+        ToolContext {
+            cwd: PathBuf::from("workspace"),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        }
     }
 
     fn registry() -> ToolRegistry {

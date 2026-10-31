@@ -24,7 +24,9 @@ function render(): void {
 
 /** The binding control of the row named by its action. */
 function bindingButton(action: string): HTMLButtonElement {
-  return container.querySelector(`button[title="${action}"]`) as HTMLButtonElement;
+  return container.querySelector(
+    `button[title="${action}"]`,
+  ) as HTMLButtonElement;
 }
 
 function click(element: HTMLElement): void {
@@ -33,7 +35,9 @@ function click(element: HTMLElement): void {
 
 function pressKey(target: Element, init: KeyboardEventInit): void {
   act(() => {
-    target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+    target.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, ...init }),
+    );
   });
 }
 
@@ -43,7 +47,10 @@ beforeAll(() => {
 
 beforeEach(() => {
   localStorage.clear();
-  useShortcutStore.setState({ bindings: { ...DEFAULT_BINDINGS }, recording: null });
+  useShortcutStore.setState({
+    bindings: { ...DEFAULT_BINDINGS },
+    recording: null,
+  });
 });
 
 afterEach(() => {
@@ -67,7 +74,9 @@ describe('ShortcutsPanel', () => {
     expect(control.textContent).toBe('Press keys…');
 
     pressKey(control, { key: 'P', ctrlKey: true, shiftKey: true });
-    expect(useShortcutStore.getState().bindings['session.new']).toBe('mod+shift+p');
+    expect(useShortcutStore.getState().bindings['session.new']).toBe(
+      'mod+shift+p',
+    );
     expect(control.textContent).toBe('Ctrl+Shift+P');
     expect(useShortcutStore.getState().recording).toBeNull();
   });

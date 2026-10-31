@@ -1,5 +1,14 @@
 import { useState } from 'react';
-import { Boxes, Info, Keyboard, Monitor, Moon, Palette, Sun, type LucideIcon } from 'lucide-react';
+import {
+  Boxes,
+  Info,
+  Keyboard,
+  Monitor,
+  Moon,
+  Palette,
+  Sun,
+  type LucideIcon,
+} from 'lucide-react';
 import { t } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { Modal, ModalContent } from '@/components/ui/modal';
@@ -15,14 +24,22 @@ interface SettingsModalProps {
 
 type Section = 'appearance' | 'shortcuts' | 'models' | 'about';
 
-const SECTIONS: { id: Section; label: Parameters<typeof t>[0]; Icon: LucideIcon }[] = [
+const SECTIONS: {
+  id: Section;
+  label: Parameters<typeof t>[0];
+  Icon: LucideIcon;
+}[] = [
   { id: 'appearance', label: 'settings.appearance', Icon: Palette },
   { id: 'shortcuts', label: 'settings.shortcuts', Icon: Keyboard },
   { id: 'models', label: 'settings.models', Icon: Boxes },
   { id: 'about', label: 'settings.about', Icon: Info },
 ];
 
-const THEME_OPTIONS: { mode: ThemeMode; label: Parameters<typeof t>[0]; Icon: LucideIcon }[] = [
+const THEME_OPTIONS: {
+  mode: ThemeMode;
+  label: Parameters<typeof t>[0];
+  Icon: LucideIcon;
+}[] = [
   { mode: 'system', label: 'settings.theme.system', Icon: Monitor },
   { mode: 'light', label: 'settings.theme.light', Icon: Sun },
   { mode: 'dark', label: 'settings.theme.dark', Icon: Moon },
@@ -70,7 +87,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               models section does not scroll here at all: its panel is a pair
               of lists that manage their own scrolling. */}
           <div className="flex min-h-0 flex-1 flex-col p-5">
-            <span className="shrink-0 text-sm font-semibold">{t(TITLES[section])}</span>
+            <span className="shrink-0 text-sm font-semibold">
+              {t(TITLES[section])}
+            </span>
 
             {section === 'appearance' ? (
               <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
@@ -141,7 +160,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </div>
             ) : (
               <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
-                <p className="m-0 text-sm text-muted-foreground">{t('settings.about.line')}</p>
+                <p className="m-0 text-sm text-muted-foreground">
+                  {t('settings.about.line')}
+                </p>
               </div>
             )}
           </div>

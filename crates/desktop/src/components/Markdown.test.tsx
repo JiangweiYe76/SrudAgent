@@ -116,7 +116,9 @@ describe('rehypeCodeLines', () => {
     // The highlight class has to survive the split, or the string loses colour.
     const stringSpan = code.children![1].children![0];
     expect(isLine(stringSpan)).toBe(false);
-    expect(stringSpan.properties!.className as string[]).toContain('hljs-string');
+    expect(stringSpan.properties!.className as string[]).toContain(
+      'hljs-string',
+    );
   });
 
   it('leaves a tree with no fenced block alone', () => {
@@ -240,7 +242,9 @@ describe('Markdown', () => {
   });
 
   it('renders raw HTML from model output as inert text', () => {
-    const html = render('hello <script>alert(1)</script> <img src=x onerror=alert(1)>');
+    const html = render(
+      'hello <script>alert(1)</script> <img src=x onerror=alert(1)>',
+    );
 
     // Escaped rather than dropped: the model wrote it, so showing the user what
     // arrived is more useful than silently losing it. What matters is that it
@@ -263,53 +267,53 @@ describe('Markdown', () => {
     expect(pre).toContain('hljs');
   });
 
-it('numbers one element per line, so the counter has something to count', () => {
+  it('numbers one element per line, so the counter has something to count', () => {
     const html = render('```python\na = 1\nb = 2\nc = 3\n```');
     const lines = html.match(/class="code-line"/g) ?? [];
 
     expect(lines).toHaveLength(3);
   });
 
-it('does not number a line past a trailing newline', () => {
-  // Every fenced block ends in a newline; counting it would leave the last line
-  // of every block numbered one higher than it is.
-  const html = render('```\na\nb\n```');
+  it('does not number a line past a trailing newline', () => {
+    // Every fenced block ends in a newline; counting it would leave the last line
+    // of every block numbered one higher than it is.
+    const html = render('```\na\nb\n```');
 
-  expect(html.match(/class="code-line"/g) ?? []).toHaveLength(2);
-});
+    expect(html.match(/class="code-line"/g) ?? []).toHaveLength(2);
+  });
 
-it('keeps a blank line, which still carries a number', () => {
-  const html = render('```\na\n\nb\n```');
+  it('keeps a blank line, which still carries a number', () => {
+    const html = render('```\na\n\nb\n```');
 
-  expect(html.match(/class="code-line"/g) ?? []).toHaveLength(3);
-});
+    expect(html.match(/class="code-line"/g) ?? []).toHaveLength(3);
+  });
 
-it('preserves the newlines that line splitting removed', () => {
-  // Splitting moves the breaks from the text into the structure. Reading the
-  // code back without putting them back would copy the block as one long line.
-  const html = render('```python\ndef f(x):\n    return 1\n```');
-  const pre = html.slice(html.indexOf('<pre>'));
+  it('preserves the newlines that line splitting removed', () => {
+    // Splitting moves the breaks from the text into the structure. Reading the
+    // code back without putting them back would copy the block as one long line.
+    const html = render('```python\ndef f(x):\n    return 1\n```');
+    const pre = html.slice(html.indexOf('<pre>'));
 
-  // Three lines means two breaks: the highlight spans and line wrappers are the
-  // only markup between the text.
-  expect(pre).not.toContain('def f(x):    return 1');
-  expect(pre).toContain('def');
-  expect(pre).toContain('return');
-});
+    // Three lines means two breaks: the highlight spans and line wrappers are the
+    // only markup between the text.
+    expect(pre).not.toContain('def f(x):    return 1');
+    expect(pre).toContain('def');
+    expect(pre).toContain('return');
+  });
 
-it('splits a line break that falls inside a multi-line string', () => {
-  // Highlighting wraps tokens in spans, so a break inside one has to split the
-  // span too or half a token lands on the next line.
-  const html = render('```python\nx = """\nmulti\n"""\n```');
+  it('splits a line break that falls inside a multi-line string', () => {
+    // Highlighting wraps tokens in spans, so a break inside one has to split the
+    // span too or half a token lands on the next line.
+    const html = render('```python\nx = """\nmulti\n"""\n```');
 
-  expect(html.match(/class="code-line"/g) ?? []).toHaveLength(3);
-});
+    expect(html.match(/class="code-line"/g) ?? []).toHaveLength(3);
+  });
 
-it('leaves inline code as a single element', () => {
-  const html = render('use `a\nb` here');
+  it('leaves inline code as a single element', () => {
+    const html = render('use `a\nb` here');
 
-  expect(html).not.toContain('code-line');
-});
+    expect(html).not.toContain('code-line');
+  });
 
   it('keeps the highlighting when it splits', () => {
     // Splitting after highlighting must not unwrap the token spans. Losing them
@@ -320,7 +324,9 @@ it('leaves inline code as a single element', () => {
     expect(html).toMatch(/class="hljs-keyword"/);
     expect(html).toMatch(/class="hljs-title/);
     // Each token sits inside a line rather than loose in the block.
-    expect(html).toMatch(/class="code-line"><span class="hljs-keyword">def<\/span>/);
+    expect(html).toMatch(
+      /class="code-line"><span class="hljs-keyword">def<\/span>/,
+    );
   });
 
   it('numbers every block from one, not continuously across the message', () => {
@@ -333,7 +339,10 @@ it('leaves inline code as a single element', () => {
 
   it('puts the language on the left and the copy button on the right', () => {
     const html = render('```python\nprint(1)\n```');
-    const bar = html.slice(html.indexOf('code-block-bar'), html.indexOf('<pre>'));
+    const bar = html.slice(
+      html.indexOf('code-block-bar'),
+      html.indexOf('<pre>'),
+    );
 
     expect(bar.indexOf('code-block-lang')).toBeLessThan(bar.indexOf('<button'));
   });

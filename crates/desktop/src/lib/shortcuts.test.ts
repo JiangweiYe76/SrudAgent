@@ -24,23 +24,34 @@ beforeEach(() => {
 describe('shortcut bindings', () => {
   it('spells a press as modifiers and one lower-cased key', () => {
     expect(bindingFromEvent(press({ key: 'N', ctrlKey: true }))).toBe('mod+n');
-    expect(bindingFromEvent(press({ key: 'N', ctrlKey: true, shiftKey: true }))).toBe('mod+shift+n');
+    expect(
+      bindingFromEvent(press({ key: 'N', ctrlKey: true, shiftKey: true })),
+    ).toBe('mod+shift+n');
     expect(bindingFromEvent(press({ key: ',', ctrlKey: true }))).toBe('mod+,');
   });
 
   it('treats a modifier pressed on its own as no binding yet', () => {
-    expect(bindingFromEvent(press({ key: 'Shift', shiftKey: true }))).toBeNull();
-    expect(bindingFromEvent(press({ key: 'Control', ctrlKey: true }))).toBeNull();
+    expect(
+      bindingFromEvent(press({ key: 'Shift', shiftKey: true })),
+    ).toBeNull();
+    expect(
+      bindingFromEvent(press({ key: 'Control', ctrlKey: true })),
+    ).toBeNull();
   });
 
   it('names the plus key, which would otherwise split the binding', () => {
-    const binding = bindingFromEvent(press({ key: '+', ctrlKey: true, shiftKey: true }));
+    const binding = bindingFromEvent(
+      press({ key: '+', ctrlKey: true, shiftKey: true }),
+    );
     expect(binding).toBe('mod+shift+plus');
     expect(parseBinding(binding as string)?.key).toBe('plus');
   });
 
   it('reads a binding, putting its modifiers in one order', () => {
-    expect(parseBinding('shift+mod+n')).toEqual({ key: 'n', modifiers: ['mod', 'shift'] });
+    expect(parseBinding('shift+mod+n')).toEqual({
+      key: 'n',
+      modifiers: ['mod', 'shift'],
+    });
     expect(canonicalBinding('shift+mod+n')).toBe('mod+shift+n');
   });
 
@@ -62,17 +73,25 @@ describe('shortcut bindings', () => {
   });
 
   it('finds the action a press triggers, and nothing for the rest', () => {
-    expect(actionForEvent(DEFAULT_BINDINGS, press({ key: 'n', ctrlKey: true }))).toBe('session.new');
-    expect(actionForEvent(DEFAULT_BINDINGS, press({ key: ',', ctrlKey: true }))).toBe(
-      'settings.open',
-    );
-    expect(actionForEvent(DEFAULT_BINDINGS, press({ key: 'x', ctrlKey: true }))).toBeNull();
+    expect(
+      actionForEvent(DEFAULT_BINDINGS, press({ key: 'n', ctrlKey: true })),
+    ).toBe('session.new');
+    expect(
+      actionForEvent(DEFAULT_BINDINGS, press({ key: ',', ctrlKey: true })),
+    ).toBe('settings.open');
+    expect(
+      actionForEvent(DEFAULT_BINDINGS, press({ key: 'x', ctrlKey: true })),
+    ).toBeNull();
   });
 
   it('finds the other action holding a binding, and not the row itself', () => {
-    expect(conflictFor(DEFAULT_BINDINGS, 'settings.open', 'mod+n')?.id).toBe('session.new');
+    expect(conflictFor(DEFAULT_BINDINGS, 'settings.open', 'mod+n')?.id).toBe(
+      'session.new',
+    );
     expect(conflictFor(DEFAULT_BINDINGS, 'session.new', 'mod+n')).toBeNull();
-    expect(conflictFor(DEFAULT_BINDINGS, 'settings.open', 'mod+alt+p')).toBeNull();
+    expect(
+      conflictFor(DEFAULT_BINDINGS, 'settings.open', 'mod+alt+p'),
+    ).toBeNull();
   });
 });
 
@@ -80,8 +99,12 @@ describe('shortcut store', () => {
   it('keeps a rebound key, spelled one way, and stores it', async () => {
     const { useShortcutStore } = await import('./shortcuts');
     useShortcutStore.getState().setBinding('session.new', 'shift+mod+P');
-    expect(useShortcutStore.getState().bindings['session.new']).toBe('mod+shift+p');
-    expect(JSON.parse(localStorage.getItem('srud.shortcuts') as string)).toMatchObject({
+    expect(useShortcutStore.getState().bindings['session.new']).toBe(
+      'mod+shift+p',
+    );
+    expect(
+      JSON.parse(localStorage.getItem('srud.shortcuts') as string),
+    ).toMatchObject({
       'session.new': 'mod+shift+p',
     });
   });
@@ -89,7 +112,9 @@ describe('shortcut store', () => {
   it('refuses a binding it cannot parse', async () => {
     const { useShortcutStore } = await import('./shortcuts');
     useShortcutStore.getState().setBinding('session.new', 'p');
-    expect(useShortcutStore.getState().bindings['session.new']).toBe(DEFAULT_BINDINGS['session.new']);
+    expect(useShortcutStore.getState().bindings['session.new']).toBe(
+      DEFAULT_BINDINGS['session.new'],
+    );
   });
 
   it('resets one action to its default', async () => {
@@ -102,7 +127,10 @@ describe('shortcut store', () => {
   it('starts from what was stored, ignoring entries that no longer read', async () => {
     localStorage.setItem(
       'srud.shortcuts',
-      JSON.stringify({ 'session.new': 'mod+alt+n', 'settings.open': 'nonsense' }),
+      JSON.stringify({
+        'session.new': 'mod+alt+n',
+        'settings.open': 'nonsense',
+      }),
     );
     const { useShortcutStore } = await import('./shortcuts');
     const bindings = useShortcutStore.getState().bindings;

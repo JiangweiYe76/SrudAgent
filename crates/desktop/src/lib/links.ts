@@ -31,7 +31,9 @@ export function externalUrl(href: string | undefined): string | null {
     return null;
   }
 
-  return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  return url.protocol === 'http:' || url.protocol === 'https:'
+    ? url.href
+    : null;
 }
 
 /**

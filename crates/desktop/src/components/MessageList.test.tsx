@@ -61,13 +61,22 @@ function turn(partial: Partial<Turn> & { id: string }): Turn {
 }
 
 /** Renders one turn and returns its container. */
-function render(turns: Turn[], onRegenerate?: (turn: Turn) => void): HTMLElement {
+function render(
+  turns: Turn[],
+  onRegenerate?: (turn: Turn) => void,
+): HTMLElement {
   lastTurns = turns;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<MessageList reopening={false} turns={turns} onRegenerate={onRegenerate} />);
+    root.render(
+      <MessageList
+        reopening={false}
+        turns={turns}
+        onRegenerate={onRegenerate}
+      />,
+    );
   });
   return container;
 }
@@ -81,7 +90,10 @@ function render(turns: Turn[], onRegenerate?: (turn: Turn) => void): HTMLElement
  */
 function setGeometry(
   list: HTMLElement,
-  { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number },
+  {
+    scrollHeight,
+    clientHeight,
+  }: { scrollHeight: number; clientHeight: number },
 ): void {
   // The current position carries across, because growing the content does not move
   // the scroll offset in a real browser either. Resetting it here would silently
@@ -143,12 +155,15 @@ function dots(): NodeListOf<Element> {
 }
 
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
   // jsdom implements no layout, so it has no `scrollIntoView` either. The list
   // calls it to follow a growing transcript; that is real browser behaviour, and
   // stubbing it here is cheaper than pretending this suite tests scrolling.
   Element.prototype.scrollIntoView = () => {};
-  globalThis.ResizeObserver = ManualResizeObserver as unknown as typeof ResizeObserver;
+  globalThis.ResizeObserver =
+    ManualResizeObserver as unknown as typeof ResizeObserver;
 });
 
 beforeEach(() => {
@@ -164,7 +179,9 @@ describe('a tool call still being written out', () => {
   // The mark and the place it sits in are the same as the thinking header's, so
   // a reader meets one wait signal in one place rather than two arrangements of it.
   function row(): HTMLElement {
-    const card = container.querySelector<HTMLElement>('.rounded-lg.border.border-border')!;
+    const card = container.querySelector<HTMLElement>(
+      '.rounded-lg.border.border-border',
+    )!;
     return card.querySelector('button')!;
   }
 
@@ -203,7 +220,12 @@ describe('a tool call still being written out', () => {
             id: 's1',
             assistantText: '',
             toolCalls: [
-              { id: 'tc1', name: 'write', args: '{"path":"a.rs"}', pending: false },
+              {
+                id: 'tc1',
+                name: 'write',
+                args: '{"path":"a.rs"}',
+                pending: false,
+              },
             ],
           },
         ],
@@ -249,7 +271,12 @@ describe('following the bottom while streaming', () => {
     // Re-targeting a smooth scroll that often means it never completes: measured in
     // a real browser over a 60-chunk stream, it ended 1320px — the whole height of
     // the content — short of the bottom, having moved nowhere at all.
-    render([turn({ id: 't1', steps: [{ id: 's1', assistantText: 'first', toolCalls: [] }] })]);
+    render([
+      turn({
+        id: 't1',
+        steps: [{ id: 's1', assistantText: 'first', toolCalls: [] }],
+      }),
+    ]);
     const el = list();
     setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
 
@@ -260,7 +287,13 @@ describe('following the bottom while streaming', () => {
           turns={[
             turn({
               id: 't1',
-              steps: [{ id: 's1', assistantText: 'first and more and more', toolCalls: [] }],
+              steps: [
+                {
+                  id: 's1',
+                  assistantText: 'first and more and more',
+                  toolCalls: [],
+                },
+              ],
             }),
           ]}
         />,
@@ -284,7 +317,14 @@ describe('following the bottom while streaming', () => {
         root.render(
           <MessageList
             reopening={false}
-            turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'x'.repeat(i), toolCalls: [] }] })]}
+            turns={[
+              turn({
+                id: 't1',
+                steps: [
+                  { id: 's1', assistantText: 'x'.repeat(i), toolCalls: [] },
+                ],
+              }),
+            ]}
           />,
         );
       });
@@ -296,12 +336,25 @@ describe('following the bottom while streaming', () => {
     // A mermaid diagram renders asynchronously and makes the transcript taller long
     // after the fence that introduced it. Following only on new tokens would leave
     // the reader short of the bottom with nothing to trigger a correction.
-    render([turn({ id: 't1', steps: [{ id: 's1', assistantText: '```mermaid', toolCalls: [] }] })]);
+    render([
+      turn({
+        id: 't1',
+        steps: [{ id: 's1', assistantText: '```mermaid', toolCalls: [] }],
+      }),
+    ]);
     const el = list();
     setGeometry(el, { scrollHeight: 1000, clientHeight: 400 });
     act(() => {
       root.render(
-        <MessageList reopening={false} turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'done', toolCalls: [] }] })]} />,
+        <MessageList
+          reopening={false}
+          turns={[
+            turn({
+              id: 't1',
+              steps: [{ id: 's1', assistantText: 'done', toolCalls: [] }],
+            }),
+          ]}
+        />,
       );
     });
 
@@ -326,7 +379,15 @@ describe('following the bottom while streaming', () => {
     setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
     act(() => {
       root.render(
-        <MessageList reopening={false} turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }] })]} />,
+        <MessageList
+          reopening={false}
+          turns={[
+            turn({
+              id: 't1',
+              steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }],
+            }),
+          ]}
+        />,
       );
     });
 
@@ -358,7 +419,15 @@ describe('following the bottom while streaming', () => {
     setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
     act(() => {
       root.render(
-        <MessageList reopening={false} turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }] })]} />,
+        <MessageList
+          reopening={false}
+          turns={[
+            turn({
+              id: 't1',
+              steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }],
+            }),
+          ]}
+        />,
       );
     });
 
@@ -398,7 +467,15 @@ describe('following the bottom while streaming', () => {
     setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
     act(() => {
       root.render(
-        <MessageList reopening={false} turns={[turn({ id: 't1', steps: [{ id: 's1', assistantText: 'm', toolCalls: [] }] })]} />,
+        <MessageList
+          reopening={false}
+          turns={[
+            turn({
+              id: 't1',
+              steps: [{ id: 's1', assistantText: 'm', toolCalls: [] }],
+            }),
+          ]}
+        />,
       );
     });
 
@@ -428,15 +505,18 @@ describe('waiting for the first token', () => {
     // The dots are `aria-hidden` so that the thinking header can rely on its own
     // visible label; standing alone they would otherwise announce nothing.
     render([turn({ id: 't1' })]);
-    expect(container.querySelector('[role="status"]')?.getAttribute('aria-label')).toBe(
-      'Waiting for a reply',
-    );
+    expect(
+      container.querySelector('[role="status"]')?.getAttribute('aria-label'),
+    ).toBe('Waiting for a reply');
   });
 
   it('stops once anything has arrived', () => {
     // The answer itself is the progress indicator from here on.
     render([
-      turn({ id: 't1', steps: [{ id: 's1', assistantText: 'Here you go.', toolCalls: [] }] }),
+      turn({
+        id: 't1',
+        steps: [{ id: 's1', assistantText: 'Here you go.', toolCalls: [] }],
+      }),
     ]);
 
     expect(dots()).toHaveLength(0);
@@ -446,7 +526,19 @@ describe('waiting for the first token', () => {
     // Reasoning opens a step before any answer text, so this is the other end of
     // the wait. The header animates its own dots, which must mean the standalone
     // one is gone — and that the mark moved rather than simply disappearing.
-    render([turn({ id: 't1', steps: [{ id: 's1', thought: 'Let me think', assistantText: '', toolCalls: [] }] })]);
+    render([
+      turn({
+        id: 't1',
+        steps: [
+          {
+            id: 's1',
+            thought: 'Let me think',
+            assistantText: '',
+            toolCalls: [],
+          },
+        ],
+      }),
+    ]);
 
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(dots()).toHaveLength(3);
@@ -460,7 +552,15 @@ describe('waiting for the first token', () => {
           {
             id: 's1',
             assistantText: '',
-            toolCalls: [{ id: 'tc1', name: 'read', args: 'a.ts', pending: false, result: 'ok' }],
+            toolCalls: [
+              {
+                id: 'tc1',
+                name: 'read',
+                args: 'a.ts',
+                pending: false,
+                result: 'ok',
+              },
+            ],
           },
         ],
       }),
@@ -499,7 +599,12 @@ describe('thinking dots', () => {
   // The turn outlives its reasoning by most of its length: the model thinks, then
   // writes, and only then does the turn close. A mark tied to the turn would
   // therefore keep animating for the entire answer; these pin it to the reasoning.
-  const thinking = { id: 's1', thought: 'Let me think', assistantText: '', toolCalls: [] };
+  const thinking = {
+    id: 's1',
+    thought: 'Let me think',
+    assistantText: '',
+    toolCalls: [],
+  };
 
   it('marks reasoning that is still arriving', () => {
     render([turn({ id: 't1', steps: [thinking] })]);
@@ -529,7 +634,15 @@ describe('thinking dots', () => {
             id: 's1',
             thought: 'I should look',
             assistantText: '',
-            toolCalls: [{ id: 'tc1', name: 'read', args: 'a.ts', pending: false, result: 'ok' }],
+            toolCalls: [
+              {
+                id: 'tc1',
+                name: 'read',
+                args: 'a.ts',
+                pending: false,
+                result: 'ok',
+              },
+            ],
           },
         ],
       }),
@@ -549,9 +662,22 @@ describe('thinking dots', () => {
             id: 's1',
             thought: 'I should look',
             assistantText: '',
-            toolCalls: [{ id: 'tc1', name: 'read', args: 'a.ts', pending: false, result: 'ok' }],
+            toolCalls: [
+              {
+                id: 'tc1',
+                name: 'read',
+                args: 'a.ts',
+                pending: false,
+                result: 'ok',
+              },
+            ],
           },
-          { id: 's2', thought: 'Now I can answer', assistantText: '', toolCalls: [] },
+          {
+            id: 's2',
+            thought: 'Now I can answer',
+            assistantText: '',
+            toolCalls: [],
+          },
         ],
       }),
     ]);
@@ -560,7 +686,9 @@ describe('thinking dots', () => {
   });
 
   it('stops when the turn ends', () => {
-    render([turn({ id: 't1', steps: [thinking], endReason: 'completed', endedAt: 1 })]);
+    render([
+      turn({ id: 't1', steps: [thinking], endReason: 'completed', endedAt: 1 }),
+    ]);
 
     expect(dots()).toHaveLength(0);
   });
@@ -582,7 +710,9 @@ describe('asking a turn again', () => {
 
   it('offers it under the last turn once that turn has ended', () => {
     const asked: Turn[] = [];
-    render([turn({ id: 't1', endReason: 'completed', endedAt: 1 })], (tt) => asked.push(tt));
+    render([turn({ id: 't1', endReason: 'completed', endedAt: 1 })], (tt) =>
+      asked.push(tt),
+    );
 
     const buttons = regenerateButtons();
     expect(buttons).toHaveLength(1);
@@ -638,7 +768,12 @@ describe('asking a turn again', () => {
     // the answer on the next. One copy control per thing there is to copy — the
     // question's hover meta and the answer's — and none for the empty turn.
     render([
-      turn({ id: 't1', userInput: 'ohayo!', endReason: 'completed', endedAt: 1 }),
+      turn({
+        id: 't1',
+        userInput: 'ohayo!',
+        endReason: 'completed',
+        endedAt: 1,
+      }),
       turn({
         id: 't2',
         userInput: '',

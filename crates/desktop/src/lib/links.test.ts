@@ -3,12 +3,18 @@ import { externalUrl } from './links';
 
 describe('externalUrl', () => {
   it('accepts web links', () => {
-    expect(externalUrl('https://example.com/docs')).toBe('https://example.com/docs');
+    expect(externalUrl('https://example.com/docs')).toBe(
+      'https://example.com/docs',
+    );
     expect(externalUrl('http://example.com')).toBe('http://example.com/');
     // Query strings and fragments are part of the link, not decoration.
-    expect(externalUrl('https://example.com/a?b=c#d')).toBe('https://example.com/a?b=c#d');
+    expect(externalUrl('https://example.com/a?b=c#d')).toBe(
+      'https://example.com/a?b=c#d',
+    );
     // A port is still a web link.
-    expect(externalUrl('http://localhost:8080/x')).toBe('http://localhost:8080/x');
+    expect(externalUrl('http://localhost:8080/x')).toBe(
+      'http://localhost:8080/x',
+    );
   });
 
   it('refuses javascript, which the browser would execute', () => {
@@ -60,7 +66,9 @@ describe('externalUrl', () => {
     // Callers must not be handed the original string back: it is the parsed form
     // that has been through the allowlist.
     expect(externalUrl('https://example.com')).toBe('https://example.com/');
-    expect(externalUrl('https://example.com/a b')).toBe('https://example.com/a%20b');
+    expect(externalUrl('https://example.com/a b')).toBe(
+      'https://example.com/a%20b',
+    );
   });
 
   it('keeps credentials and ports intact rather than mangling the link', () => {

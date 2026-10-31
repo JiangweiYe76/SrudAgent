@@ -4,7 +4,15 @@
 // clock rather than by waiting: a real 1.5s wait per case would make the suite
 // slower than the thing it tests, and would still not catch a timer that fires
 // early.
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  afterEach,
+  vi,
+} from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { CopyCode } from './CodeBlockBar';
@@ -37,7 +45,9 @@ function title(): string | null {
 }
 
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 beforeEach(() => {

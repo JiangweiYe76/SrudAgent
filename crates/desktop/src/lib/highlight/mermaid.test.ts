@@ -58,7 +58,9 @@ describe('mermaid grammar', () => {
   });
 
   it('highlights structure keywords', () => {
-    expect(classesFor('graph TD\n  subgraph one\n  A\n  end')).toContain('hljs-keyword');
+    expect(classesFor('graph TD\n  subgraph one\n  A\n  end')).toContain(
+      'hljs-keyword',
+    );
   });
 
   it('highlights the layout direction as a literal, not a keyword', () => {
@@ -68,16 +70,22 @@ describe('mermaid grammar', () => {
   });
 
   it('highlights labels in brackets', () => {
-    expect(classesFor('graph LR\n  A[Start here] --> B')).toContain('hljs-title');
+    expect(classesFor('graph LR\n  A[Start here] --> B')).toContain(
+      'hljs-title',
+    );
   });
 
   it('highlights quoted text', () => {
-    expect(classesFor('graph LR\n  A["quoted"] --> B')).toContain('hljs-string');
+    expect(classesFor('graph LR\n  A["quoted"] --> B')).toContain(
+      'hljs-string',
+    );
   });
 
   it('ignores a comment', () => {
     // `%%` runs to the end of the line, so a keyword after it is not a keyword.
-    const classes = classesFor('%% graph LR is not a directive here\nflowchart TD\n  A --> B');
+    const classes = classesFor(
+      '%% graph LR is not a directive here\nflowchart TD\n  A --> B',
+    );
 
     expect(classes).toContain('hljs-comment');
   });
@@ -108,7 +116,9 @@ describe('mermaid grammar', () => {
     // The reason the link pattern demands two connector characters: without that,
     // every hyphenated word in a label would come out as an arrow. No real link
     // here, or the test would pass on the arrow rather than on the hyphen.
-    expect(classesFor('graph LR\n  A[well-known]')).not.toContain('hljs-operator');
+    expect(classesFor('graph LR\n  A[well-known]')).not.toContain(
+      'hljs-operator',
+    );
   });
 
   it('leaves an ordinary language alone', () => {

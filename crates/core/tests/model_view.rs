@@ -22,7 +22,10 @@ fn scratch(name: &str, file: &str, contents: &str) -> PathBuf {
 }
 
 fn ctx(dir: &Path) -> ToolContext {
-    ToolContext { cwd: dir.to_path_buf(), cancel: tokio_util::sync::CancellationToken::new() }
+    ToolContext {
+        cwd: dir.to_path_buf(),
+        cancel: tokio_util::sync::CancellationToken::new(),
+    }
 }
 
 async fn read(dir: &Path, path: &str) -> ToolOutcome {

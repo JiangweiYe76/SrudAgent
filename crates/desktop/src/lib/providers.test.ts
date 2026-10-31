@@ -17,10 +17,7 @@ function provider(
 }
 
 const PROVIDERS = [
-  provider('openai', [
-    { id: 'gpt-4o', name: 'GPT-4o' },
-    { id: 'o3' },
-  ]),
+  provider('openai', [{ id: 'gpt-4o', name: 'GPT-4o' }, { id: 'o3' }]),
   provider('deepseek', [{ id: 'chat', name: 'Chat' }]),
 ];
 
@@ -51,7 +48,9 @@ describe('draftModelOptions', () => {
   });
 
   it('starts on the configured default', () => {
-    expect(draftModelOptions(PROVIDERS, 'deepseek/chat')?.currentValue).toBe('deepseek/chat');
+    expect(draftModelOptions(PROVIDERS, 'deepseek/chat')?.currentValue).toBe(
+      'deepseek/chat',
+    );
   });
 
   it('asks for a choice when nothing has been chosen', () => {
@@ -97,18 +96,28 @@ describe('draftThinkingOptions', () => {
   });
 
   it('keeps the level the draft already chose', () => {
-    expect(draftThinkingOptions([DECLARED], 'openai/o3', 'max')?.currentValue).toBe('max');
+    expect(
+      draftThinkingOptions([DECLARED], 'openai/o3', 'max')?.currentValue,
+    ).toBe('max');
   });
 
   it('falls back to the model default for a level it does not declare', () => {
     // A level the new model does not declare is replaced by that model's
     // default, so the draft never shows a level it cannot send.
-    expect(draftThinkingOptions([DECLARED], 'openai/o3', 'low')?.currentValue).toBe('medium');
+    expect(
+      draftThinkingOptions([DECLARED], 'openai/o3', 'low')?.currentValue,
+    ).toBe('medium');
   });
 
   it('offers no selector for a model that declares no thinking', () => {
     expect(draftThinkingOptions([], 'openai/o3', null)).toBeNull();
-    expect(draftThinkingOptions([provider('openai', [{ id: 'o3' }])], 'openai/o3', null)).toBeNull();
+    expect(
+      draftThinkingOptions(
+        [provider('openai', [{ id: 'o3' }])],
+        'openai/o3',
+        null,
+      ),
+    ).toBeNull();
     // A reference that names nothing has nothing to declare.
     expect(draftThinkingOptions([DECLARED], '', null)).toBeNull();
     expect(draftThinkingOptions([DECLARED], 'openai', null)).toBeNull();

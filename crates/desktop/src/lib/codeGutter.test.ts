@@ -40,7 +40,9 @@ function rule(source: string, selector: string): string {
 function findChromium(): string | null {
   const cache = join(homedir(), '.cache', 'ms-playwright');
   if (!existsSync(cache)) return null;
-  const builds = readdirSync(cache).filter((name: string) => name.startsWith('chromium-'));
+  const builds = readdirSync(cache).filter((name: string) =>
+    name.startsWith('chromium-'),
+  );
   for (const build of builds) {
     for (const relative of ['chrome-linux64/chrome', 'chrome-linux/chrome']) {
       const path = join(cache, build, relative);
@@ -89,7 +91,8 @@ describe.skipIf(!executablePath)('code gutter geometry', () => {
       const line = document.querySelector('.code-line')!;
       const style = getComputedStyle(line);
       const before = getComputedStyle(line, '::before');
-      const em = (value: string) => parseFloat(value) * parseFloat(style.fontSize);
+      const em = (value: string) =>
+        parseFloat(value) * parseFloat(style.fontSize);
 
       // The first glyph, rather than the content box: the box starts where the
       // padding ends whether or not anything is visible there.
@@ -99,7 +102,9 @@ describe.skipIf(!executablePath)('code gutter geometry', () => {
         range.setStart(target, 0);
         range.setEnd(target, 0);
         const rects = range.getClientRects();
-        return rects.length ? rects[0].left - el.getBoundingClientRect().left : null;
+        return rects.length
+          ? rects[0].left - el.getBoundingClientRect().left
+          : null;
       };
 
       return {

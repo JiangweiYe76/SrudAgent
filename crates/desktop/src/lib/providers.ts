@@ -47,7 +47,11 @@ export const useProviderStore = create<ProviderState>((set) => {
   // a provider added, changed or removed all leave the store holding what the
   // agent says the file says.
   function apply(catalog: ProviderCatalog): boolean {
-    set({ providers: catalog.providers, defaultModel: catalog.default, error: null });
+    set({
+      providers: catalog.providers,
+      defaultModel: catalog.default,
+      error: null,
+    });
     return true;
   }
 
@@ -153,7 +157,9 @@ export function draftModelOptions(
 
   const known =
     current !== null &&
-    groups.some((group) => group.choices.some((choice) => choice.value === current));
+    groups.some((group) =>
+      group.choices.some((choice) => choice.value === current),
+    );
   return {
     configId: MODEL_OPTION_ID,
     currentValue: known ? current : '',
@@ -201,7 +207,9 @@ export function draftThinkingOptions(
   const config = model?.thinking;
   if (!config) return null;
 
-  const levels = THINKING_LEVELS.filter((level) => config.levels[level] !== undefined);
+  const levels = THINKING_LEVELS.filter(
+    (level) => config.levels[level] !== undefined,
+  );
   if (levels.length === 0) return null;
   const chosen =
     current !== null && levels.includes(current as ThinkingLevel)
@@ -210,6 +218,9 @@ export function draftThinkingOptions(
   return {
     configId: THINKING_OPTION_ID,
     currentValue: chosen,
-    choices: levels.map((level) => ({ value: level, name: thinkingLabel(level) })),
+    choices: levels.map((level) => ({
+      value: level,
+      name: thinkingLabel(level),
+    })),
   };
 }

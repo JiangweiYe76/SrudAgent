@@ -4,7 +4,15 @@
 // menu. These tests pin that boundary and what copying does: take the message or
 // the selected part of it, through the menu and through Ctrl+C, as the markdown
 // the model wrote rather than rendered output.
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  afterEach,
+  vi,
+} from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { MessageList } from './MessageList';
@@ -33,7 +41,15 @@ function turn(): Turn {
         id: 's1',
         thought: 'I should read it first.',
         assistantText: 'The file holds a greeting.',
-        toolCalls: [{ id: 'tc1', name: 'read', args: '{"path":"a.ts"}', pending: false, result: 'ok' }],
+        toolCalls: [
+          {
+            id: 'tc1',
+            name: 'read',
+            args: '{"path":"a.ts"}',
+            pending: false,
+            result: 'ok',
+          },
+        ],
       },
     ],
     createdAt: 0,
@@ -83,8 +99,11 @@ async function clickCopy(): Promise<void> {
 }
 
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  globalThis.ResizeObserver = NoopResizeObserver as unknown as typeof ResizeObserver;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
+  globalThis.ResizeObserver =
+    NoopResizeObserver as unknown as typeof ResizeObserver;
 });
 
 beforeEach(() => {
@@ -120,7 +139,9 @@ describe('the message context menu', () => {
 
     await clickCopy();
 
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('The file holds a greeting.');
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      'The file holds a greeting.',
+    );
     expect(mocks.success).toHaveBeenCalledWith('Copied');
     expect(menu()).toBeNull();
   });
@@ -135,7 +156,9 @@ describe('the message context menu', () => {
     rightClick(paragraph);
     await clickCopy();
 
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('The file holds a greeting.');
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      'The file holds a greeting.',
+    );
   });
 
   it('copies the selected phrase rather than the whole message', async () => {
@@ -143,8 +166,14 @@ describe('the message context menu', () => {
     const text = container.querySelector('.message-markdown p')!.textContent!;
     const from = text.indexOf('greeting');
     const range = document.createRange();
-    range.setStart(container.querySelector('[data-md-text]')!.firstChild!, from);
-    range.setEnd(container.querySelector('[data-md-text]')!.firstChild!, from + 'greeting'.length);
+    range.setStart(
+      container.querySelector('[data-md-text]')!.firstChild!,
+      from,
+    );
+    range.setEnd(
+      container.querySelector('[data-md-text]')!.firstChild!,
+      from + 'greeting'.length,
+    );
     window.getSelection()!.addRange(range);
 
     rightClick(container.querySelector('.message-markdown p')!);
@@ -169,19 +198,25 @@ describe('the message context menu', () => {
     rightClick(math);
     await clickCopy();
 
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('$$\nE = mc^2\n$$');
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      '$$\nE = mc^2\n$$',
+    );
   });
 
   it('copies inline math with its delimiters', async () => {
     const formula: Turn = {
       ...turn(),
-      steps: [{ id: 's1', assistantText: 'Use $E = mc^2$ here.', toolCalls: [] }],
+      steps: [
+        { id: 's1', assistantText: 'Use $E = mc^2$ here.', toolCalls: [] },
+      ],
     };
     render([formula]);
     const math = container.querySelector('[data-md-math]')!;
     // A real drag lands on the text KaTeX generated, not on the wrapper, so only
     // the formula's own source range can carry the delimiters back out.
-    const inner = document.createTreeWalker(math, NodeFilter.SHOW_TEXT).nextNode()!;
+    const inner = document
+      .createTreeWalker(math, NodeFilter.SHOW_TEXT)
+      .nextNode()!;
     const range = document.createRange();
     range.setStart(inner, 0);
     range.setEnd(inner, 1);
@@ -263,7 +298,9 @@ describe('the message context menu', () => {
       });
 
       expect(event.defaultPrevented).toBe(true);
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('$$\nE = mc^2\n$$');
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        '$$\nE = mc^2\n$$',
+      );
     } finally {
       restoreCopy();
     }
@@ -326,7 +363,9 @@ describe('the message context menu', () => {
     });
 
     act(() => {
-      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      document.body.dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true }),
+      );
     });
 
     expect(menu()).toBeNull();
@@ -337,7 +376,9 @@ describe('the message context menu', () => {
     rightClick(container.querySelector('.bg-user-bubble')!);
 
     act(() => {
-      container.querySelector('.overflow-y-auto')!.dispatchEvent(new Event('scroll'));
+      container
+        .querySelector('.overflow-y-auto')!
+        .dispatchEvent(new Event('scroll'));
     });
 
     expect(menu()).toBeNull();

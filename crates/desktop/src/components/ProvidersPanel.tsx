@@ -61,7 +61,8 @@ export function ProvidersPanel() {
   // A stored default can name a model that is not on offer any more — a provider
   // deleted since, or a model removed from one. Then the select shows it as
   // itself rather than silently reading as something else.
-  const orphaned = defaultModel !== null && !choices.some((c) => c.value === defaultModel);
+  const orphaned =
+    defaultModel !== null && !choices.some((c) => c.value === defaultModel);
 
   async function removeProvider(id: string) {
     setBusy(true);
@@ -75,7 +76,9 @@ export function ProvidersPanel() {
           without anyone choosing it again. */}
       <div className="flex flex-col gap-1">
         <span className="text-sm">{t('providers.default')}</span>
-        <span className="text-xs text-muted-foreground">{t('providers.default.hint')}</span>
+        <span className="text-xs text-muted-foreground">
+          {t('providers.default.hint')}
+        </span>
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={t('providers.default')}
@@ -95,7 +98,8 @@ export function ProvidersPanel() {
                 ? t('providers.default.unset')
                 : orphaned
                   ? t('models.unavailable', { model: defaultModel })
-                  : choices.find((choice) => choice.value === defaultModel)?.label ?? defaultModel}
+                  : (choices.find((choice) => choice.value === defaultModel)
+                      ?.label ?? defaultModel)}
             </span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0" />
           </DropdownMenuTrigger>
@@ -155,9 +159,13 @@ export function ProvidersPanel() {
           )}
 
           {!loaded ? (
-            <span className="text-xs text-muted-foreground">{t('providers.loading')}</span>
+            <span className="text-xs text-muted-foreground">
+              {t('providers.loading')}
+            </span>
           ) : providers.length === 0 ? (
-            <span className="text-xs text-muted-foreground">{t('providers.empty')}</span>
+            <span className="text-xs text-muted-foreground">
+              {t('providers.empty')}
+            </span>
           ) : (
             <ul className="m-0 flex min-h-0 list-none flex-col gap-1 overflow-y-auto p-0">
               {providers.map((provider) => (
@@ -165,7 +173,9 @@ export function ProvidersPanel() {
                   key={provider.id}
                   className={cn(
                     'flex items-center gap-1 rounded-lg border border-border pr-1',
-                    !adding && selectedId === provider.id && 'border-accent bg-item-hover',
+                    !adding &&
+                      selectedId === provider.id &&
+                      'border-accent bg-item-hover',
                   )}
                 >
                   <button
@@ -177,9 +187,13 @@ export function ProvidersPanel() {
                     }}
                     className="flex min-w-0 flex-1 cursor-pointer flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left outline-none transition-colors hover:bg-item-hover"
                   >
-                    <span className="w-full truncate text-[13px]">{provider.name}</span>
+                    <span className="w-full truncate text-[13px]">
+                      {provider.name}
+                    </span>
                     <span className="w-full truncate text-[11px] text-muted-foreground">
-                      {provider.id} · {t('providers.modelCount', { n: provider.models.length })} ·{' '}
+                      {provider.id} ·{' '}
+                      {t('providers.modelCount', { n: provider.models.length })}{' '}
+                      ·{' '}
                       {provider.hasKey
                         ? t('providers.key.set', { key: provider.apiKey ?? '' })
                         : t('providers.key.none')}
@@ -223,7 +237,9 @@ export function ProvidersPanel() {
             />
           ) : (
             !loaded && (
-              <span className="text-xs text-muted-foreground">{t('providers.loading')}</span>
+              <span className="text-xs text-muted-foreground">
+                {t('providers.loading')}
+              </span>
             )
           )}
         </div>

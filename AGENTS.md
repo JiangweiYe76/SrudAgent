@@ -19,6 +19,7 @@ All commit messages in English.
 
 - Format: `cargo fmt`
 - Lint: `cargo clippy -- -D warnings`
+- Front-end format: `pnpm format` in `crates/desktop`
 - Follow Rust API guidelines: https://rust-lang.github.io/api-guidelines/
 
 ### Comments

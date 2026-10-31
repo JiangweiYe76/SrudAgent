@@ -24,7 +24,11 @@ interface ThinkingSelectProps {
 // is then nothing to choose, and an empty dropdown would claim otherwise. The
 // values are canonical levels; the endpoint's own wire value is the model's
 // business and never appears here.
-export function ThinkingSelect({ options, disabled, onSelect }: ThinkingSelectProps) {
+export function ThinkingSelect({
+  options,
+  disabled,
+  onSelect,
+}: ThinkingSelectProps) {
   const [open, setOpen] = useState(false);
 
   // A session that goes away mid-open — deleted, or switched away from — would
@@ -52,7 +56,9 @@ export function ThinkingSelect({ options, disabled, onSelect }: ThinkingSelectPr
             : 'text-muted-foreground hover:text-foreground',
         )}
       >
-        <span className="truncate">{unchosen ? t('thinking.choose') : current}</span>
+        <span className="truncate">
+          {unchosen ? t('thinking.choose') : current}
+        </span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[150px]">
@@ -66,7 +72,9 @@ export function ThinkingSelect({ options, disabled, onSelect }: ThinkingSelectPr
             <Check
               className={cn(
                 'h-3.5 w-3.5 shrink-0',
-                choice.value === options.currentValue ? 'opacity-100' : 'opacity-0',
+                choice.value === options.currentValue
+                  ? 'opacity-100'
+                  : 'opacity-0',
               )}
             />
             <span className="truncate">{choice.name}</span>
@@ -81,7 +89,7 @@ export function ThinkingSelect({ options, disabled, onSelect }: ThinkingSelectPr
 // list does not hold it.
 function labelOf(options: ThinkingOptions): string {
   return (
-    options.choices.find((choice) => choice.value === options.currentValue)?.name ??
-    options.currentValue
+    options.choices.find((choice) => choice.value === options.currentValue)
+      ?.name ?? options.currentValue
   );
 }

@@ -59,5 +59,9 @@ export function readJson(raw: string): JsonPayload {
   }
 
   const text = JSON.stringify(parsed, null, 2);
-  return { text, tree: lowlight.highlight('json', text) as unknown as HastNode, unparsable: false };
+  return {
+    text,
+    tree: lowlight.highlight('json', text) as unknown as HastNode,
+    unparsable: false,
+  };
 }

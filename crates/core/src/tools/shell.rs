@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 use tokio::join;
+use tokio::process::Command;
 
 use super::{failure_text, Tool, ToolContext, ToolError, ToolOutcome};
 
@@ -644,7 +644,10 @@ mod tests {
     }
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
-        ToolContext { cwd: dir.to_path_buf(), cancel: tokio_util::sync::CancellationToken::new() }
+        ToolContext {
+            cwd: dir.to_path_buf(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        }
     }
 
     /// Runs `command`, expecting well-formed arguments.

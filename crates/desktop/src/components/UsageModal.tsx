@@ -11,7 +11,8 @@ interface UsageModalProps {
 // The full picture behind the ring: how much of the window is in use, how
 // much of the input the cache served, and every accumulated count.
 export function UsageModal({ usage, open, onOpenChange }: UsageModalProps) {
-  const contextPct = usage.size > 0 ? Math.round((usage.used / usage.size) * 100) : 0;
+  const contextPct =
+    usage.size > 0 ? Math.round((usage.used / usage.size) * 100) : 0;
   const cachePct =
     usage.inputTokens > 0
       ? Math.round((usage.cachedInputTokens / usage.inputTokens) * 100)
@@ -54,19 +55,33 @@ export function UsageModal({ usage, open, onOpenChange }: UsageModalProps) {
               </div>
             ))}
           </div>
-          <p className="m-0 mt-3 text-[11px] text-muted-foreground">{t('usage.note')}</p>
+          <p className="m-0 mt-3 text-[11px] text-muted-foreground">
+            {t('usage.note')}
+          </p>
         </div>
       </ModalContent>
     </Modal>
   );
 }
 
-function Stat({ label, value, detail }: { label: string; value: string; detail?: string }) {
+function Stat({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+}) {
   return (
     <div className="flex flex-col gap-0.5 rounded-lg bg-item-hover/50 px-3 py-2">
       <span className="text-[11px] text-muted-foreground">{label}</span>
       <span className="text-lg font-semibold tabular-nums">{value}</span>
-      {detail && <span className="text-[11px] text-muted-foreground tabular-nums">{detail}</span>}
+      {detail && (
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          {detail}
+        </span>
+      )}
     </div>
   );
 }

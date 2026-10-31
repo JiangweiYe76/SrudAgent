@@ -44,7 +44,9 @@ function output(value: string, isError?: boolean): HTMLElement {
 }
 
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 afterEach(() => {
@@ -105,7 +107,9 @@ describe('a success that is not JSON', () => {
   it('still shows what the tool said', () => {
     const shown = output('I could not read that file.', false);
 
-    expect(shown.querySelector('pre')?.textContent).toBe('I could not read that file.');
+    expect(shown.querySelector('pre')?.textContent).toBe(
+      'I could not read that file.',
+    );
   });
 });
 
@@ -121,7 +125,9 @@ describe('without a statement either way', () => {
   it('still indents a payload that has not been labelled yet', () => {
     const shown = output(SUCCEEDED, undefined);
 
-    expect(shown.querySelector('pre')?.textContent).toContain('\n  "exit_code": 2');
+    expect(shown.querySelector('pre')?.textContent).toContain(
+      '\n  "exit_code": 2',
+    );
   });
 });
 
@@ -129,10 +135,14 @@ describe('the input side', () => {
   it('is never treated as a failure', () => {
     // A tool's arguments are whatever the model wrote; the backend reports nothing
     // about them, and passing a failure here would colour every input.
-    const shown = render(<JsonBlock label="Input" value={'{"command":"rm x"}'} />);
+    const shown = render(
+      <JsonBlock label="Input" value={'{"command":"rm x"}'} />,
+    );
 
     expect(shown.querySelector('.text-destructive')).toBeNull();
-    expect(shown.querySelector('pre')?.textContent).toBe('{\n  "command": "rm x"\n}');
+    expect(shown.querySelector('pre')?.textContent).toBe(
+      '{\n  "command": "rm x"\n}',
+    );
   });
 });
 
@@ -145,7 +155,9 @@ describe('nothing to show', () => {
   });
 
   it('shows the fallback in place of an absent payload', () => {
-    const shown = render(<JsonBlock label="Output" value="" fallback="(no result)" />);
+    const shown = render(
+      <JsonBlock label="Output" value="" fallback="(no result)" />,
+    );
 
     expect(shown.querySelector('pre')).toBeNull();
     expect(shown.textContent).toContain('(no result)');

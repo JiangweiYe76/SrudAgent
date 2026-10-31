@@ -1,9 +1,4 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-  type ClipboardEvent,
-} from 'react';
+import { useEffect, useRef, useState, type ClipboardEvent } from 'react';
 
 import {
   ArrowUp,
@@ -86,7 +81,9 @@ export function ChatInput({
   // modal come and go together with the usage data itself.
   const [usageOpen, setUsageOpen] = useState(false);
   const [preview, setPreview] = useState<Attachment | null>(null);
-  const [draftSelection, setDraftSelection] = useState<DraftSelection | null>(null);
+  const [draftSelection, setDraftSelection] = useState<DraftSelection | null>(
+    null,
+  );
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Reads started by a paste resolve after the event, so the list they append
@@ -133,7 +130,10 @@ export function ChatInput({
   const insertText = (text: string) => {
     const textarea = textareaRef.current;
     const draft = valueRef.current;
-    const start = Math.min(textarea?.selectionStart ?? draft.length, draft.length);
+    const start = Math.min(
+      textarea?.selectionStart ?? draft.length,
+      draft.length,
+    );
     const end = Math.min(textarea?.selectionEnd ?? start, draft.length);
     onValueChange(`${draft.slice(0, start)}${text}${draft.slice(end)}`);
     const caret = start + text.length;
@@ -212,7 +212,10 @@ export function ChatInput({
         if (content.kind === 'text') {
           replaceDraftRange(selection.start, selection.end, content.text);
         } else if (content.kind === 'image') {
-          onAttachmentsChange([...attachmentsRef.current, attachmentOf(content)]);
+          onAttachmentsChange([
+            ...attachmentsRef.current,
+            attachmentOf(content),
+          ]);
           restoreSelection(selection);
         } else {
           restoreSelection(selection);
@@ -276,7 +279,11 @@ export function ChatInput({
         })
         .catch((error: unknown) => {
           const kind = (error as { kind?: string } | null)?.kind;
-          toast.error(kind === 'tooLarge' ? t('chat.image.tooLarge') : t('chat.image.unreadable'));
+          toast.error(
+            kind === 'tooLarge'
+              ? t('chat.image.tooLarge')
+              : t('chat.image.unreadable'),
+          );
         });
       return;
     }
@@ -288,14 +295,21 @@ export function ChatInput({
     void readClipboard(IMAGE_LIMIT_BYTES)
       .then((content) => {
         if (content.kind === 'image') {
-          onAttachmentsChange([...attachmentsRef.current, attachmentOf(content)]);
+          onAttachmentsChange([
+            ...attachmentsRef.current,
+            attachmentOf(content),
+          ]);
         } else if (content.kind === 'text') {
           insertText(content.text);
         }
       })
       .catch((error: unknown) => {
         const kind = (error as { kind?: string } | null)?.kind;
-        toast.error(kind === 'tooLarge' ? t('chat.image.tooLarge') : t('chat.image.unreadable'));
+        toast.error(
+          kind === 'tooLarge'
+            ? t('chat.image.tooLarge')
+            : t('chat.image.unreadable'),
+        );
       });
   };
 
@@ -318,12 +332,18 @@ export function ChatInput({
                 aria-label={t('chat.image.preview')}
                 className="block h-full w-full cursor-zoom-in"
               >
-                <img src={imageSrc(image)} alt="" className="h-full w-full object-cover" />
+                <img
+                  src={imageSrc(image)}
+                  alt=""
+                  className="h-full w-full object-cover"
+                />
               </button>
               <button
                 type="button"
                 onClick={() =>
-                  onAttachmentsChange(attachments.filter((item) => item.id !== image.id))
+                  onAttachmentsChange(
+                    attachments.filter((item) => item.id !== image.id),
+                  )
                 }
                 title={t('chat.image.remove')}
                 aria-label={t('chat.image.remove')}
@@ -389,7 +409,9 @@ export function ChatInput({
         />
       </ContextMenu>
       <div className="flex items-center justify-end gap-1.5">
-        {usage && <UsageIndicator usage={usage} onOpen={() => setUsageOpen(true)} />}
+        {usage && (
+          <UsageIndicator usage={usage} onOpen={() => setUsageOpen(true)} />
+        )}
         <Button
           variant="outline"
           size="icon"
@@ -416,7 +438,13 @@ export function ChatInput({
           <ArrowUp className="h-4 w-4" />
         </Button>
       </div>
-      {usage && <UsageModal usage={usage} open={usageOpen} onOpenChange={setUsageOpen} />}
+      {usage && (
+        <UsageModal
+          usage={usage}
+          open={usageOpen}
+          onOpenChange={setUsageOpen}
+        />
+      )}
       <Modal
         open={preview !== null}
         onOpenChange={(open) => {
@@ -458,7 +486,9 @@ export function ChatInput({
                 key={index}
                 className="mx-4 flex items-center gap-2 border-b border-border py-2 last:border-b-0"
               >
-                <span className="min-w-0 flex-1 truncate text-sm text-foreground">{text}</span>
+                <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                  {text}
+                </span>
                 <button
                   type="button"
                   className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-item-hover hover:text-foreground disabled:opacity-30"
@@ -496,7 +526,11 @@ function imageSrc(image: Attachment): string {
 
 // An attachment out of image bytes the host read off the clipboard.
 function attachmentOf(image: { mime: string; data: string }): Attachment {
-  return { id: `img${attachmentCounter++}`, mime: image.mime, data: image.data };
+  return {
+    id: `img${attachmentCounter++}`,
+    mime: image.mime,
+    data: image.data,
+  };
 }
 
 // The extensions the host will read off a path the clipboard named.
@@ -565,7 +599,13 @@ function readAttachment(file: File): Promise<Attachment> {
 //
 // The ring fills as the context window is consumed; its tooltip carries the
 // exact counts, and pressing it opens the full breakdown — cache hits and all.
-function UsageIndicator({ usage, onOpen }: { usage: UsageState; onOpen: () => void }) {
+function UsageIndicator({
+  usage,
+  onOpen,
+}: {
+  usage: UsageState;
+  onOpen: () => void;
+}) {
   const ratio = usage.size > 0 ? Math.min(1, usage.used / usage.size) : 0;
   const circumference = 2 * Math.PI * 6;
   const contextTitle = t('chat.context', {
@@ -579,7 +619,13 @@ function UsageIndicator({ usage, onOpen }: { usage: UsageState; onOpen: () => vo
       onClick={onOpen}
       className="mr-1 flex cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-item-hover hover:text-foreground"
     >
-      <svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label={contextTitle}>
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 16 16"
+        role="img"
+        aria-label={contextTitle}
+      >
         <title>{contextTitle}</title>
         <circle
           cx="8"

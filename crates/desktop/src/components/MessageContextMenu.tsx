@@ -1,4 +1,8 @@
-import { useRef, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react';
+import {
+  useRef,
+  type MouseEvent as ReactMouseEvent,
+  type ReactElement,
+} from 'react';
 import { Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { ContextMenu } from '@/components/ContextMenu';
@@ -38,8 +42,11 @@ export function MessageContextMenu({
     // The selection is read back as markdown, so a formula comes out as the
     // TeX the model wrote rather than KaTeX's output.
     const selected =
-      selection && selectionAnchor && event.currentTarget.contains(selectionAnchor)
-        ? (sourceOfSelection(selection, event.currentTarget, text) ?? selection.toString())
+      selection &&
+      selectionAnchor &&
+      event.currentTarget.contains(selectionAnchor)
+        ? (sourceOfSelection(selection, event.currentTarget, text) ??
+          selection.toString())
         : '';
     copyText.current = selected || text;
   };
@@ -48,7 +55,9 @@ export function MessageContextMenu({
     <ContextMenu
       label={t('msg.actions')}
       onOpen={rememberSelection}
-      items={[{ label: t('msg.copy'), icon: Copy, onSelect: () => void copy() }]}
+      items={[
+        { label: t('msg.copy'), icon: Copy, onSelect: () => void copy() },
+      ]}
     >
       {children}
     </ContextMenu>

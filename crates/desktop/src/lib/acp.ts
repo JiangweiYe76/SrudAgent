@@ -95,7 +95,10 @@ export async function rpcRequest(method: string, params: Json): Promise<Json> {
 }
 
 export async function initialize(): Promise<Json> {
-  return rpcRequest('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  return rpcRequest('initialize', {
+    protocolVersion: 1,
+    clientCapabilities: {},
+  });
 }
 
 // Creates a session. `cwd` is where the user wants it to work; an empty string
@@ -140,7 +143,11 @@ export async function sendPrompt(
   const result = await rpcRequest('session/prompt', {
     sessionId,
     prompt: [
-      ...images.map((image) => ({ type: 'image', mimeType: image.mime, data: image.data })),
+      ...images.map((image) => ({
+        type: 'image',
+        mimeType: image.mime,
+        data: image.data,
+      })),
       ...(text ? [{ type: 'text', text }] : []),
     ],
   });
@@ -150,7 +157,10 @@ export async function sendPrompt(
 // Injects `text` into a turn that is already running. The agent appends it to
 // the active turn's context and announces it as a user message; the in-flight
 // `session/prompt` stays the single termination signal.
-export async function steerTurn(sessionId: string, text: string): Promise<void> {
+export async function steerTurn(
+  sessionId: string,
+  text: string,
+): Promise<void> {
   await rpcRequest('_srud/unstable/session/steer', {
     sessionId,
     prompt: [{ type: 'text', text }],
@@ -165,8 +175,14 @@ export async function steerTurn(sessionId: string, text: string): Promise<void> 
 // than implied: the agent re-runs the session's latest turn, and only what the
 // client has on screen can say which turn that is. The call answers when the new
 // turn ends, like `session/prompt`.
-export async function regenerateTurn(sessionId: string, turnId: string): Promise<string> {
-  const result = await rpcRequest('_srud/unstable/session/regenerate', { sessionId, turnId });
+export async function regenerateTurn(
+  sessionId: string,
+  turnId: string,
+): Promise<string> {
+  const result = await rpcRequest('_srud/unstable/session/regenerate', {
+    sessionId,
+    turnId,
+  });
   return String(result.stopReason ?? 'end_turn');
 }
 
@@ -192,7 +208,10 @@ export interface LoadedSession extends SessionOptions {
 
 function isTurnEndReason(value: unknown): value is TurnEndReason {
   return (
-    value === 'completed' || value === 'interrupted' || value === 'blocked' || value === 'error'
+    value === 'completed' ||
+    value === 'interrupted' ||
+    value === 'blocked' ||
+    value === 'error'
   );
 }
 
@@ -212,8 +231,15 @@ function parseTurnEnds(meta: unknown): LoadedTurnEnd[] {
   });
 }
 
-export async function loadSession(sessionId: string, cwd = ''): Promise<LoadedSession> {
-  const result = await rpcRequest('session/load', { sessionId, cwd, mcpServers: [] });
+export async function loadSession(
+  sessionId: string,
+  cwd = '',
+): Promise<LoadedSession> {
+  const result = await rpcRequest('session/load', {
+    sessionId,
+    cwd,
+    mcpServers: [],
+  });
   return {
     ...parseSessionOptions(result.configOptions),
     turns: parseTurnEnds(result._meta),
@@ -222,7 +248,10 @@ export async function loadSession(sessionId: string, cwd = ''): Promise<LoadedSe
 
 // Renames a session. ACP lets the agent name a session but defines no
 // client-to-agent method for renaming one, so this is a SrudAgent extension.
-export async function setSessionTitle(sessionId: string, title: string): Promise<void> {
+export async function setSessionTitle(
+  sessionId: string,
+  title: string,
+): Promise<void> {
   await rpcRequest('_srud/unstable/session/set_title', { sessionId, title });
 }
 
@@ -253,7 +282,8 @@ export async function listSessions(): Promise<ListedSession[]> {
         sessionId,
         cwd: typeof info.cwd === 'string' ? info.cwd : '',
         title: typeof info.title === 'string' ? info.title : null,
-        updatedAt: typeof updated === 'string' ? Date.parse(updated) || null : null,
+        updatedAt:
+          typeof updated === 'string' ? Date.parse(updated) || null : null,
       },
     ];
   });
@@ -280,7 +310,10 @@ export interface ClipboardImage {
 // a file path rather than the picture itself, and a webview cannot open the
 // file behind that path. `limit` is the largest file worth sending, so an
 // oversized one is refused before it is read.
-export async function readImageFile(path: string, limit: number): Promise<ClipboardImage> {
+export async function readImageFile(
+  path: string,
+  limit: number,
+): Promise<ClipboardImage> {
   return invoke<ClipboardImage>('read_image_file', { path, limit });
 }
 
@@ -345,7 +378,9 @@ export function parseModelOptions(configOptions: unknown): ModelOptions | null {
   // SrudAgent's id, or the category ACP reserves: an agent may name the option
   // differently and still mark it as the model selector.
   const option = configOptions.find(
-    (entry) => isJson(entry) && (entry.id === MODEL_OPTION_ID || entry.category === 'model'),
+    (entry) =>
+      isJson(entry) &&
+      (entry.id === MODEL_OPTION_ID || entry.category === 'model'),
   );
   if (!isJson(option)) return null;
 
@@ -365,11 +400,15 @@ export function parseModelOptions(configOptions: unknown): ModelOptions | null {
       })
     : [{ id: '', name: '', choices: choicesOf(raw) }];
 
-  const currentValue = typeof option.currentValue === 'string' ? option.currentValue : '';
+  const currentValue =
+    typeof option.currentValue === 'string' ? option.currentValue : '';
   // A selection nothing offers is kept as its own entry, so the trigger has
   // something to show. The agent does this too, and this only fires for one that
   // did not.
-  if (currentValue && !groups.some((g) => g.choices.some((c) => c.value === currentValue))) {
+  if (
+    currentValue &&
+    !groups.some((g) => g.choices.some((c) => c.value === currentValue))
+  ) {
     groups.push({
       id: UNAVAILABLE_GROUP,
       name: '',
@@ -384,11 +423,14 @@ export function parseModelOptions(configOptions: unknown): ModelOptions | null {
 // The thinking selector out of a response's `configOptions`, or null when the
 // selected model declares no thinking control. Its values are canonical levels;
 // the model's wire values never reach the client.
-export function parseThinkingOptions(configOptions: unknown): ThinkingOptions | null {
+export function parseThinkingOptions(
+  configOptions: unknown,
+): ThinkingOptions | null {
   if (!Array.isArray(configOptions)) return null;
   const option = configOptions.find(
     (entry) =>
-      isJson(entry) && (entry.id === THINKING_OPTION_ID || entry.category === 'thought_level'),
+      isJson(entry) &&
+      (entry.id === THINKING_OPTION_ID || entry.category === 'thought_level'),
   );
   if (!isJson(option)) return null;
 
@@ -396,7 +438,8 @@ export function parseThinkingOptions(configOptions: unknown): ThinkingOptions | 
   if (choices.length === 0) return null;
   return {
     configId: typeof option.id === 'string' ? option.id : THINKING_OPTION_ID,
-    currentValue: typeof option.currentValue === 'string' ? option.currentValue : '',
+    currentValue:
+      typeof option.currentValue === 'string' ? option.currentValue : '',
     choices,
   };
 }
@@ -526,11 +569,16 @@ function parseModalities(value: unknown): Modality[] {
 // A context window only exists as a positive whole number of tokens; anything
 // else — absent, malformed, zero — reads as "no window configured".
 function parseContextWindow(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
-  return typeof value === 'string' && THINKING_LEVELS.includes(value as ThinkingLevel);
+  return (
+    typeof value === 'string' &&
+    THINKING_LEVELS.includes(value as ThinkingLevel)
+  );
 }
 
 // What a model declares about thinking, or undefined when it declares nothing.
@@ -568,7 +616,8 @@ function parseCatalog(result: Json): ProviderCatalog {
               ? [
                   {
                     id: model.id,
-                    name: typeof model.name === 'string' ? model.name : undefined,
+                    name:
+                      typeof model.name === 'string' ? model.name : undefined,
                     modalities: parseModalities(model.modalities),
                     contextWindow: parseContextWindow(model.contextWindow),
                     thinking: parseThinkingConfig(model.thinking),
@@ -590,16 +639,26 @@ export async function listProviders(): Promise<ProviderCatalog> {
 }
 
 // Adds a provider, or replaces the one whose id it names.
-export async function saveProvider(provider: ProviderDraft): Promise<ProviderCatalog> {
-  return parseCatalog(await rpcRequest('_srud/unstable/provider/set', { provider }));
+export async function saveProvider(
+  provider: ProviderDraft,
+): Promise<ProviderCatalog> {
+  return parseCatalog(
+    await rpcRequest('_srud/unstable/provider/set', { provider }),
+  );
 }
 
-export async function deleteProvider(providerId: string): Promise<ProviderCatalog> {
-  return parseCatalog(await rpcRequest('_srud/unstable/provider/delete', { providerId }));
+export async function deleteProvider(
+  providerId: string,
+): Promise<ProviderCatalog> {
+  return parseCatalog(
+    await rpcRequest('_srud/unstable/provider/delete', { providerId }),
+  );
 }
 
 // Chooses the model new sessions start from. Sessions already open keep their
 // own choice: this is a default, not a broadcast.
 export async function setDefaultModel(model: string): Promise<ProviderCatalog> {
-  return parseCatalog(await rpcRequest('_srud/unstable/provider/set_default', { model }));
+  return parseCatalog(
+    await rpcRequest('_srud/unstable/provider/set_default', { model }),
+  );
 }
