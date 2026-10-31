@@ -32,7 +32,10 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn ctx(dir: &Path) -> ToolContext {
-    ToolContext { cwd: dir.to_path_buf(), cancel: tokio_util::sync::CancellationToken::new() }
+    ToolContext {
+        cwd: dir.to_path_buf(),
+        cancel: tokio_util::sync::CancellationToken::new(),
+    }
 }
 
 /// Runs `command` and reports whether the tool refused it.

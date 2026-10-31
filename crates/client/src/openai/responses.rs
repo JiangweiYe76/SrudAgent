@@ -9,7 +9,7 @@ use async_openai::types::responses::{
     InputImageContent, InputItem, InputParam, InputTextContent, Item, MessageType, OutputItem,
     ResponseStreamEvent, ResponseTextDeltaEvent, ResponseUsage, Role as ApiRole, Tool,
 };
-use async_openai::{Client, config::OpenAIConfig};
+use async_openai::{config::OpenAIConfig, Client};
 use futures::StreamExt;
 use srud_core::client::{
     ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream, TokenUsage,
@@ -18,7 +18,7 @@ use srud_core::tools::ToolDefinition;
 use srud_core::types::Role;
 use tokio_util::sync::CancellationToken;
 
-use super::{ClientConfig, connect};
+use super::{connect, ClientConfig};
 
 /// A client for the Responses API.
 ///
