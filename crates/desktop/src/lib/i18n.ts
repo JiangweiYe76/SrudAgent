@@ -90,6 +90,9 @@ const en = {
   'models.unavailable': '{model} (unavailable)',
   'models.choose': 'Choose a model',
 
+  'thinking.title': 'Thinking level',
+  'thinking.choose': 'Thinking',
+
   'providers.title': 'Providers',
   'providers.hint': 'Endpoints your sessions can draw models from.',
   'providers.loading': 'Loading…',
@@ -132,6 +135,16 @@ const en = {
   'providers.model.field.context.hint':
     'Maximum tokens in context, as tokens. Blank hides the usage ring.',
   'providers.model.badContext': 'The context window must be a whole number of tokens above zero.',
+  'providers.model.field.thinking': 'Thinking',
+  'providers.model.thinking.default': 'Default level',
+  'providers.model.thinking.levels': 'Levels',
+  'providers.model.thinking.level': 'Level',
+  'providers.model.thinking.add': 'Add level',
+  'providers.model.thinking.remove': 'Remove level',
+  'providers.model.thinking.choose': 'Choose a level',
+  'providers.model.thinking.badValue': 'Every level needs the value the endpoint receives.',
+  'providers.model.thinking.badDuplicate': 'Each level may only be listed once.',
+  'providers.model.thinking.badDefault': 'The default must be one of the listed levels.',
   'providers.modality.image': 'Image',
   'providers.modality.audio': 'Audio',
   'providers.modality.video': 'Video',

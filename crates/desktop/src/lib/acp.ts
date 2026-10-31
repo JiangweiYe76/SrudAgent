@@ -3,7 +3,16 @@
 // outside Tauri (plain `vite dev` in a browser), where the app has no backend.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { ModelChoice, ModelGroup, ModelOptions, TurnEndReason } from './types';
+import type {
+  ModelChoice,
+  ModelGroup,
+  ModelOptions,
+  ThinkingConfig,
+  ThinkingLevel,
+  ThinkingOptions,
+  TurnEndReason,
+} from './types';
+import { THINKING_LEVELS } from './types';
 
 export type Json = Record<string, unknown>;
 
@@ -102,14 +111,13 @@ export async function newSession(cwd: string): Promise<NewSession> {
   const result = await rpcRequest('session/new', { cwd, mcpServers: [] });
   return {
     sessionId: String(result.sessionId),
-    model: parseModelOptions(result.configOptions),
+    ...parseSessionOptions(result.configOptions),
   };
 }
 
-// A session the agent created, and the model selector it came with.
-export interface NewSession {
+// A session the agent created, and the selectors it came with.
+export interface NewSession extends SessionOptions {
   sessionId: string;
-  model: ModelOptions | null;
 }
 
 // Deletes a session and everything the agent holds for it. Standard ACP, so no
@@ -162,10 +170,8 @@ export interface LoadedTurnEnd {
   endReason: TurnEndReason;
 }
 
-export interface LoadedSession {
-  // The model the session was left on, which is what the replayed conversation
-  // ended with — not necessarily what a fresh session would start on.
-  model: ModelOptions | null;
+// The selectors the session was left on, plus how each replayed turn ended.
+export interface LoadedSession extends SessionOptions {
   // Every turn the session has finished. A turn this leaves out is one still
   // running.
   turns: LoadedTurnEnd[];
@@ -196,7 +202,7 @@ function parseTurnEnds(meta: unknown): LoadedTurnEnd[] {
 export async function loadSession(sessionId: string, cwd = ''): Promise<LoadedSession> {
   const result = await rpcRequest('session/load', { sessionId, cwd, mcpServers: [] });
   return {
-    model: parseModelOptions(result.configOptions),
+    ...parseSessionOptions(result.configOptions),
     turns: parseTurnEnds(result._meta),
   };
 }
@@ -287,6 +293,10 @@ export async function readClipboard(limit: number): Promise<ClipboardContent> {
 // another agent is switched with the id it advertises.
 export const MODEL_OPTION_ID = 'model';
 
+// SrudAgent's id for the session config option that selects a thinking level.
+// ACP reserves the category `thought_level` for this, but not the id.
+export const THINKING_OPTION_ID = 'reasoning';
+
 // The group SrudAgent puts a session's current model in when the provider behind
 // it is no longer configured. Shown so the selection can be read, and not
 // offered as a choice: picking what the session already runs on would change
@@ -358,6 +368,39 @@ export function parseModelOptions(configOptions: unknown): ModelOptions | null {
   return { configId, currentValue, groups };
 }
 
+// The thinking selector out of a response's `configOptions`, or null when the
+// selected model declares no thinking control. Its values are canonical levels;
+// the model's wire values never reach the client.
+export function parseThinkingOptions(configOptions: unknown): ThinkingOptions | null {
+  if (!Array.isArray(configOptions)) return null;
+  const option = configOptions.find(
+    (entry) =>
+      isJson(entry) && (entry.id === THINKING_OPTION_ID || entry.category === 'thought_level'),
+  );
+  if (!isJson(option)) return null;
+
+  const choices = choicesOf(option.options);
+  if (choices.length === 0) return null;
+  return {
+    configId: typeof option.id === 'string' ? option.id : THINKING_OPTION_ID,
+    currentValue: typeof option.currentValue === 'string' ? option.currentValue : '',
+    choices,
+  };
+}
+
+// Everything a response's `configOptions` may carry that this client renders.
+export interface SessionOptions {
+  model: ModelOptions | null;
+  thinking: ThinkingOptions | null;
+}
+
+export function parseSessionOptions(configOptions: unknown): SessionOptions {
+  return {
+    model: parseModelOptions(configOptions),
+    thinking: parseThinkingOptions(configOptions),
+  };
+}
+
 // Switches the model a session runs on. ACP's own method, so a third-party
 // client can do this too; only the value's spelling is SrudAgent's.
 //
@@ -371,13 +414,31 @@ export async function setSessionModel(
   sessionId: string,
   configId: string,
   model: string,
-): Promise<ModelOptions | null> {
+): Promise<SessionOptions> {
+  return setSessionOption(sessionId, configId, model);
+}
+
+// Switches the thinking level a session sends. The reply carries both selectors,
+// because a switch can project the stored level onto a new model's vocabulary.
+export async function setSessionThinking(
+  sessionId: string,
+  configId: string,
+  level: string,
+): Promise<SessionOptions> {
+  return setSessionOption(sessionId, configId, level);
+}
+
+async function setSessionOption(
+  sessionId: string,
+  configId: string,
+  value: string,
+): Promise<SessionOptions> {
   const result = await rpcRequest('session/set_config_option', {
     sessionId,
     configId,
-    value: model,
+    value,
   });
-  return parseModelOptions(result.configOptions);
+  return parseSessionOptions(result.configOptions);
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +462,7 @@ export interface ProviderModel {
   name?: string;
   modalities: Modality[];
   contextWindow?: number;
+  thinking?: ThinkingConfig;
 }
 
 // One configured provider, as the panel is shown it.
@@ -454,6 +516,27 @@ function parseContextWindow(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === 'string' && THINKING_LEVELS.includes(value as ThinkingLevel);
+}
+
+// What a model declares about thinking, or undefined when it declares nothing.
+//
+// The declaration is checked against this client's vocabulary: a level it
+// cannot name is dropped, and a declaration whose default is missing or not
+// among its levels reads as no control at all.
+function parseThinkingConfig(value: unknown): ThinkingConfig | undefined {
+  if (!isJson(value) || !isThinkingLevel(value.default)) return undefined;
+  const raw = isJson(value.levels) ? value.levels : {};
+  const levels: Partial<Record<ThinkingLevel, string>> = {};
+  for (const level of THINKING_LEVELS) {
+    const wire = raw[level];
+    if (typeof wire === 'string' && wire.trim() !== '') levels[level] = wire;
+  }
+  if (levels[value.default] === undefined) return undefined;
+  return { default: value.default, levels };
+}
+
 function parseCatalog(result: Json): ProviderCatalog {
   const providers = Array.isArray(result.providers) ? result.providers : [];
   return {
@@ -475,6 +558,7 @@ function parseCatalog(result: Json): ProviderCatalog {
                     name: typeof model.name === 'string' ? model.name : undefined,
                     modalities: parseModalities(model.modalities),
                     contextWindow: parseContextWindow(model.contextWindow),
+                    thinking: parseThinkingConfig(model.thinking),
                   },
                 ]
               : [],

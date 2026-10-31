@@ -12,7 +12,7 @@ import {
   isBusy,
   isReopening,
 } from './sessionStore';
-import { SESSION_NOT_FOUND } from './acp';
+import { SESSION_NOT_FOUND, type Provider } from './acp';
 
 const mocks = vi.hoisted(() => ({
   invoke: async (_cmd: string, _args?: Record<string, unknown>): Promise<unknown> => {
@@ -1318,6 +1318,73 @@ function providerCatalog(defaultModel: string | null) {
   };
 }
 
+// The `configOptions` of a reply that carries a thinking selector too: canonical
+// levels, as the agent serializes a model that declares some.
+function thinkingOptions(currentValue: string) {
+  return {
+    id: 'reasoning',
+    name: 'Thinking',
+    category: 'thought_level',
+    type: 'select',
+    currentValue,
+    options: [
+      { value: 'off', name: 'Off' },
+      { value: 'medium', name: 'Medium' },
+      { value: 'max', name: 'Max' },
+    ],
+  };
+}
+
+/** Both selectors, as one reply carries them. */
+function sessionOptions(model: string, thinking: string) {
+  return [...modelOptions(model), thinkingOptions(thinking)];
+}
+
+// The catalog behind the thinking tests: two models whose declarations differ,
+// which is what makes a model switch reproject the draft's level.
+const THINKING_PROVIDERS: Provider[] = [
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    baseUrl: 'https://api.openai.com',
+    hasKey: true,
+    models: [
+      {
+        id: 'gpt-4o',
+        name: 'GPT-4o',
+        modalities: [],
+        thinking: {
+          default: 'medium',
+          levels: { off: 'none', medium: 'medium', max: 'max' },
+        },
+      },
+    ],
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    hasKey: true,
+    models: [
+      {
+        id: 'chat',
+        name: 'Chat',
+        modalities: [],
+        thinking: { default: 'low', levels: { low: 'low' } },
+      },
+    ],
+  },
+];
+
+function thinkingCatalog() {
+  return {
+    providers: THINKING_PROVIDERS,
+    defaultModel: 'openai/gpt-4o',
+    loaded: true,
+    error: null,
+  };
+}
+
 describe('sessionStore model selection', () => {
   it('takes the model a new session was created with', async () => {
     // No catalog is configured in this test, so the draft has no selector to
@@ -1486,6 +1553,137 @@ describe('sessionStore model selection', () => {
 
     expect(calls).not.toContain('session/set_config_option');
     expect(active().model).toBeNull();
+  });
+});
+
+describe('sessionStore thinking selection', () => {
+  it('takes the thinking selector a new session was created with', async () => {
+    const { useSessionStore, active, waitForBackend } = await boot({
+      newModel: sessionOptions('openai/gpt-4o', 'medium'),
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    expect(active().thinking).toEqual({
+      configId: 'reasoning',
+      currentValue: 'medium',
+      choices: [
+        { value: 'off', name: 'Off' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'max', name: 'Max' },
+      ],
+    });
+  });
+
+  it("records a draft's thinking level before its model has been switched", async () => {
+    const { useSessionStore, useProviderStore, active } = await boot();
+    useProviderStore.setState(thinkingCatalog());
+
+    // A draft carries no model of its own until one is switched; the header
+    // shows the catalog's default, so a level chosen there belongs to that
+    // model and has to be recorded against it.
+    expect(active().model).toBeNull();
+    useSessionStore.getState().setThinking('max');
+
+    expect(active().thinking?.currentValue).toBe('max');
+  });
+
+  it("applies a draft's thinking level to the session it becomes", async () => {
+    const { useSessionStore, useProviderStore, active, calls, requested, waitForBackend } =
+      await boot({
+        newModel: sessionOptions('openai/gpt-4o', 'medium'),
+        switched: sessionOptions('openai/gpt-4o', 'max'),
+      });
+    useProviderStore.setState(thinkingCatalog());
+
+    useSessionStore.getState().setModel('openai/gpt-4o');
+    useSessionStore.getState().setThinking('max');
+    expect(active().backendId).toBeNull();
+    expect(active().thinking?.currentValue).toBe('max');
+
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    // The draft's level is applied before the prompt, so the first turn already
+    // runs on it rather than on the model's default.
+    const switched = requested.find((r) => r.method === 'session/set_config_option');
+    expect(switched?.params).toEqual({
+      sessionId: 'S1',
+      configId: 'reasoning',
+      value: 'max',
+    });
+    expect(calls.indexOf('session/set_config_option')).toBeLessThan(calls.indexOf('session/prompt'));
+    expect(active().thinking?.currentValue).toBe('max');
+  });
+
+  it('switches thinking on a live session and takes both selectors back', async () => {
+    const { useSessionStore, active, requested, waitForBackend } = await boot({
+      newModel: sessionOptions('openai/gpt-4o', 'medium'),
+      switched: sessionOptions('openai/gpt-4o', 'max'),
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useSessionStore.getState().setThinking('max');
+
+    await vi.waitFor(() => {
+      expect(active().thinking?.currentValue).toBe('max');
+    });
+    const req = requested.find((r) => r.method === 'session/set_config_option');
+    expect(req?.params).toEqual({
+      sessionId: 'S1',
+      configId: 'reasoning',
+      value: 'max',
+    });
+    // The reply carries both selectors, and the model one is refreshed with it.
+    expect(active().model?.currentValue).toBe('openai/gpt-4o');
+  });
+
+  it('follows a thinking level another client switched to', async () => {
+    const { useSessionStore, active, fire, waitForBackend } = await boot({
+      newModel: sessionOptions('openai/gpt-4o', 'medium'),
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    fire({
+      sessionUpdate: 'config_option_update',
+      configOptions: sessionOptions('openai/gpt-4o', 'off'),
+    });
+
+    expect(active().thinking?.currentValue).toBe('off');
+    expect(active().turns).toHaveLength(1);
+  });
+
+  it('reprojects a draft level when the model it will run on changes', async () => {
+    const { useSessionStore, useProviderStore, active } = await boot();
+    useProviderStore.setState(thinkingCatalog());
+
+    useSessionStore.getState().setModel('openai/gpt-4o');
+    // A fresh draft starts on the model's declared default.
+    expect(active().thinking?.currentValue).toBe('medium');
+    useSessionStore.getState().setThinking('max');
+    expect(active().thinking?.currentValue).toBe('max');
+
+    // DeepSeek declares only `low`, so `max` falls back to its default rather
+    // than being sent to an endpoint that would refuse it.
+    useSessionStore.getState().setModel('deepseek/chat');
+    expect(active().thinking?.currentValue).toBe('low');
+    expect(active().thinking?.choices).toEqual([{ value: 'low', name: 'Low' }]);
+  });
+
+  it('does nothing on a session whose model declares no thinking', async () => {
+    const { useSessionStore, active, calls, waitForBackend } = await boot({
+      newModel: modelOptions('openai/gpt-4o'),
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useSessionStore.getState().setThinking('max');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(calls).not.toContain('session/set_config_option');
+    expect(active().thinking).toBeNull();
   });
 });
 

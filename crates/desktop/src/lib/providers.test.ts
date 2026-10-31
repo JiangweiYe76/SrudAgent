@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { draftModelOptions } from './providers';
+import { draftModelOptions, draftThinkingOptions } from './providers';
 import type { Provider } from './acp';
+import type { ThinkingConfig } from './types';
 
 function provider(
   id: string,
-  models: Array<{ id: string; name?: string }>,
+  models: Array<{ id: string; name?: string; thinking?: ThinkingConfig }>,
 ): Provider {
   return {
     id,
@@ -66,5 +67,50 @@ describe('draftModelOptions', () => {
   it('offers no selector when no provider has a model', () => {
     expect(draftModelOptions([], null)).toBeNull();
     expect(draftModelOptions([provider('empty', [])], null)).toBeNull();
+  });
+});
+
+describe('draftThinkingOptions', () => {
+  const DECLARED = provider('openai', [
+    {
+      id: 'o3',
+      name: 'o3',
+      thinking: {
+        default: 'medium',
+        levels: { off: 'none', medium: 'medium', max: 'high' },
+      },
+    },
+  ]);
+
+  it('offers the declared levels in canonical order', () => {
+    // The canonical order, not the order the declaration happens to be written
+    // in: a menu that reads weakest to strongest is the one users expect.
+    expect(draftThinkingOptions([DECLARED], 'openai/o3', null)).toEqual({
+      configId: 'reasoning',
+      currentValue: 'medium',
+      choices: [
+        { value: 'off', name: 'Off' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'max', name: 'Max' },
+      ],
+    });
+  });
+
+  it('keeps the level the draft already chose', () => {
+    expect(draftThinkingOptions([DECLARED], 'openai/o3', 'max')?.currentValue).toBe('max');
+  });
+
+  it('falls back to the model default for a level it does not declare', () => {
+    // A level the new model does not declare is replaced by that model's
+    // default, so the draft never shows a level it cannot send.
+    expect(draftThinkingOptions([DECLARED], 'openai/o3', 'low')?.currentValue).toBe('medium');
+  });
+
+  it('offers no selector for a model that declares no thinking', () => {
+    expect(draftThinkingOptions([], 'openai/o3', null)).toBeNull();
+    expect(draftThinkingOptions([provider('openai', [{ id: 'o3' }])], 'openai/o3', null)).toBeNull();
+    // A reference that names nothing has nothing to declare.
+    expect(draftThinkingOptions([DECLARED], '', null)).toBeNull();
+    expect(draftThinkingOptions([DECLARED], 'openai', null)).toBeNull();
   });
 });

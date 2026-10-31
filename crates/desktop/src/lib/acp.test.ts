@@ -16,7 +16,13 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 
-import { listProviders, loadSession, parseModelOptions, UNAVAILABLE_GROUP } from './acp';
+import {
+  listProviders,
+  loadSession,
+  parseModelOptions,
+  parseThinkingOptions,
+  UNAVAILABLE_GROUP,
+} from './acp';
 
 /** One `providerId/modelId` select option, as the agent builds it. */
 const choice = (value: string, name: string) => ({ value, name });
@@ -184,6 +190,49 @@ describe('parseModelOptions', () => {
   });
 });
 
+describe('parseThinkingOptions', () => {
+  // A thinking option as the agent serializes it: canonical levels with their
+  // display labels.
+  const thinking = (currentValue = 'medium', id = 'reasoning', category?: string) => ({
+    ...(category === undefined ? {} : { category }),
+    id,
+    name: 'Thinking',
+    type: 'select',
+    currentValue,
+    options: [
+      { value: 'off', name: 'Off' },
+      { value: 'medium', name: 'Medium' },
+      { value: 'max', name: 'Max' },
+    ],
+  });
+
+  it('reads the option and its canonical choices', () => {
+    expect(parseThinkingOptions([thinking()])).toEqual({
+      configId: 'reasoning',
+      currentValue: 'medium',
+      choices: [
+        { value: 'off', name: 'Off' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'max', name: 'Max' },
+      ],
+    });
+  });
+
+  it('accepts an option named only by its category', () => {
+    const parsed = parseThinkingOptions([thinking('max', 'effort', 'thought_level')]);
+
+    expect(parsed?.configId).toBe('effort');
+    expect(parsed?.currentValue).toBe('max');
+  });
+
+  it('reports no selector for a model that declares no thinking', () => {
+    expect(parseThinkingOptions(undefined)).toBeNull();
+    expect(parseThinkingOptions([])).toBeNull();
+    // A model with no declared levels has no choices to offer.
+    expect(parseThinkingOptions([{ id: 'reasoning', type: 'select', options: [] }])).toBeNull();
+  });
+});
+
 describe('loadSession', () => {
   it('reads how each replayed turn ended off the response', async () => {
     bridge.reply = {
@@ -258,5 +307,44 @@ describe('listProviders', () => {
   it('reads a modality list that is not a list as text-only', async () => {
     const models = await read([{ id: 'm', modalities: 'image' }]);
     expect(models[0].modalities).toEqual([]);
+  });
+
+  it('reads a thinking declaration without a wire shape', async () => {
+    const models = await read([
+      {
+        id: 'kimi',
+        thinking: {
+          default: 'max',
+          levels: { off: 'false', low: 'low', max: 'max', nonsense: 'x' },
+        },
+      },
+    ]);
+
+    expect(models[0].thinking).toEqual({
+      default: 'max',
+      levels: { off: 'false', low: 'low', max: 'max' },
+    });
+  });
+
+  it('drops a recorded wire shape rather than carrying it forward', async () => {
+    // An unrecognized key inside a declaration is dropped here, so a save
+    // writes the declaration back without it.
+    const models = await read([
+      { id: 'kimi', thinking: { default: 'max', levels: { max: 'max' }, wire: 'bailian' } },
+    ]);
+
+    expect(models[0].thinking).toEqual({ default: 'max', levels: { max: 'max' } });
+  });
+
+  it('drops a thinking declaration the client cannot use', async () => {
+    // A default outside the list would have a session send a level the agent
+    // cannot resolve, so the model reads as one with no control instead.
+    const models = await read([
+      { id: 'm', thinking: { default: 'max', levels: { low: 'low' } } },
+      { id: 'n', thinking: { default: 'ultra', levels: { max: 'max' } } },
+      { id: 'o', thinking: 'on' },
+    ]);
+
+    expect(models.map((model) => model.thinking)).toEqual([undefined, undefined, undefined]);
   });
 });

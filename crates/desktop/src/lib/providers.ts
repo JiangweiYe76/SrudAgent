@@ -11,11 +11,21 @@ import {
   MODEL_OPTION_ID,
   saveProvider as requestSave,
   setDefaultModel as requestDefault,
+  THINKING_OPTION_ID,
   type Provider,
   type ProviderCatalog,
   type ProviderDraft,
 } from './acp';
-import type { ModelOptions } from './types';
+import {
+  THINKING_LEVELS,
+  type ModelOptions,
+  type ThinkingLevel,
+  type ThinkingOptions,
+} from './types';
+
+// The canonical levels are declared with the domain types, and re-exported here
+// so the settings panel has one import for everything a model declares.
+export { THINKING_LEVELS };
 
 interface ProviderState {
   providers: Provider[];
@@ -148,5 +158,58 @@ export function draftModelOptions(
     configId: MODEL_OPTION_ID,
     currentValue: known ? current : '',
     groups,
+  };
+}
+
+// How a level reads in a menu. The wire value is the model's own and is never
+// shown.
+export function thinkingLabel(level: ThinkingLevel): string {
+  switch (level) {
+    case 'off':
+      return 'Off';
+    case 'minimal':
+      return 'Minimal';
+    case 'low':
+      return 'Low';
+    case 'medium':
+      return 'Medium';
+    case 'high':
+      return 'High';
+    case 'xhigh':
+      return 'XHigh';
+    case 'max':
+      return 'Max';
+  }
+}
+
+// The thinking selector a draft is offered before the agent has made a session
+// for it. Built from the same catalog the agent reads, so the choice made here
+// is the one the session starts on, exactly like the draft model selector.
+//
+// `current` is the level the draft already chose. A level the new model does not
+// declare is replaced by that model's default.
+export function draftThinkingOptions(
+  providers: Provider[],
+  modelRef: string,
+  current: string | null,
+): ThinkingOptions | null {
+  const [providerId, modelId] = modelRef.split('/');
+  if (!providerId || !modelId) return null;
+  const model = providers
+    .find((provider) => provider.id === providerId)
+    ?.models.find((entry) => entry.id === modelId);
+  const config = model?.thinking;
+  if (!config) return null;
+
+  const levels = THINKING_LEVELS.filter((level) => config.levels[level] !== undefined);
+  if (levels.length === 0) return null;
+  const chosen =
+    current !== null && levels.includes(current as ThinkingLevel)
+      ? (current as ThinkingLevel)
+      : config.default;
+  return {
+    configId: THINKING_OPTION_ID,
+    currentValue: chosen,
+    choices: levels.map((level) => ({ value: level, name: thinkingLabel(level) })),
   };
 }

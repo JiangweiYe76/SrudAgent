@@ -34,6 +34,46 @@ export interface ModelOptions {
   groups: ModelGroup[];
 }
 
+// The thinking levels a model declares, in the agent's canonical vocabulary.
+export type ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max';
+
+// Every canonical level, weakest to strongest. The agent sends them in this
+// order; this is also the order a form offers them in.
+export const THINKING_LEVELS: readonly ThinkingLevel[] = [
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
+
+// What a model declares about thinking: the level it starts on and the levels
+// it offers. Levels are keyed by canonical level and map to the value the
+// endpoint receives.
+export interface ThinkingConfig {
+  default: ThinkingLevel;
+  levels: Partial<Record<ThinkingLevel, string>>;
+}
+
+// The thinking selector a session was handed.
+//
+// `currentValue` is the canonical level the session sends, not the endpoint's
+// wire value: the mapping belongs to the model that declared it.
+export interface ThinkingOptions {
+  configId: string;
+  currentValue: string;
+  choices: ModelChoice[];
+}
+
 // One tool invocation issued by a step's model response.
 export interface ToolCall {
   id: string;
@@ -132,6 +172,9 @@ export interface Session {
   // no choice for — a host that configured no provider — and for one created
   // before the agent listed anything.
   model: ModelOptions | null;
+  // Which thinking level this conversation sends. Null when the selected model
+  // declares no thinking control.
+  thinking?: ThinkingOptions | null;
   turns: Turn[];
   // Token usage, once a step has reported any. Absent for a session whose
   // model has no configured window — the agent sends nothing to show.
