@@ -974,11 +974,12 @@ async fn a_re_answer_from_the_recorded_mark_asks_the_question_once() {
     assert!(session.truncate(opened.mark), "the answer is cut back");
 
     let sink = Recorder::default();
+    let second = Scripted::new(vec![vec![text("a second answer"), done()]]);
     srud_core::run_turn_after(
         &session,
         opened.input,
         Some(opened.mark),
-        Scripted::new(vec![vec![text("a second answer"), done()]]).as_ref(),
+        second.as_ref(),
         &tools,
         &log,
         &sink,
@@ -999,6 +1000,26 @@ async fn a_re_answer_from_the_recorded_mark_asks_the_question_once() {
         sink.kinds(),
         vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
         "nothing is said again: the question was already there"
+    );
+
+    let requests = second.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]
+            .items
+            .iter()
+            .filter(|item| matches!(item, ModelRequestItem::Message { role: Role::User, content } if content == "hi"))
+            .count(),
+        1,
+        "the question is put to the model once"
+    );
+    assert!(
+        !requests[0].items.iter().any(|item| matches!(
+            item,
+            ModelRequestItem::Message { role: Role::Assistant, content } if content == "a first answer"
+        )),
+        "and the answer that was discarded is not sent again: {:?}",
+        requests[0].items
     );
 }
 
