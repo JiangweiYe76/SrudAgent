@@ -8,7 +8,7 @@
 //!   interrupts and index by turn. `TurnStarted` and `TurnComplete` are not
 //!   updates — the former has no wire analogue, the latter closes the
 //!   `session/prompt` response instead of streaming.
-//! - **Inbound** ([`crate::agent::prompt_parts`]): an ACP prompt is a
+//! - **Inbound** ([`prompt_parts`]): an ACP prompt is a
 //!   `ContentBlock` array, split into the text and images a turn can carry.
 
 use srud_core::client::TokenUsage;
@@ -19,6 +19,7 @@ use srud_protocol::acp::{
     SessionInfoUpdate, SessionNotification, SessionUpdate, TextContent, ToolCall, ToolCallContent,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate, CLIENT_METHOD_NAMES,
 };
+use srud_protocol::error::INVALID_PARAMS;
 use srud_protocol::srud::meta::{SrudMeta, SrudUsage};
 use srud_protocol::srud::turn_end::{map_turn_end_reason, TurnEndWire};
 
@@ -416,6 +417,60 @@ pub fn prompt_outcome(reason: TurnEndReason) -> Result<TurnEndWire, AcpError> {
     Ok(map_turn_end_reason(srud))
 }
 
+/// A prompt block that the declared capabilities do not accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedContent {
+    /// An audio block, refused while `promptCapabilities.audio` is false.
+    Audio,
+    /// Any other block the agent does not read, such as a resource or a link.
+    Other(&'static str),
+}
+
+/// The parts of a prompt the agent accepts.
+#[derive(Debug, Default)]
+pub struct PromptParts {
+    /// The text blocks, joined in the order they arrived.
+    pub text: String,
+    /// The image blocks, in the order they arrived.
+    pub images: Vec<srud_core::types::ImagePart>,
+}
+
+/// Splits a prompt into the text and images the agent accepts.
+///
+/// Returns an error naming the first block the agent cannot accept — dropping
+/// multimodal input silently would make the model answer a prompt the user
+/// never sent.
+pub fn prompt_parts(blocks: &[ContentBlock]) -> Result<PromptParts, AcpError> {
+    let mut parts = PromptParts::default();
+    for block in blocks {
+        match block {
+            ContentBlock::Text(content) => {
+                if !parts.text.is_empty() {
+                    parts.text.push('\n');
+                }
+                parts.text.push_str(&content.text);
+            }
+            ContentBlock::Image(content) => parts.images.push(srud_core::types::ImagePart {
+                mime: content.mime_type.clone(),
+                data: content.data.clone(),
+            }),
+            block => {
+                let kind = match block {
+                    ContentBlock::Audio(_) => UnsupportedContent::Audio,
+                    ContentBlock::Resource(_) => UnsupportedContent::Other("resource"),
+                    ContentBlock::ResourceLink(_) => UnsupportedContent::Other("resource_link"),
+                    _ => UnsupportedContent::Other("unknown"),
+                };
+                return Err(AcpError::new(
+                    INVALID_PARAMS,
+                    format!("this agent cannot accept {kind:?} prompts"),
+                ));
+            }
+        }
+    }
+    Ok(parts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,5 +758,30 @@ mod tests {
         );
         let err = prompt_outcome(TurnEndReason::Error).unwrap_err();
         assert_eq!(i32::from(err.code), srud_protocol::error::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn prompt_parts_accepts_text_and_images_and_rejects_audio() {
+        let blocks = vec![
+            ContentBlock::Text(TextContent::new("hello")),
+            ContentBlock::Image(srud_protocol::acp::ImageContent::new("d", "image/png")),
+        ];
+        let parts = prompt_parts(&blocks).unwrap();
+        assert_eq!(parts.text, "hello");
+        assert_eq!(
+            parts.images,
+            vec![srud_core::types::ImagePart {
+                mime: "image/png".into(),
+                data: "d".into(),
+            }]
+        );
+
+        let blocks = vec![
+            ContentBlock::Text(TextContent::new("a")),
+            ContentBlock::Audio(srud_protocol::acp::AudioContent::new("d", "audio/wav")),
+        ];
+        let err = prompt_parts(&blocks).unwrap_err();
+        assert_eq!(i32::from(err.code), INVALID_PARAMS);
+        assert!(err.message.contains("Audio"));
     }
 }
