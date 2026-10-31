@@ -15,6 +15,7 @@ pub use responses::ResponsesClient;
 use async_openai::config::OpenAIConfig;
 use async_openai::Client;
 use srud_core::client::ModelError;
+use srud_core::thinking::ThinkingRequest;
 
 /// The default model, used when the caller does not name one.
 pub const DEFAULT_MODEL: &str = "gpt-5";
@@ -30,6 +31,11 @@ pub struct ClientConfig {
     pub base_url: Option<String>,
     /// Model id sent with every request.
     pub model: String,
+    /// The thinking selection to send, when the model declares one.
+    ///
+    /// Read by [`ChatClient`]: the chat-completions adapter sends it, and
+    /// [`ResponsesClient`](super::ResponsesClient) does not.
+    pub thinking: Option<ThinkingRequest>,
 }
 
 impl ClientConfig {
@@ -47,6 +53,7 @@ impl ClientConfig {
             api_key: api_key.into(),
             base_url: None,
             model: model.into(),
+            thinking: None,
         }
     }
 
@@ -54,6 +61,13 @@ impl ClientConfig {
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = Some(base_url.into());
+        self
+    }
+
+    /// Sets the thinking selection a chat-completions client sends.
+    #[must_use]
+    pub fn with_thinking(mut self, thinking: Option<ThinkingRequest>) -> Self {
+        self.thinking = thinking;
         self
     }
 
@@ -71,6 +85,7 @@ impl ClientConfig {
             api_key,
             base_url: env_var(Self::BASE_URL_VAR),
             model: env_var(Self::MODEL_VAR).unwrap_or_else(|| DEFAULT_MODEL.to_owned()),
+            thinking: None,
         })
     }
 }
