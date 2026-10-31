@@ -61,13 +61,13 @@ function turn(partial: Partial<Turn> & { id: string }): Turn {
 }
 
 /** Renders one turn and returns its container. */
-function render(turns: Turn[]): HTMLElement {
+function render(turns: Turn[], onRegenerate?: (turn: Turn) => void): HTMLElement {
   lastTurns = turns;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<MessageList reopening={false} turns={turns} />);
+    root.render(<MessageList reopening={false} turns={turns} onRegenerate={onRegenerate} />);
   });
   return container;
 }
@@ -571,5 +571,83 @@ describe('thinking dots', () => {
     render([turn({ id: 't1', steps: [thinking], endReason: 'interrupted' })]);
 
     expect(dots()).toHaveLength(0);
+  });
+});
+
+describe('asking a turn again', () => {
+  // Every control the meta row renders for a turn that can be asked again.
+  function regenerateButtons(): NodeListOf<HTMLButtonElement> {
+    return container.querySelectorAll('button[aria-label="Regenerate"]');
+  }
+
+  it('offers it under the last turn once that turn has ended', () => {
+    const asked: Turn[] = [];
+    render([turn({ id: 't1', endReason: 'completed', endedAt: 1 })], (tt) => asked.push(tt));
+
+    const buttons = regenerateButtons();
+    expect(buttons).toHaveLength(1);
+    act(() => {
+      buttons[0].click();
+    });
+    // The turn itself, so the store takes back this one and not another.
+    expect(asked).toEqual([expect.objectContaining({ id: 't1' })]);
+  });
+
+  it('offers it after an interrupted answer too', () => {
+    // Stopping is the case a reader most often wants to retry: what arrived is
+    // the answer they did not want.
+    render([turn({ id: 't1', endReason: 'interrupted' })], () => {});
+
+    expect(regenerateButtons()).toHaveLength(1);
+  });
+
+  it('keeps it off a turn that is still running', () => {
+    render([turn({ id: 't1' })], () => {});
+
+    expect(regenerateButtons()).toHaveLength(0);
+  });
+
+  it('keeps it off the turns before the last one', () => {
+    // Only the newest turn can be taken back; an older one has answers after it.
+    render(
+      [
+        turn({ id: 't1', endReason: 'completed', endedAt: 1 }),
+        turn({ id: 't2', endReason: 'completed', endedAt: 2 }),
+      ],
+      () => {},
+    );
+
+    const buttons = regenerateButtons();
+    expect(buttons).toHaveLength(1);
+  });
+
+  it('renders nothing when the viewer does not offer it', () => {
+    render([turn({ id: 't1', endReason: 'completed', endedAt: 1 })]);
+
+    expect(regenerateButtons()).toHaveLength(0);
+  });
+
+  it('still copies the answer when it also offers asking again', () => {
+    render([turn({ id: 't1', endReason: 'completed', endedAt: 1 })], () => {});
+
+    expect(container.querySelector('button[title="Copy"]')).not.toBeNull();
+  });
+
+  it('draws no meta row for a turn that carries no question of its own', () => {
+    // What a log reloaded after a re-answer holds: the question on one turn and
+    // the answer on the next. One copy control per thing there is to copy — the
+    // question's hover meta and the answer's — and none for the empty turn.
+    render([
+      turn({ id: 't1', userInput: 'ohayo!', endReason: 'completed', endedAt: 1 }),
+      turn({
+        id: 't2',
+        userInput: '',
+        steps: [{ id: 's1', assistantText: 'Ohayo!', toolCalls: [] }],
+        endReason: 'completed',
+        endedAt: 2,
+      }),
+    ]);
+
+    expect(container.querySelectorAll('button[title="Copy"]')).toHaveLength(2);
   });
 });

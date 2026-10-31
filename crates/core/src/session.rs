@@ -11,7 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::types::{ResponseItem, SessionId};
+use crate::types::{ImagePart, ResponseItem, Role, SessionId, TurnInput};
 
 /// The recorded conversation.
 #[derive(Debug)]
@@ -65,6 +65,55 @@ impl SessionState {
     pub(crate) fn push(&mut self, item: ResponseItem) {
         self.history.push(item);
     }
+
+    /// Drops every item recorded at or after `mark`.
+    ///
+    /// Crate-private: only a discarded turn shortens history, and the log learns
+    /// of it the same way it learns of a push.
+    pub(crate) fn truncate(&mut self, mark: usize) {
+        self.history.truncate(mark);
+    }
+
+    /// The last thing the user said, and where in the history it ends.
+    ///
+    /// Read when a session is rebuilt in a process that did not run its last
+    /// turn: the mark a re-answer cuts at is not in the log, but the message and
+    /// the images beside it still are. The mark sits after them, so cutting there
+    /// takes the answer and leaves the question.
+    ///
+    /// A steer is recorded as a user message too, so a turn extended by one
+    /// resolves to the steer. Re-answering starts a fresh turn from those words
+    /// rather than resuming the turn they were said into.
+    pub(crate) fn trailing_prompt(&self) -> Option<(usize, TurnInput)> {
+        let start = self.history.iter().rposition(|item| {
+            matches!(
+                item,
+                ResponseItem::Message {
+                    role: Role::User,
+                    ..
+                }
+            ) && !crate::context::is_item(item)
+        })?;
+        let ResponseItem::Message { content, .. } = &self.history[start] else {
+            return None;
+        };
+        let mut end = start + 1;
+        let mut images = Vec::new();
+        while let Some(ResponseItem::Image { mime, data }) = self.history.get(end) {
+            images.push(ImagePart {
+                mime: mime.clone(),
+                data: data.clone(),
+            });
+            end += 1;
+        }
+        Some((
+            end,
+            TurnInput {
+                text: content.clone(),
+                images,
+            },
+        ))
+    }
 }
 
 /// A session: identity, the directory it works in, state, and the control block
@@ -75,6 +124,20 @@ pub struct Session {
     cwd: PathBuf,
     state: Mutex<SessionState>,
     active_turn: Mutex<Option<ActiveTurn>>,
+    /// Where the last turn's input ends in the history.
+    ///
+    /// Recorded once the turn has written the message and the images it was
+    /// asked with, because only then is the boundary known: the history gained
+    /// an env-context block on the first turn, and steers waiting from the turn
+    /// before are claimed ahead of the input. A later reader can find the input,
+    /// but not where it stops and the answer starts.
+    opening: Mutex<Option<usize>>,
+    /// What the last turn was asked, as text and images.
+    ///
+    /// Kept for a turn that is asked again: the input is in the history, but the
+    /// images beside it have no wire form to be read back from, and the text
+    /// would have to be found by searching for the last user message.
+    last_input: Mutex<Option<TurnInput>>,
     /// Steered messages waiting for the next boundary of the active turn.
     ///
     /// Separate from history on purpose: they are not part of the conversation
@@ -82,6 +145,17 @@ pub struct Session {
     /// that is already being built and puts them after whatever the current
     /// step produces.
     steers: Mutex<Vec<String>>,
+}
+
+/// Where the last turn's input ends, and what it was.
+#[derive(Debug, Clone)]
+pub struct OpenedTurn {
+    /// The history length once the turn's input was recorded: the message it
+    /// answered and the images sent with it. Everything at or after this point
+    /// is the answer, which is what a discard takes back.
+    pub mark: usize,
+    /// What the turn was asked.
+    pub input: TurnInput,
 }
 
 impl Session {
@@ -99,6 +173,8 @@ impl Session {
             cwd: cwd.into(),
             state: Mutex::new(SessionState::new()),
             active_turn: Mutex::new(None),
+            opening: Mutex::new(None),
+            last_input: Mutex::new(None),
             steers: Mutex::new(Vec::new()),
         }
     }
@@ -110,13 +186,25 @@ impl Session {
     /// the process that wrote it. What is seeded is expected to be a history a
     /// model API accepts: closing a turn the log left open, and answering a call
     /// whose result never arrived, is [`crate::session_store::load`]'s job.
+    ///
+    /// The last thing the user said is picked up from the history, so the turn
+    /// that answered it can be answered again in this process. Where its input
+    /// ended is not in the log, but the message and the images beside it are.
     #[must_use]
     pub fn restored(id: SessionId, cwd: impl Into<PathBuf>, history: Vec<ResponseItem>) -> Self {
+        let state = SessionState::restored(history);
+        let prompt = state.trailing_prompt();
+        let (opening, last_input) = match prompt {
+            Some((mark, input)) => (Mutex::new(Some(mark)), Mutex::new(Some(input))),
+            None => (Mutex::new(None), Mutex::new(None)),
+        };
         Self {
             id,
             cwd: cwd.into(),
-            state: Mutex::new(SessionState::restored(history)),
+            state: Mutex::new(state),
             active_turn: Mutex::new(None),
+            opening,
+            last_input,
             steers: Mutex::new(Vec::new()),
         }
     }
@@ -255,6 +343,50 @@ impl Session {
             .lock()
             .expect("active turn lock poisoned")
             .is_some()
+    }
+
+    /// Records where the active turn's input ended, and what it was.
+    ///
+    /// Called by the turn loop once the history holds the input itself: the
+    /// message and the images beside it are what a re-answer keeps, so the mark
+    /// has to sit after them rather than before.
+    pub(crate) fn note_opening(&self, mark: usize, input: &TurnInput) {
+        *self.opening.lock().expect("opening lock poisoned") = Some(mark);
+        *self.last_input.lock().expect("input lock poisoned") = Some(input.clone());
+    }
+
+    /// The last turn's input and where it ends, for asking the same thing again.
+    ///
+    /// `None` for a session that has run no turn, or whose history holds no user
+    /// message. A session rebuilt from a log reads both from the history it was
+    /// seeded with — see [`Session::restored`].
+    #[must_use]
+    pub fn last_prompt(&self) -> Option<OpenedTurn> {
+        let mark = (*self.opening.lock().expect("opening lock poisoned"))?;
+        let input = self
+            .last_input
+            .lock()
+            .expect("input lock poisoned")
+            .clone()?;
+        Some(OpenedTurn { mark, input })
+    }
+
+    /// Cuts history back to `mark`, dropping everything recorded after it.
+    ///
+    /// `mark` is a [`SessionState::len`] taken once the turn's input was
+    /// recorded, so the question it answered stays and only the answer goes.
+    /// A mark at or past the end drops nothing, so asking twice costs nothing.
+    ///
+    /// Returns whether anything was dropped. A turn whose output was cut has to
+    /// be recorded as discarded; one that contributed nothing present has nothing
+    /// to record.
+    pub fn truncate(&self, mark: usize) -> bool {
+        let mut state = self.state();
+        if mark >= state.len() {
+            return false;
+        }
+        state.truncate(mark);
+        true
     }
 }
 

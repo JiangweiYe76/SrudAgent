@@ -27,7 +27,17 @@
 //! {"time":"…","event":{"type":"turn_started","turn_id":"…"}}
 //! {"time":"…","event":{"type":"item","turn_id":"…","message_id":"…","item":{…}}}
 //! {"time":"…","event":{"type":"turn_ended","turn_id":"…","reason":"interrupted"}}
+//! {"time":"…","event":{"type":"turn_discarded","turn_id":"…"}}
 //! ```
+//!
+//! # Records that take something back
+//!
+//! The log only grows, so a turn's output is discarded by writing a record that
+//! says so rather than by cutting its lines out. A reader takes the latest record
+//! of each kind — a title, a model, and the last turn that is still kept — and
+//! the turns a discard names are left out of both the history and the
+//! conversation. The lines stay: the log is what happened, and what happened
+//! includes an answer the user asked to have again.
 //!
 //! `version` is on the first record rather than in the filename: a reader has to
 //! open the file to learn how to read it, so that is where the answer belongs.
@@ -218,6 +228,27 @@ pub enum SessionEvent {
         /// The counts themselves.
         usage: crate::client::TokenUsage,
     },
+
+    /// A turn's output was discarded, and the message it answered is kept.
+    ///
+    /// The turn's records stay in the log and stop counting: its items leave the
+    /// history the model is sent and the conversation a client is replayed. What
+    /// it was asked — the user's message and the images sent with it — stays,
+    /// because the turn that replaces it answers those same words and records no
+    /// input of its own.
+    ///
+    /// A steer recorded inside the turn is part of what the answer added, so it
+    /// goes with it: the replacement starts from the message the turn opened
+    /// with, not from a steer that was said in the middle of the answer.
+    ///
+    /// Its own record rather than a flag on [`TurnEnded`](Self::TurnEnded),
+    /// because a turn ends when it stops and is discarded when the user asks
+    /// again: the two happen at different times, and a turn can be discarded
+    /// without ever having been closed normally.
+    TurnDiscarded {
+        /// Which turn.
+        turn_id: TurnId,
+    },
 }
 
 /// One line of the log: an event, and when it was written.
@@ -309,6 +340,12 @@ impl SessionEvent {
         }
     }
 
+    /// Builds the record that discards a turn's output.
+    #[must_use]
+    pub fn turn_discarded(turn_id: TurnId) -> Self {
+        Self::TurnDiscarded { turn_id }
+    }
+
     /// The turn this record belongs to, if it belongs to one.
     ///
     /// The session's own record, the system instruction, the title, the model
@@ -325,7 +362,8 @@ impl SessionEvent {
             Self::TurnStarted { turn_id }
             | Self::Item { turn_id, .. }
             | Self::TurnEnded { turn_id, .. }
-            | Self::UsageRecorded { turn_id, .. } => Some(*turn_id),
+            | Self::UsageRecorded { turn_id, .. }
+            | Self::TurnDiscarded { turn_id } => Some(*turn_id),
         }
     }
 
@@ -411,6 +449,7 @@ mod tests {
                 turn_id,
                 reason: TurnEndReason::Interrupted,
             },
+            SessionEvent::turn_discarded(turn_id),
         ];
 
         for entry in entries {
@@ -458,6 +497,11 @@ mod tests {
                 SessionEvent::item(turn_id, None, ResponseItem::assistant("x")),
                 "item",
                 vec!["turn_id", "item"],
+            ),
+            (
+                SessionEvent::turn_discarded(turn_id),
+                "turn_discarded",
+                vec!["turn_id"],
             ),
         ];
 
@@ -519,6 +563,24 @@ mod tests {
             .turn_id(),
             Some(turn_id)
         );
+        assert_eq!(
+            SessionEvent::turn_discarded(turn_id).turn_id(),
+            Some(turn_id),
+            "a discard belongs to the turn whose output it takes back"
+        );
+    }
+
+    #[test]
+    fn a_discard_names_the_turn_it_takes_back() {
+        // The record carries the turn and nothing else: what the reader needs is
+        // the id, and every other property of the turn is already in the log.
+        let turn_id = TurnId::new();
+        let value = serde_json::to_value(SessionEvent::turn_discarded(turn_id)).unwrap();
+
+        assert_eq!(value["type"], "turn_discarded");
+        assert_eq!(value["turn_id"], turn_id.to_string());
+        let back: SessionEvent = serde_json::from_value(value).unwrap();
+        assert_eq!(back, SessionEvent::turn_discarded(turn_id));
     }
 
     #[test]

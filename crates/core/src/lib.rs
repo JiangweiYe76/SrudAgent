@@ -30,14 +30,16 @@ pub mod tools;
 pub mod turn;
 pub mod types;
 
-pub use session::{ActiveTurnGuard, Session, SessionState};
+pub use session::{ActiveTurnGuard, OpenedTurn, Session, SessionState};
 pub use session_event::{MessageId, SessionEvent};
 pub use session_log::{RecordError, SessionLog, Volatile};
-pub use session_store::{read as read_session_log, ReadLog, SessionLogWriter, SkipReason};
+pub use session_store::{
+    read as read_session_log, ReadLog, SessionLogWriter, SessionWriter, SkipReason,
+};
 pub use tools::{
     DuplicateTool, Tool, ToolContext, ToolDefinition, ToolError, ToolOutcome, ToolRegistry,
 };
-pub use turn::{run_turn, TurnError, TurnResult};
+pub use turn::{run_turn, run_turn_after, TurnError, TurnResult};
 pub use types::{
     Event, EventSink, Op, ResponseItem, Role, SessionId, TurnEndReason, TurnId, TurnInput,
 };

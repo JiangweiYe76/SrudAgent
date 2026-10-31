@@ -4,7 +4,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Brain, Check, ChevronDown, Copy, Loader2, Wrench } from 'lucide-react';
+import { Brain, Check, ChevronDown, Copy, Loader2, RotateCcw, Wrench } from 'lucide-react';
 import type { Attachment, Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
@@ -26,6 +26,11 @@ interface MessageListProps {
   // list. Measured from the composer itself: queued messages make it taller
   // than any fixed padding would leave room for.
   bottomInset?: number;
+  // Asks the model again for a finished turn, in that turn's place. The viewer
+  // offers it on the last turn only: the turn after a discard begins again in
+  // the slot the discarded one held, so there is never an older answer underneath
+  // to keep.
+  onRegenerate?: (turn: Turn) => void;
 }
 
 // Wall-clock time of an event, 24-hour. The hour must be included: minutes
@@ -38,8 +43,17 @@ function fmtTime(ts: number): string {
   return `${hh}:${mm}`;
 }
 
-// Copy icon + HH:MM timestamp shown under a finished message.
-function MetaRow({ text, ts, className = '' }: { text: string; ts: number; className?: string }) {
+// Copy icon, an optional regenerate control and HH:MM, shown under a finished
+// message.
+interface MetaRowProps {
+  text: string;
+  ts: number;
+  className?: string;
+  // Given on a turn that can be asked again; absent renders no control.
+  onRegenerate?: () => void;
+}
+
+function MetaRow({ text, ts, className = '', onRegenerate }: MetaRowProps) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -57,6 +71,16 @@ function MetaRow({ text, ts, className = '' }: { text: string; ts: number; class
       >
         {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
       </button>
+      {onRegenerate && (
+        <button
+          className="flex cursor-pointer items-center rounded p-0.5 transition-colors hover:bg-item-hover hover:text-foreground"
+          onClick={onRegenerate}
+          title={t('turn.regenerate')}
+          aria-label={t('turn.regenerate')}
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+        </button>
+      )}
       <span className="font-mono">{fmtTime(ts)}</span>
     </div>
   );
@@ -153,6 +177,7 @@ export const MessageList = memo(function MessageList({
   turns,
   reopening,
   bottomInset = 140,
+  onRegenerate,
 }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -240,8 +265,20 @@ export const MessageList = memo(function MessageList({
         className="mx-auto flex w-full max-w-[900px] flex-col gap-4 p-[20px_32px_0]"
         style={{ paddingBottom: bottomInset }}
       >
-        {turns.map((turn) => {
+        {turns.map((turn, index) => {
           const lastText = turn.steps[turn.steps.length - 1]?.assistantText ?? '';
+          // Whether there is anything to copy or time-stamp. A turn can carry
+          // only the question, or nothing at all — both are what a re-answer
+          // leaves behind in the log — and neither has an answer of its own to
+          // put a meta row under.
+          const hasOutput = lastText !== '' || turn.steps.length > 0;
+          // A turn can be asked again once it has ended with nothing running
+          // after it. That covers a failed one too: the failure is the answer
+          // to replace, not a reason the question is gone.
+          const regenerable =
+            onRegenerate !== undefined &&
+            turn.endReason !== undefined &&
+            index === turns.length - 1;
           return (
             <div key={turn.id} className="flex flex-col gap-3">
               {/* Each user message right-aligns inside the full column width:
@@ -271,19 +308,23 @@ export const MessageList = memo(function MessageList({
                       ))}
                     </div>
                   )}
+                  {/* The bubble and its hover meta belong together: a turn
+                      that carries no question of its own — the one a re-answer
+                      left the answer on — has nothing for either to show. */}
                   {turn.userInput && (
-                    <MessageContextMenu text={turn.userInput}>
-                      <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
-                        {turn.userInput}
-                      </div>
-                    </MessageContextMenu>
+                    <>
+                      <MessageContextMenu text={turn.userInput}>
+                        <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
+                          {turn.userInput}
+                        </div>
+                      </MessageContextMenu>
+                      <MetaRow
+                        text={turn.userInput}
+                        ts={turn.createdAt}
+                        className="opacity-0 transition-opacity group-hover:opacity-100"
+                      />
+                    </>
                   )}
-                  {/* User msg meta appears only on hover. */}
-                  <MetaRow
-                    text={turn.userInput}
-                    ts={turn.createdAt}
-                    className="opacity-0 transition-opacity group-hover:opacity-100"
-                  />
                 </div>
                 {/* A steered message is known per turn, not per step: the store
                     does not record which step was running when it arrived, so
@@ -371,9 +412,16 @@ export const MessageList = memo(function MessageList({
                   <ThinkingDots />
                 </div>
               )}
-              {turn.endReason && (
+              {/* A turn with nothing to show still gets its row when it can be
+                  asked again: an answer that came back empty is the one most
+                  worth retrying, and hiding the control would leave no way to. */}
+              {turn.endReason !== undefined && (hasOutput || regenerable) && (
                 <div className="flex items-center justify-between">
-                  <MetaRow text={lastText} ts={turn.endedAt ?? turn.createdAt} />
+                  <MetaRow
+                    text={lastText}
+                    ts={turn.endedAt ?? turn.createdAt}
+                    onRegenerate={regenerable ? () => onRegenerate(turn) : undefined}
+                  />
                   {turn.endReason !== 'completed' && (
                     <div
                       className={`text-xs ${

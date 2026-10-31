@@ -220,6 +220,31 @@ impl<'a> Journal<'a> {
         Ok(())
     }
 
+    /// Records that this turn's output was discarded, then announces it so the
+    /// consumer drops what it was shown.
+    ///
+    /// Both steps, rather than either alone: a record with no announcement leaves
+    /// a reload of the session disagreeing with the screen, and an announcement
+    /// with no record comes back on the next load as an answer the user asked to
+    /// have again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Journal::record`]. Nothing is emitted in that case; the caller
+    /// reports the turn as one that could not be discarded rather than leaving the
+    /// session and its log describing different conversations.
+    pub async fn discard(&self) -> Result<(), RecordError> {
+        self.log
+            .record(&crate::session_event::SessionEvent::turn_discarded(
+                self.turn_id,
+            ))
+            .await?;
+        self.sink.emit(Event::TurnDiscarded {
+            turn_id: self.turn_id,
+        });
+        Ok(())
+    }
+
     /// The turn being recorded.
     #[must_use]
     pub fn turn_id(&self) -> TurnId {
@@ -268,6 +293,29 @@ pub async fn run_turn(
     log: &dyn SessionLog,
     sink: &dyn EventSink,
 ) -> Result<TurnResult, TurnError> {
+    run_turn_after(session, input, None, client, tools, log, sink).await
+}
+
+/// Runs one turn, optionally answering a message already in the history.
+///
+/// `opening` is a [`crate::SessionState::len`] the previous turn recorded once
+/// its input was in the history. `Some` says the message this turn answers is
+/// already there: nothing is recorded for the input — no user message and no
+/// images — because the turn before it wrote those, and writing them again would
+/// put the same words in the conversation twice.
+///
+/// # Errors
+///
+/// As [`run_turn`].
+pub async fn run_turn_after(
+    session: &Session,
+    input: TurnInput,
+    opening: Option<usize>,
+    client: &dyn ModelClient,
+    tools: &ToolRegistry,
+    log: &dyn SessionLog,
+    sink: &dyn EventSink,
+) -> Result<TurnResult, TurnError> {
     let turn_id = TurnId::new();
     let guard = session.begin_turn().ok_or(TurnError::Busy)?;
     let cancel = guard.cancellation();
@@ -296,6 +344,9 @@ pub async fn run_turn(
     // fails to record an item, the history stays empty while the log already holds
     // a turn, and the next turn writes a second instruction — the reader takes the
     // last, and the bytes are the same either way.
+    //
+    // A turn that opens on a message already said is not the first: its history
+    // holds what that message opened with, instruction and context block included.
     if journal.session().state().is_empty() {
         journal
             .record_system(&prompt::render_instructions(&sections))
@@ -307,7 +358,11 @@ pub async fn run_turn(
     // Any failure here leaves a turn that opened in the log and never closed,
     // which every later reader would treat as unfinished — so the two openings are
     // handled together, and a failure in either closes the turn before reporting.
-    if let Err(err) = open(&journal, &input).await {
+    let opened = match opening {
+        Some(_) => reopen(&journal).await,
+        None => open(&journal, &input).await,
+    };
+    if let Err(err) = opened {
         // Nothing was announced, so nothing is announced here either: the caller
         // is told instead.
         let _ = journal.end(TurnEndReason::Error).await;
@@ -381,7 +436,35 @@ async fn open(journal: &Journal<'_>, input: &TurnInput) -> Result<(), RecordErro
             .await?;
     }
 
+    // Recorded once the input is in the history, so this is where a discard
+    // cuts back to: the question stays, and everything the answer added goes.
+    // A mark taken before the input would cut the question as well, and the
+    // turn that asks again records no input of its own — it would answer words
+    // the history no longer holds.
+    journal
+        .session()
+        .note_opening(journal.session().state().len(), input);
+
     Ok(())
+}
+
+/// A turn's opening when the message it answers is already in the history.
+///
+/// Nothing is recorded: the message the discarded turn answered and the images
+/// sent with it are what the history ends with, and writing them again would put
+/// the same words in the conversation twice. A steer the discarded turn recorded
+/// inside itself went with its answer, so it is not put back either.
+///
+/// The turn's own record is written, because the log is how a reader reconstructs
+/// which turn produced which entries — a second request answered under no turn at
+/// all would be entries no turn names, and the next repair would have nothing to
+/// attribute them to.
+///
+/// # Errors
+///
+/// Fails if the log refuses the turn's record.
+async fn reopen(journal: &Journal<'_>) -> Result<(), RecordError> {
+    journal.open_turn().await
 }
 
 /// Records the steered messages waiting for a boundary.

@@ -111,7 +111,11 @@ pub struct TurnSink {
 
 impl TurnSink {
     /// Converts and broadcasts one event under a known turn id.
-    fn broadcast(&self, turn_id: TurnId, event: Event) {
+    ///
+    /// The id is the one the notification is filed under, which is not always
+    /// the turn the event is about: a discard names the turn it takes back, and
+    /// is sent before that turn's replacement starts.
+    pub(crate) fn broadcast(&self, turn_id: TurnId, event: Event) {
         let Some(notification) = to_notification(
             &self.session_id,
             &turn_id.to_string(),
@@ -131,12 +135,8 @@ impl EventSink for TurnSink {
         if let Event::TurnStarted { turn_id } = event {
             let _ = self.turn_id.set(turn_id);
             // Held events were emitted before this one, so they go out first.
-            let held = std::mem::take(
-                &mut *self
-                    .pending
-                    .lock()
-                    .expect("pending sink lock poisoned"),
-            );
+            let held =
+                std::mem::take(&mut *self.pending.lock().expect("pending sink lock poisoned"));
             for earlier in held {
                 self.broadcast(turn_id, earlier);
             }

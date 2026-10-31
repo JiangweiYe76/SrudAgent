@@ -157,6 +157,19 @@ export async function steerTurn(sessionId: string, text: string): Promise<void> 
   });
 }
 
+// Discards a finished turn's output and asks the model again. The message the
+// turn answered, and any images beside it, are what the new turn opens with; the
+// new answer arrives over `session/update` under a turn id of its own.
+//
+// `turnId` is the agent's id for the turn being replaced, and is named rather
+// than implied: the agent re-runs the session's latest turn, and only what the
+// client has on screen can say which turn that is. The call answers when the new
+// turn ends, like `session/prompt`.
+export async function regenerateTurn(sessionId: string, turnId: string): Promise<string> {
+  const result = await rpcRequest('_srud/unstable/session/regenerate', { sessionId, turnId });
+  return String(result.stopReason ?? 'end_turn');
+}
+
 // Hands a client the session's whole conversation as `session/update`
 // notifications, arriving before the response. Each update names the turn it
 // belongs to; how each turn ended comes back on the response.

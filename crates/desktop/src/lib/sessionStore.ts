@@ -30,6 +30,7 @@ import {
   type LoadedTurnEnd,
   type SessionOptions,
   RpcFailure,
+  regenerateTurn as requestRegenerate,
   sendPrompt,
   steerTurn as requestSteer,
   SESSION_NOT_FOUND,
@@ -115,13 +116,32 @@ function findCall(steps: Step[], id: string): ToolCall | undefined {
 
 // The `_meta.srud` an update carries, if any.
 function srudMeta(params: Json): Json {
-  return ((params._meta as Json | undefined)?.srud as Json | undefined) ?? {};
+  const meta = params._meta as Json | undefined;
+  return (meta?.srud as Json | undefined) ?? meta ?? {};
 }
 
 // The turn an update belongs to, when it says.
 function turnIdOf(params: Json): string | null {
   const id = srudMeta(params).turnId;
   return typeof id === 'string' ? id : null;
+}
+
+// The turn an update says was discarded, when it says so. A discard rides on an
+// otherwise empty `session_info_update`, because ACP has no update that takes a
+// turn back.
+function discardedTurn(params: Json): string | null {
+  const id = srudMeta(params).turnDiscarded;
+  return typeof id === 'string' ? id : null;
+}
+
+// The turn a replacement is waiting for: the newest turn this client opened and
+// the agent has not named yet. A replacement reuses the turn it replaces, so
+// that turn is unnamed and empty for the length of the request, and the first
+// update of the answer names it from there.
+function replacingTurn(turns: Turn[]): number {
+  const at = unclaimedTurn(turns);
+  if (at < 0) return -1;
+  return turns[at].steps.length === 0 ? at : -1;
 }
 
 // Finds the turn an update belongs to, and opens one when there is none.
@@ -136,6 +156,17 @@ function turnIdOf(params: Json): string | null {
 function locateTurn(turns: Turn[], turnId: string | null): { turns: Turn[]; index: number } | null {
   const named = turnId === null ? -1 : turns.findIndex((tt) => tt.backendTurnId === turnId);
   if (named >= 0) return { turns, index: named };
+
+  // The answer a replacement is waiting for, named by the agent's first update
+  // of the turn it is running in place of the one that was taken back.
+  if (turnId !== null) {
+    const replacing = replacingTurn(turns);
+    if (replacing >= 0) {
+      const next = [...turns];
+      next[replacing] = { ...next[replacing], backendTurnId: turnId };
+      return { turns: next, index: replacing };
+    }
+  }
 
   // The turn this client opened, before the agent has named it. An update that
   // names no turn at all lands there too.
@@ -167,6 +198,22 @@ function unclaimedTurn(turns: Turn[]): number {
   return -1;
 }
 
+// What a turn holds that survives its output being discarded: the message it
+// answered and the images sent with it. Those are the entries the agent keeps
+// when it takes the answer back, so the client keeps them on screen while
+// everything the answer added goes. A steer recorded inside the turn goes with
+// the answer: the replacement starts from the message the turn opened with.
+function withoutOutput(turn: Turn): Turn {
+  return {
+    id: turn.id,
+    userInput: turn.userInput,
+    images: turn.images,
+    backendTurnId: turn.backendTurnId,
+    steps: [],
+    createdAt: turn.createdAt,
+  };
+}
+
 // Applies one `session/update` notification to the session it names.
 //
 // `replaying` marks the updates a `session/load` hands over: they carry a
@@ -176,6 +223,24 @@ function applyUpdate(session: Session, params: Json, replaying: boolean): Sessio
   const update = params.update as Json | undefined;
   if (!update) return null;
   const kind = String(update.sessionUpdate ?? '');
+
+  // A discard is read before the update it rides on, because that update is a
+  // `session_info_update` with no title, and the title branch below would
+  // otherwise take it for a session renamed to nothing.
+  const discarded = discardedTurn(params);
+  if (discarded !== null) {
+    // Live, the turn being replaced is the one holding the reply — it gave up
+    // its name when the request went out, and the answer it held is what the
+    // discard takes. A replay has no such turn and finds it by the id the
+    // discard names.
+    const waiting = replacingTurn(session.turns);
+    const at =
+      waiting >= 0 ? waiting : session.turns.findIndex((tt) => tt.backendTurnId === discarded);
+    if (at < 0) return null;
+    const next = [...session.turns];
+    next[at] = withoutOutput(next[at]);
+    return { ...session, turns: next, updatedAt: replaying ? session.updatedAt : Date.now() };
+  }
 
   // A title change is session-level, not turn-level, so it applies whether or
   // not a turn is open — the first prompt names the session before any output.
@@ -439,6 +504,10 @@ interface SessionState {
   removeFollowup: (index: number) => void;
   steerFollowup: (index: number) => void;
   stopTurn: () => void;
+  // Discards a finished turn's output and asks the model again in the same
+  // place. The message the turn answered stays where it is, and the new answer
+  // fills the same turn when it arrives.
+  regenerateTurn: (turn: Turn) => void;
   setModel: (model: string) => void;
   setThinking: (level: string) => void;
   renameSession: (id: string, title: string) => void;
@@ -954,6 +1023,71 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         set({ initError: String(err) });
       });
+  },
+
+  regenerateTurn: (turn) => {
+    const state = get();
+    const session = state.sessions.find((s) => s.id === state.activeId);
+    if (!session?.backendId || state.reopeningCount > 0) return;
+    // Another turn running means the one being replaced no longer ends the
+    // conversation, and the agent refuses to re-answer anything but its latest.
+    if (isBusy(session)) return;
+    const backendId = session.backendId;
+    const latest = session.turns[session.turns.length - 1];
+    if (!latest || latest.id !== turn.id || latest.endReason === undefined) return;
+    const turnId = turn.backendTurnId;
+    // A turn the agent never named is one it never ran, so there is nothing on
+    // its side to take back.
+    if (!turnId) return;
+
+    const sessionId = session.id;
+    const now = Date.now();
+    // The turn being re-answered stays where it is. Its message is what the
+    // agent re-opens the turn with, and a second turn carrying the same words
+    // would put them on screen twice. It gives up its name and its answer, which
+    // leaves it the newest unnamed turn — where the replacement's updates land —
+    // and makes it look live until the request resolves.
+    set((s) => ({
+      sessions: s.sessions.map((sess) => {
+        if (sess.id !== sessionId) return sess;
+        // Another turn may have started between the click and this write, and
+        // then there is nothing left to take back.
+        const last = sess.turns[sess.turns.length - 1];
+        if (!last || last.id !== turn.id) return sess;
+        return {
+          ...sess,
+          turns: sess.turns.map((tt) =>
+            tt.id === turn.id ? { ...withoutOutput(tt), backendTurnId: undefined } : tt,
+          ),
+          updatedAt: now,
+        };
+      }),
+    }));
+
+    void (async () => {
+      try {
+        const reason = await requestRegenerate(backendId, turnId);
+        // A re-answer that ran to the end closes like any other turn. One that
+        // was stopped closes as interrupted, and the message stays with it.
+        closeTurn(sessionId, turn.id, mapStopReason(reason));
+      } catch (err) {
+        // A refusal comes before the agent records anything, so the answer it
+        // was asked to replace is still the agent's latest turn. The turn on
+        // screen takes back everything it gave up, and the refusal is reported
+        // on its own rather than as an empty turn over an answer that never ran.
+        set((s) => ({
+          sessions: s.sessions.map((sess) =>
+            sess.id === sessionId
+              ? { ...sess, turns: sess.turns.map((tt) => (tt.id === turn.id ? turn : tt)) }
+              : sess,
+          ),
+          initError: String(err),
+        }));
+        // The turns queued behind this one wait for a turn to end in its place,
+        // and a refusal ends none, so they are released here.
+        queueMicrotask(() => flushFollowups(sessionId));
+      }
+    })();
   },
 
   setModel: (model) => {
