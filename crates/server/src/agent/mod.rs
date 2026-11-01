@@ -55,8 +55,8 @@ use srud_core::tools::ToolRegistry;
 use srud_protocol::acp::methods::{
     INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_LOAD,
     SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SRUD_PROVIDER_DELETE,
-    SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT, SRUD_SESSION_REGENERATE,
-    SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
+    SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT, SRUD_SESSION_FORK,
+    SRUD_SESSION_REGENERATE, SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
 };
 use srud_protocol::acp::{
     AcpError, CloseSessionResponse, DeleteSessionResponse, Implementation, InitializeRequest,
@@ -266,6 +266,7 @@ impl Agent {
                 .map(|()| serialize(DeleteSessionResponse::new())),
             SESSION_SET_CONFIG_OPTION => self.handle_set_config_option(params).await.map(serialize),
             SRUD_SESSION_SET_TITLE => self.handle_set_title(params).await.map(serialize),
+            SRUD_SESSION_FORK => self.handle_fork(params).await.map(serialize),
             SRUD_SESSION_STEER => self.handle_steer(params).await.map(serialize),
             SRUD_SESSION_REGENERATE => self.handle_regenerate(params).await.map(serialize),
             SRUD_PROVIDER_LIST => self.handle_provider_list(params),
