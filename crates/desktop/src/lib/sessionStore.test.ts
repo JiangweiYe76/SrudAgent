@@ -703,6 +703,58 @@ describe('sessionStore live path', () => {
     });
   });
 
+  it('carries a call title and its diffs through to the settled result', async () => {
+    // The settling update replaces the content collection and so re-sends the
+    // blocks alongside the output text; the row needs the title and the diffs
+    // at rest, not just in flight.
+    const { useSessionStore, fire } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await vi.waitFor(() => {
+      expect(
+        useSessionStore.getState().sessions.some((s) => s.backendId !== null),
+      ).toBe(true);
+    });
+    const active = () => {
+      const state = useSessionStore.getState();
+      return state.sessions.find((s) => s.id === state.activeId)!;
+    };
+
+    fire({ sessionUpdate: 'tool_call', toolCallId: 'tc1', name: 'edit' });
+    fire({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc1',
+      status: 'in_progress',
+      title: 'Edit main.rs',
+      rawInput: {
+        path: 'main.rs',
+        edits: [{ old_string: 'a', new_string: 'b' }],
+      },
+      content: [{ type: 'diff', path: 'main.rs', oldText: 'a', newText: 'b' }],
+    });
+    expect(active().turns[0].steps[0].toolCalls[0]).toMatchObject({
+      name: 'edit',
+      title: 'Edit main.rs',
+      diffs: [{ path: 'main.rs', oldText: 'a', newText: 'b' }],
+    });
+
+    fire({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc1',
+      status: 'completed',
+      content: [
+        { type: 'diff', path: 'main.rs', oldText: 'a', newText: 'b' },
+        { type: 'content', content: { type: 'text', text: 'done' } },
+      ],
+      rawOutput: { is_error: false },
+    });
+    const call = active().turns[0].steps[0].toolCalls[0];
+    expect(call.diffs).toEqual([
+      { path: 'main.rs', oldText: 'a', newText: 'b' },
+    ]);
+    // The output text is read past the diff blocks, which carry none.
+    expect(call.result).toBe('done');
+  });
+
   it('treats an update that names no status as having moved past pending', async () => {
     // `pending` is ACP's default and is left off the wire, so the common case is
     // the absence of the field. Reading that as still pending would leave the

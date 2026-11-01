@@ -12,6 +12,7 @@ import type { Attachment, Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
 import { JsonBlock } from '@/components/JsonBlock';
+import { DiffBlock } from '@/components/DiffBlock';
 import { MessageContextMenu } from '@/components/MessageContextMenu';
 import { Modal, ModalContent } from '@/components/ui/modal';
 import {
@@ -384,12 +385,18 @@ export const MessageList = memo(function MessageList({
                     </MessageContextMenu>
                   )}
                   {step.toolCalls.map((tc) => (
-                    <Collapsible key={tc.id}>
+                    /* A call that reports file changes opens on them: the diff
+                       is what the call did, and a reader should not have to
+                       dig for it. */
+                    <Collapsible
+                      key={tc.id}
+                      defaultOpen={(tc.diffs?.length ?? 0) > 0}
+                    >
                       <div className="rounded-lg border border-border bg-muted text-[12.5px]">
                         <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
                           <Wrench className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <span className="font-mono shrink-0 text-foreground">
-                            {tc.name}
+                            {tc.title ?? tc.name}
                           </span>
                           {/* The same mark the thinking header uses, and in the same
                               place: a spacer, then the dots against the chevron.
@@ -412,7 +419,11 @@ export const MessageList = memo(function MessageList({
                             nothing else: a reader who opens a call to see what
                             came back finds only what went in. The two payloads
                             are both JSON and look alike, so each is labelled. */}
+                        {/* What changed first, then the raw payloads of how. */}
                         <CollapsibleContent className="flex flex-col gap-3 border-t border-border px-3 py-2">
+                          {tc.diffs?.map((diff, i) => (
+                            <DiffBlock key={`${i}-${diff.path}`} diff={diff} />
+                          ))}
                           <JsonBlock
                             label={t('toolCall.input')}
                             value={tc.args}

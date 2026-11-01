@@ -11,13 +11,16 @@
 //! - **Inbound** ([`prompt_parts`]): an ACP prompt is a
 //!   `ContentBlock` array, split into the text and images a turn can carry.
 
+use std::collections::HashMap;
+
 use srud_core::client::TokenUsage;
 use srud_core::session_event::SessionEvent;
 use srud_core::types::{Event, ResponseItem, Role, TurnEndReason};
 use srud_protocol::acp::{
     AcpError, ContentBlock, ContentChunk, ImageContent, Meta, Notification, SessionId,
     SessionInfoUpdate, SessionNotification, SessionUpdate, TextContent, ToolCall, ToolCallContent,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate, CLIENT_METHOD_NAMES,
+    ToolCallDiff, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    UsageUpdate, CLIENT_METHOD_NAMES,
 };
 use srud_protocol::error::INVALID_PARAMS;
 use srud_protocol::srud::meta::{SrudMeta, SrudUsage};
@@ -46,11 +49,14 @@ pub enum Skipped {
 /// field of its own.
 ///
 /// `context_size` is the configured window of the session's model: a usage
-/// report without one to compare against has no wire representation.
+/// report without one to compare against has no wire representation. `diffs`
+/// remembers tool-call diffs between a call's arguments and its result; one
+/// index spans one turn live, one replay pass on replay.
 #[must_use]
 pub fn to_session_update(
     event: Event,
     context_size: Option<u64>,
+    diffs: &mut ToolDiffIndex,
 ) -> Option<Result<SessionUpdate, Skipped>> {
     let update = match event {
         Event::TurnStarted { .. } => return Some(Err(Skipped::TurnStarted)),
@@ -72,10 +78,16 @@ pub fn to_session_update(
             call_id,
             name,
             arguments,
-        } => tool_call_input(call_id, name, arguments),
+        } => {
+            diffs.store(&call_id, tool_diffs(&name, &arguments));
+            tool_call_input(call_id, name, arguments)
+        }
         Event::ToolCallEnd {
             call_id, result, ..
-        } => tool_result(call_id, result.output, result.is_error),
+        } => {
+            let content = diffs.take(&call_id);
+            tool_result(call_id, result.output, result.is_error, content)
+        }
         Event::UsageRecorded { usage } => {
             let Some(size) = context_size else {
                 return Some(Err(Skipped::NoContextWindow));
@@ -105,7 +117,12 @@ pub fn to_session_update(
 /// that has never heard of this update still gets a well-formed `tool_call` it
 /// can show.
 fn tool_call_named(call_id: String, name: String) -> SessionUpdate {
-    SessionUpdate::ToolCall(ToolCall::new(call_id, name.clone()).name(name))
+    let title = tool_title(&name, &serde_json::Value::Null);
+    SessionUpdate::ToolCall(
+        ToolCall::new(call_id, title)
+            .name(name.clone())
+            .kind(tool_kind(&name)),
+    )
 }
 
 /// The update announcing a tool call.
@@ -115,11 +132,18 @@ fn tool_call_named(call_id: String, name: String) -> SessionUpdate {
 /// the log, with no earlier announcement to attach to. Live, [`tool_call_input`]
 /// follows an announcement instead.
 fn tool_call(call_id: String, name: String, arguments: serde_json::Value) -> SessionUpdate {
+    let title = tool_title(&name, &arguments);
+    let kind = tool_kind(&name);
+    let locations = tool_locations(&arguments);
+    let content = tool_diffs(&name, &arguments);
     SessionUpdate::ToolCall(
-        ToolCall::new(call_id, name.clone())
+        ToolCall::new(call_id, title)
             .name(name)
+            .kind(kind)
             .status(ToolCallStatus::InProgress)
-            .raw_input(arguments),
+            .raw_input(arguments)
+            .locations(locations)
+            .content(content),
     )
 }
 
@@ -130,11 +154,19 @@ fn tool_call(call_id: String, name: String, arguments: serde_json::Value) -> Ses
 /// the whole call twice would leave a client that treats the update as creating
 /// something with two of them.
 fn tool_call_input(call_id: String, name: String, arguments: serde_json::Value) -> SessionUpdate {
+    let title = tool_title(&name, &arguments);
+    let kind = tool_kind(&name);
+    let locations = tool_locations(&arguments);
+    let content = tool_diffs(&name, &arguments);
     SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
         call_id,
         ToolCallUpdateFields::new()
             .name(name)
+            .kind(kind)
+            .title(title)
             .status(ToolCallStatus::InProgress)
+            .locations(locations)
+            .content(content)
             .raw_input(arguments),
     ))
 }
@@ -149,24 +181,151 @@ fn raw_arguments(arguments: &str) -> serde_json::Value {
     serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null)
 }
 
+/// Diffs built from a call's arguments, held until its result message.
+///
+/// A `tool_call_update` replaces the content collection rather than extending
+/// it, so the update settling a call would drop the diff blocks its arguments
+/// message carried. The result re-sends those blocks alongside the output
+/// text; this index is the memory that makes that possible, because the events
+/// settling a call carry its output but not its arguments.
+#[derive(Debug, Default)]
+pub struct ToolDiffIndex {
+    diffs: HashMap<String, Vec<ToolCallContent>>,
+}
+
+impl ToolDiffIndex {
+    /// Calls without diffs store nothing, so the index holds only edits in
+    /// flight.
+    fn store(&mut self, call_id: &str, diffs: Vec<ToolCallContent>) {
+        if !diffs.is_empty() {
+            self.diffs.insert(call_id.to_owned(), diffs);
+        }
+    }
+
+    fn take(&mut self, call_id: &str) -> Vec<ToolCallContent> {
+        self.diffs.remove(call_id).unwrap_or_default()
+    }
+}
+
+/// The presentation category of a tool, from its programmatic name.
+///
+/// ACP uses this only for display — icons and grouping — so a tool this build
+/// does not know falls back to `Other` rather than being refused.
+fn tool_kind(name: &str) -> ToolKind {
+    match name {
+        "read" => ToolKind::Read,
+        "edit" | "write" => ToolKind::Edit,
+        "shell" => ToolKind::Execute,
+        "grep" => ToolKind::Search,
+        _ => ToolKind::Other,
+    }
+}
+
+/// A one-line title describing a call for a human reading the transcript.
+///
+/// Built from the tool name and whichever arguments have arrived: a call whose
+/// arguments are still streaming is titled from its name alone, and the update
+/// carrying the arguments refines the title. ACP holds `title` to be the
+/// agent's own words about what it is doing, separate from the programmatic
+/// `name`.
+fn tool_title(name: &str, arguments: &serde_json::Value) -> String {
+    let arg = |key: &str| arguments.get(key).and_then(serde_json::Value::as_str);
+    let file = |path: &str| {
+        std::path::Path::new(path).file_name().map_or_else(
+            || path.to_owned(),
+            |part| part.to_string_lossy().into_owned(),
+        )
+    };
+    match name {
+        "read" => arg("path").map_or_else(|| "Read".to_owned(), |p| format!("Read {}", file(p))),
+        "edit" => arg("path").map_or_else(|| "Edit".to_owned(), |p| format!("Edit {}", file(p))),
+        "write" => arg("path").map_or_else(|| "Write".to_owned(), |p| format!("Write {}", file(p))),
+        "shell" => arg("command").map_or_else(|| "Run".to_owned(), |c| format!("Run {}", clip(c))),
+        "grep" => {
+            arg("pattern").map_or_else(|| "Search".to_owned(), |p| format!("Search {}", clip(p)))
+        }
+        "skill" => arg("name").map_or_else(|| "Skill".to_owned(), |n| format!("Skill {n}")),
+        _ => name.to_owned(),
+    }
+}
+
+/// The part of a long command or pattern a title can show.
+fn clip(text: &str) -> String {
+    const MAX: usize = 48;
+    if text.chars().count() <= MAX {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(MAX).collect();
+    format!("{head}...")
+}
+
+/// The file a call works on, as a jump anchor for the client.
+fn tool_locations(arguments: &serde_json::Value) -> Vec<ToolCallLocation> {
+    match arguments.get("path").and_then(serde_json::Value::as_str) {
+        Some(path) if !path.is_empty() => vec![ToolCallLocation::new(path)],
+        _ => Vec::new(),
+    }
+}
+
+/// The file change an `edit` call makes, as ACP diff blocks.
+///
+/// One block per replacement, `oldText`/`newText` the matched and the
+/// replacing text rather than the whole file: a client renders a diff of the
+/// pair, and the arguments carry exactly these fragments. A `replace_all` call
+/// reports its fragment once even though it lands in several places — the
+/// tool's reply is what says how many.
+///
+/// No other tool sends a diff from arguments alone. A `write` replaces a whole
+/// file, and the arguments do not say whether one was there, while a missing
+/// `oldText` means "new file" in the protocol — which an overwrite is not.
+fn tool_diffs(name: &str, arguments: &serde_json::Value) -> Vec<ToolCallContent> {
+    if name != "edit" {
+        return Vec::new();
+    }
+    let (Some(path), Some(edits)) = (
+        arguments.get("path").and_then(serde_json::Value::as_str),
+        arguments.get("edits").and_then(serde_json::Value::as_array),
+    ) else {
+        return Vec::new();
+    };
+    edits
+        .iter()
+        .filter_map(|edit| {
+            let old_text = edit.get("old_string")?.as_str()?;
+            let new_text = edit.get("new_string")?.as_str()?;
+            Some(ToolCallContent::Diff(
+                ToolCallDiff::new(path, new_text).old_text(old_text),
+            ))
+        })
+        .collect()
+}
+
 /// The update settling a tool call.
 ///
 /// As [`tool_call`], and for the same reason.
-fn tool_result(call_id: String, output: String, is_error: bool) -> SessionUpdate {
+///
+/// `content` is the call's diff blocks followed by the output text. The blocks
+/// ride along here because this update replaces the content collection rather
+/// than extending it — see [`ToolDiffIndex`] for where they are kept.
+fn tool_result(
+    call_id: String,
+    output: String,
+    is_error: bool,
+    mut content: Vec<ToolCallContent>,
+) -> SessionUpdate {
     let status = if is_error {
         ToolCallStatus::Failed
     } else {
         ToolCallStatus::Completed
     };
+    content.push(ToolCallContent::Content(
+        srud_protocol::acp::ToolCallContentBlock::new(ContentBlock::Text(TextContent::new(output))),
+    ));
     SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
         call_id,
         ToolCallUpdateFields::new()
             .status(status)
-            .content(vec![ToolCallContent::Content(
-                srud_protocol::acp::ToolCallContentBlock::new(ContentBlock::Text(
-                    TextContent::new(output),
-                )),
-            )])
+            .content(content)
             .raw_output(serde_json::json!({ "is_error": is_error })),
     ))
 }
@@ -196,13 +355,15 @@ fn with_message_id(
 ///
 /// Returns `None` for events that have no wire representation (see
 /// [`Skipped`]). `context_size` is the configured window of the session's
-/// model, required for a usage report to be representable at all.
+/// model, required for a usage report to be representable at all. `diffs`
+/// carries tool-call diffs from an arguments message to the result message.
 #[must_use]
 pub fn to_notification(
     session_id: &SessionId,
     turn_id: &str,
     event: Event,
     context_size: Option<u64>,
+    diffs: &mut ToolDiffIndex,
 ) -> Option<Notification<SessionNotification>> {
     // The breakdown is read before the event is consumed by the mapping.
     let usage = match &event {
@@ -216,7 +377,7 @@ pub fn to_notification(
     if let Event::TurnDiscarded { turn_id: discarded } = &event {
         return Some(discard_notification(session_id, &discarded.to_string()));
     }
-    let update = match to_session_update(event, context_size)? {
+    let update = match to_session_update(event, context_size, diffs)? {
         Ok(update) => update,
         Err(Skipped::TurnDiscarded) => return Some(discard_notification(session_id, turn_id)),
         Err(_) => return None,
@@ -316,12 +477,14 @@ pub(crate) fn end_reason_wire(reason: TurnEndReason) -> &'static str {
 /// as something the user said — and a
 /// [`Reasoning`](srud_core::types::ResponseItem::Reasoning) item **is** shown,
 /// because a client renders thinking and the model is the one that never sees it
-/// again.
+/// again. `diffs` carries tool-call diffs from a call's recorded arguments to
+/// its recorded result.
 #[must_use]
 pub fn replay_notification(
     session_id: &SessionId,
     event: &SessionEvent,
     context_size: Option<u64>,
+    diffs: &mut ToolDiffIndex,
 ) -> Option<Notification<SessionNotification>> {
     // A recorded usage report goes out exactly as the live one did, so a client
     // sees one shape for it. Without a configured window it stays unshown, as
@@ -379,12 +542,21 @@ pub fn replay_notification(
             call_id,
             name,
             arguments,
-        } => tool_call(call_id.clone(), name.clone(), raw_arguments(arguments)),
+        } => {
+            let arguments = raw_arguments(arguments);
+            diffs.store(call_id, tool_diffs(name, &arguments));
+            tool_call(call_id.clone(), name.clone(), arguments)
+        }
         ResponseItem::FunctionCallOutput {
             call_id,
             output,
             is_error,
-        } => tool_result(call_id.clone(), output.clone(), *is_error),
+        } => tool_result(
+            call_id.clone(),
+            output.clone(),
+            *is_error,
+            diffs.take(call_id),
+        ),
     };
 
     let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), None);
@@ -482,8 +654,14 @@ mod tests {
     }
 
     fn notify(event: Event) -> Notification<SessionNotification> {
-        to_notification(&session_id(), "turn-1", event, Some(128_000))
-            .expect("event maps to a notification")
+        to_notification(
+            &session_id(),
+            "turn-1",
+            event,
+            Some(128_000),
+            &mut ToolDiffIndex::default(),
+        )
+        .expect("event maps to a notification")
     }
 
     #[test]
@@ -491,7 +669,11 @@ mod tests {
         use srud_core::types::TurnId;
         let turn_id = TurnId::new();
         assert_eq!(
-            to_session_update(Event::TurnStarted { turn_id }, None),
+            to_session_update(
+                Event::TurnStarted { turn_id },
+                None,
+                &mut ToolDiffIndex::default()
+            ),
             Some(Err(Skipped::TurnStarted))
         );
         assert_eq!(
@@ -500,13 +682,19 @@ mod tests {
                     turn_id,
                     reason: TurnEndReason::Completed,
                 },
-                None
+                None,
+                &mut ToolDiffIndex::default()
             ),
             Some(Err(Skipped::TurnComplete))
         );
-        assert!(
-            to_notification(&session_id(), "t", Event::TurnStarted { turn_id }, None).is_none()
-        );
+        assert!(to_notification(
+            &session_id(),
+            "t",
+            Event::TurnStarted { turn_id },
+            None,
+            &mut ToolDiffIndex::default()
+        )
+        .is_none());
     }
 
     #[test]
@@ -548,8 +736,13 @@ mod tests {
                 reasoning_output_tokens: 0,
             },
         };
-        let n = replay_notification(&session_id(), &event, Some(128_000))
-            .expect("a replayed usage record is shown");
+        let n = replay_notification(
+            &session_id(),
+            &event,
+            Some(128_000),
+            &mut ToolDiffIndex::default(),
+        )
+        .expect("a replayed usage record is shown");
         let SessionUpdate::UsageUpdate(update) = &n.params.as_ref().unwrap().update else {
             panic!("expected a usage_update");
         };
@@ -566,7 +759,10 @@ mod tests {
         );
         // Without a configured window the replayed record stays unshown, as
         // the live one would have.
-        assert!(replay_notification(&session_id(), &event, None).is_none());
+        assert!(
+            replay_notification(&session_id(), &event, None, &mut ToolDiffIndex::default())
+                .is_none()
+        );
     }
 
     #[test]
@@ -579,8 +775,13 @@ mod tests {
                 data: "AAAA".into(),
             },
         );
-        let n = replay_notification(&session_id(), &event, Some(128_000))
-            .expect("a replayed image is shown");
+        let n = replay_notification(
+            &session_id(),
+            &event,
+            Some(128_000),
+            &mut ToolDiffIndex::default(),
+        )
+        .expect("a replayed image is shown");
         let SessionUpdate::UserMessageChunk(chunk) = &n.params.as_ref().unwrap().update else {
             panic!("expected a user_message_chunk");
         };
@@ -598,7 +799,8 @@ mod tests {
                 Event::UsageRecorded {
                     usage: TokenUsage::default(),
                 },
-                None
+                None,
+                &mut ToolDiffIndex::default()
             ),
             Some(Err(Skipped::NoContextWindow))
         );
@@ -608,7 +810,8 @@ mod tests {
             Event::UsageRecorded {
                 usage: TokenUsage::default(),
             },
-            None
+            None,
+            &mut ToolDiffIndex::default()
         )
         .is_none());
     }
@@ -722,6 +925,117 @@ mod tests {
             panic!("expected ToolCallUpdate");
         };
         assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
+    }
+
+    #[test]
+    fn tool_call_arguments_carry_the_presentation_fields() {
+        let n = notify(Event::ToolCallBegin {
+            call_id: "c1".into(),
+            name: "edit".into(),
+            arguments: json!({
+                "path": "/home/maria/weather.py",
+                "edits": [{ "old_string": "timeout = 0", "new_string": "timeout = 30" }],
+            }),
+        });
+        let SessionUpdate::ToolCallUpdate(update) = &n.params.as_ref().unwrap().update else {
+            panic!("expected ToolCallUpdate");
+        };
+        assert_eq!(update.fields.kind, Some(ToolKind::Edit));
+        assert_eq!(update.fields.title.as_deref(), Some("Edit weather.py"));
+        assert_eq!(
+            update.fields.locations,
+            Some(vec![ToolCallLocation::new("/home/maria/weather.py")])
+        );
+        let Some(content) = &update.fields.content else {
+            panic!("an edit call carries its diff");
+        };
+        let [ToolCallContent::Diff(diff)] = content.as_slice() else {
+            panic!("one diff block per replacement: {content:?}");
+        };
+        assert_eq!(diff.path, std::path::Path::new("/home/maria/weather.py"));
+        assert_eq!(diff.old_text.as_deref(), Some("timeout = 0"));
+        assert_eq!(diff.new_text, "timeout = 30");
+
+        // The wire spelling of the category is the protocol's snake_case.
+        let value = serde_json::to_value(n.params.as_ref().unwrap()).unwrap();
+        assert_eq!(value["update"]["kind"], json!("edit"));
+    }
+
+    #[test]
+    fn a_tool_result_resends_the_diffs_its_update_would_drop() {
+        // A `tool_call_update` replaces the content collection, so the result
+        // has to carry the diff blocks again or the settled call loses them.
+        let mut diffs = ToolDiffIndex::default();
+        let begin = to_session_update(
+            Event::ToolCallBegin {
+                call_id: "c1".into(),
+                name: "edit".into(),
+                arguments: json!({
+                    "path": "weather.py",
+                    "edits": [{ "old_string": "a", "new_string": "b" }],
+                }),
+            },
+            None,
+            &mut diffs,
+        );
+        assert!(begin.is_some());
+
+        let end = to_session_update(
+            Event::ToolCallEnd {
+                call_id: "c1".into(),
+                name: "edit".into(),
+                result: ToolOutcome::success("done"),
+            },
+            None,
+            &mut diffs,
+        )
+        .expect("an end maps")
+        .expect("and is shown");
+        let SessionUpdate::ToolCallUpdate(update) = &end else {
+            panic!("expected ToolCallUpdate");
+        };
+        let Some(content) = &update.fields.content else {
+            panic!("the settled call keeps its diff");
+        };
+        let [ToolCallContent::Diff(_), ToolCallContent::Content(text)] = content.as_slice() else {
+            panic!("diffs first, then the output text: {content:?}");
+        };
+        assert!(
+            matches!(text.content, ContentBlock::Text(_)),
+            "the second block is the output"
+        );
+    }
+
+    #[test]
+    fn a_write_call_reports_no_diff() {
+        // A `write` replaces a whole file and its arguments do not say whether
+        // one was there; a missing `oldText` claims "new file", which an
+        // overwrite is not. No diff beats a diff that lies.
+        let n = notify(Event::ToolCallBegin {
+            call_id: "c1".into(),
+            name: "write".into(),
+            arguments: json!({ "path": "note.txt", "content": "hello" }),
+        });
+        let SessionUpdate::ToolCallUpdate(update) = &n.params.as_ref().unwrap().update else {
+            panic!("expected ToolCallUpdate");
+        };
+        assert_eq!(update.fields.content, Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_named_call_reports_kind_before_the_arguments_arrive() {
+        let n = notify(Event::ToolCallNamed {
+            call_id: "tc_1".into(),
+            name: "grep".into(),
+        });
+        let SessionUpdate::ToolCall(call) = &n.params.as_ref().unwrap().update else {
+            panic!("expected a tool_call");
+        };
+        assert_eq!(call.kind, ToolKind::Search);
+        assert_eq!(
+            call.title, "Search",
+            "no arguments yet: the verb stands in until they name a subject"
+        );
     }
 
     #[test]

@@ -258,3 +258,48 @@ describe('an opened tool call', () => {
     expect(copyButtons).toHaveLength(1);
   });
 });
+
+describe('a tool call with file changes', () => {
+  it('shows the agent title in the row', () => {
+    render({
+      id: 'tc1',
+      name: 'edit',
+      title: 'Edit main.rs',
+      args: '{"path":"main.rs"}',
+      pending: false,
+    });
+
+    expect(container.textContent).toContain('Edit main.rs');
+  });
+
+  it('opens on its diffs and draws them as a minus/plus diff', () => {
+    render({
+      id: 'tc1',
+      name: 'edit',
+      title: 'Edit main.rs',
+      args: '{"path":"src/main.rs"}',
+      pending: false,
+      diffs: [
+        { path: 'src/main.rs', oldText: 'let x = 0;', newText: 'let x = 1;' },
+      ],
+      result: '{"replacements":1}',
+    });
+
+    expect(container.textContent).toContain('src/main.rs');
+    expect(container.textContent).toContain('-let x = 0;');
+    expect(container.textContent).toContain('+let x = 1;');
+  });
+
+  it('shows only the added lines for a file the call created', () => {
+    render({
+      id: 'tc1',
+      name: 'write',
+      args: '{"path":"note.txt"}',
+      pending: false,
+      diffs: [{ path: 'note.txt', oldText: null, newText: 'hello' }],
+    });
+
+    expect(container.textContent).toContain('+hello');
+    expect(container.textContent).not.toContain('-hello');
+  });
+});

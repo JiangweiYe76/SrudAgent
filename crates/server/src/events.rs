@@ -27,7 +27,7 @@ use srud_core::types::{Event, EventSink, SessionId as CoreSessionId, TurnId};
 use srud_protocol::acp::{Notification, SessionId, SessionNotification};
 use tokio::sync::broadcast;
 
-use crate::convert::to_notification;
+use crate::convert::{to_notification, ToolDiffIndex};
 
 /// The channel capacity for buffered notifications.
 ///
@@ -82,6 +82,7 @@ impl EventHub {
             turn_id: Arc::new(OnceLock::new()),
             context_size,
             pending: Arc::new(Mutex::new(Vec::new())),
+            diffs: Arc::new(Mutex::new(ToolDiffIndex::default())),
         }
     }
 }
@@ -107,6 +108,12 @@ pub struct TurnSink {
     /// re-announced belong here, and there are few of them: everything the
     /// turn itself emits follows its id.
     pending: Arc<Mutex<Vec<Event>>>,
+    /// Tool-call diffs waiting to ride along to their result messages.
+    ///
+    /// Shared across clones, as the sink is cloned into `active_sinks` while
+    /// the turn runs on the original: cloning must not fork the map a call
+    /// stores its diffs into and later takes them back from.
+    diffs: Arc<Mutex<ToolDiffIndex>>,
 }
 
 impl TurnSink {
@@ -116,11 +123,13 @@ impl TurnSink {
     /// the turn the event is about: a discard names the turn it takes back, and
     /// is sent before that turn's replacement starts.
     pub(crate) fn broadcast(&self, turn_id: TurnId, event: Event) {
+        let mut diffs = self.diffs.lock().expect("tool diff index lock poisoned");
         let Some(notification) = to_notification(
             &self.session_id,
             &turn_id.to_string(),
             event,
             self.context_size,
+            &mut diffs,
         ) else {
             return;
         };
