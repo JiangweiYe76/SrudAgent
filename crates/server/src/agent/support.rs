@@ -7,7 +7,7 @@ use crate::test_env::{self, Guard};
 use futures::{stream, StreamExt};
 use serde_json::json;
 use srud_core::client::{ModelEvent, ModelRequest, ModelStream};
-use srud_protocol::acp::methods::{SRUD_SESSION_FORK, SRUD_SESSION_ROLLOUT_READ};
+use srud_protocol::acp::methods::SRUD_SESSION_ROLLOUT_READ;
 use srud_protocol::acp::AGENT_METHOD_NAMES;
 use srud_protocol::transport::tauri::RpcRequest;
 use tokio_util::sync::CancellationToken;
@@ -17,7 +17,6 @@ use tokio_util::sync::CancellationToken;
 pub(super) const UNIMPLEMENTED_METHODS: &[&str] = &[
     AGENT_METHOD_NAMES.session_set_mode,
     AGENT_METHOD_NAMES.authenticate,
-    SRUD_SESSION_FORK,
     SRUD_SESSION_ROLLOUT_READ,
 ];
 

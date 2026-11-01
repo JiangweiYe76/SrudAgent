@@ -5,6 +5,8 @@ const en = {
   'sidebar.renameTitle': 'Rename session',
   'sidebar.renamePlaceholder': 'Session name',
   'sidebar.renameSave': 'Save',
+  'sidebar.forkTitle': 'Fork session',
+  'sidebar.forkFailed': 'Could not fork the session.',
   'sidebar.deleteTitle': 'Delete session',
   'sidebar.deleteWarning': 'Delete "{title}"? This cannot be undone.',
   'sidebar.deleteWarningWithTurns':

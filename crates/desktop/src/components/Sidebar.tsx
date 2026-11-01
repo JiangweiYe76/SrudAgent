@@ -1,5 +1,12 @@
 import { useState } from 'react';
-import { Loader2, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
+import {
+  GitFork,
+  Loader2,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Trash2,
+} from 'lucide-react';
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { deleteWarning, displayTitle, isBusy } from '@/lib/sessionStore';
@@ -27,6 +34,7 @@ interface SidebarProps {
   onSelect: (id: string) => void;
   onNew: () => void;
   onRename: (id: string, title: string) => void;
+  onFork: (id: string) => void;
   onDelete: (id: string) => void;
 }
 
@@ -44,9 +52,13 @@ function formatTime(ts: number): string {
 // will collect more actions than fit, so this is a menu rather than an icon row.
 function SessionActions({
   onRename,
+  onFork,
   onDelete,
 }: {
   onRename: () => void;
+  // `null` when there is nothing to fork: a draft has no history yet, and a
+  // session still replying has no settled point to fork at.
+  onFork: (() => void) | null;
   onDelete: () => void;
 }) {
   return (
@@ -70,6 +82,12 @@ function SessionActions({
           <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
           {t('sidebar.renameTitle')}
         </DropdownMenuItem>
+        {onFork && (
+          <DropdownMenuItem onSelect={onFork}>
+            <GitFork className="h-3.5 w-3.5 text-muted-foreground" />
+            {t('sidebar.forkTitle')}
+          </DropdownMenuItem>
+        )}
         {/* Delete is separated and coloured: it cannot be undone. */}
         <DropdownMenuSeparator />
         <DropdownMenuItemDestructive onSelect={onDelete}>
@@ -89,6 +107,7 @@ export function Sidebar({
   onSelect,
   onNew,
   onRename,
+  onFork,
   onDelete,
 }: SidebarProps) {
   // Which dialog is open, if any. Renaming and deleting are dialogs rather than
@@ -179,6 +198,7 @@ export function Sidebar({
               ) : (
                 <SessionActions
                   onRename={() => setRenamingId(s.id)}
+                  onFork={s.backendId && !streaming ? () => onFork(s.id) : null}
                   onDelete={() => {
                     if (isBusy(s)) {
                       toast.error(t('sidebar.deleteBusy'));

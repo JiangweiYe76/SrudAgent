@@ -12,8 +12,10 @@ use srud_protocol::acp::{
     AcpError, CloseSessionRequest, DeleteSessionRequest, ListSessionsResponse, NewSessionRequest,
     NewSessionResponse, SessionId,
 };
-use srud_protocol::error::INTERNAL_ERROR;
-use srud_protocol::srud::methods::{SetSessionTitleRequest, SetSessionTitleResponse};
+use srud_protocol::error::{INTERNAL_ERROR, INVALID_REQUEST};
+use srud_protocol::srud::methods::{
+    ForkSessionRequest, ForkSessionResponse, SetSessionTitleRequest, SetSessionTitleResponse,
+};
 
 impl Agent {
     pub(super) async fn handle_new_session(
@@ -123,6 +125,32 @@ impl Agent {
         self.broadcast_title(&request.session_id, title.clone());
         Ok(SetSessionTitleResponse { title, meta: None })
     }
+
+    /// Copies a session's history into a session of its own.
+    ///
+    /// The fork stands where the source stands and the source is left as it
+    /// was. A turn in flight refuses the fork rather than copying one.
+    pub(super) async fn handle_fork(&self, params: Value) -> Result<ForkSessionResponse, AcpError> {
+        let request: ForkSessionRequest = parse_params(params)?;
+        let session_id = self
+            .sessions
+            .fork(&request.session_id, request.title)
+            .await
+            .map_err(|err| match err {
+                crate::sessions::ForkError::Restore(crate::sessions::RestoreError::NotFound(
+                    id,
+                )) => session_not_found(&id),
+                crate::sessions::ForkError::Busy => AcpError::new(
+                    INVALID_REQUEST,
+                    "cannot fork a session while a turn is in flight",
+                ),
+                err => AcpError::new(INTERNAL_ERROR, format!("could not fork the session: {err}")),
+            })?;
+        Ok(ForkSessionResponse {
+            session_id,
+            meta: None,
+        })
+    }
 }
 
 /// Derives a session title from the message that opened it.
@@ -146,13 +174,17 @@ fn title_from_prompt(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use crate::agent::support::*;
     use serde_json::json;
+    use srud_core::client::ModelEvent;
     use srud_protocol::acp::methods::{
-        SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_NEW, SRUD_SESSION_SET_TITLE,
+        SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_LOAD, SESSION_NEW,
+        SESSION_PROMPT, SRUD_SESSION_FORK, SRUD_SESSION_SET_TITLE,
     };
     use srud_protocol::acp::{Response, SessionId};
-    use srud_protocol::error::SESSION_NOT_FOUND;
+    use srud_protocol::error::{INVALID_REQUEST, SESSION_NOT_FOUND};
 
     #[tokio::test]
     async fn session_new_returns_an_opaque_id() {
@@ -363,5 +395,168 @@ mod tests {
                 .await,
         );
         assert_eq!(i32::from(error.code), SESSION_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn fork_copies_the_conversation_and_names_the_fork() {
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-fork"),
+        );
+        let agent = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "answer".into(),
+        }]));
+        initialize(&agent).await;
+        let source = new_session_in(&agent, "").await;
+        agent
+            .handle(request(
+                SRUD_SESSION_SET_TITLE,
+                json!({ "sessionId": source.0.as_ref(), "title": "Chosen" }),
+            ))
+            .await;
+        prompt_titles(&agent, &source, "question").await;
+
+        let result = result_of(
+            agent
+                .handle(request(
+                    SRUD_SESSION_FORK,
+                    json!({ "sessionId": source.0.as_ref() }),
+                ))
+                .await,
+        );
+        let forked = result["sessionId"]
+            .as_str()
+            .expect("the fork reports its id")
+            .to_owned();
+        assert_ne!(
+            forked,
+            source.0.as_ref(),
+            "the fork is a session of its own"
+        );
+
+        let listed = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
+        let title = listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["sessionId"] == json!(forked))
+            .map(|entry| entry["title"].as_str().unwrap_or_default().to_owned())
+            .expect("the fork is listed");
+        assert_eq!(title, "Fork of Chosen");
+
+        // The fork stands where the source stood: its conversation replays.
+        let mut rx = agent.subscribe();
+        agent
+            .handle(request(
+                SESSION_LOAD,
+                json!({ "sessionId": forked, "cwd": "", "mcpServers": [] }),
+            ))
+            .await;
+        let replayed = conversation(&mut rx);
+        assert!(
+            replayed
+                .iter()
+                .any(|(kind, text)| kind == "user_message_chunk" && text == "question"),
+            "the fork replays the source's conversation: {replayed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_honours_the_title_it_is_given() {
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-fork"),
+        );
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let source = new_session_in(&agent, "").await;
+
+        let result = result_of(
+            agent
+                .handle(request(
+                    SRUD_SESSION_FORK,
+                    json!({ "sessionId": source.0.as_ref(), "title": "Side branch" }),
+                ))
+                .await,
+        );
+        let forked = result["sessionId"].as_str().unwrap();
+        let listed = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
+        let entry = listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["sessionId"] == json!(forked))
+            .expect("the fork is listed");
+        assert_eq!(entry["title"], json!("Side branch"));
+    }
+
+    #[tokio::test]
+    async fn forking_an_unknown_session_is_session_not_found() {
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-fork"),
+        );
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let error = error_of(
+            agent
+                .handle(request(
+                    SRUD_SESSION_FORK,
+                    json!({ "sessionId": "missing" }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), SESSION_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn fork_refuses_a_session_with_a_turn_in_flight() {
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-fork"),
+        );
+        let model = stalling(vec![ModelEvent::TextDelta {
+            delta: "partial".into(),
+        }]);
+        let agent = Arc::new(agent(model));
+        initialize(&agent).await;
+        let source = new_session_in(&agent, "").await;
+
+        let prompt_agent = Arc::clone(&agent);
+        let prompt_session = source.clone();
+        let prompt = tokio::spawn(async move {
+            prompt_agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": prompt_session.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "go" }]
+                    }),
+                ))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let error = error_of(
+            agent
+                .handle(request(
+                    SRUD_SESSION_FORK,
+                    json!({ "sessionId": source.0.as_ref() }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INVALID_REQUEST);
+
+        agent
+            .handle(request(
+                SESSION_CANCEL,
+                json!({ "sessionId": source.0.as_ref() }),
+            ))
+            .await;
+        prompt.await.unwrap();
     }
 }

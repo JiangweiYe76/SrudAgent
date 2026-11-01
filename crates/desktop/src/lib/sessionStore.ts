@@ -22,6 +22,7 @@ import {
 import {
   cancelTurn,
   deleteSession as requestDelete,
+  forkSession as requestFork,
   initialize,
   listSessions,
   loadSession,
@@ -593,6 +594,10 @@ interface SessionState {
   setModel: (model: string) => void;
   setThinking: (level: string) => void;
   renameSession: (id: string, title: string) => void;
+  // Copies the session's history into a session of its own and opens it. The
+  // fork is a backend session from the first moment: a draft has nothing there
+  // to copy.
+  forkSession: (id: string) => void;
   deleteSession: (id: string) => void;
 }
 
@@ -1308,6 +1313,37 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void setSessionTitle(session.backendId, title.trim()).catch((err) =>
       set({ initError: String(err) }),
     );
+  },
+
+  forkSession: (id) => {
+    const session = get().sessions.find((s) => s.id === id);
+    // A draft holds nothing backend-side, so there is nothing to copy.
+    if (!session?.backendId) return;
+    void requestFork(session.backendId)
+      .then(async (backendId) => {
+        // The agent names the fork, and its name is read back from the list
+        // beside the directory it shares with the source.
+        const listed = await listSessions();
+        const info = listed.find((s) => s.sessionId === backendId);
+        const created: Session = info
+          ? listedSession(info, Date.now())
+          : // The list did not name it yet; its history is still worth opening.
+            { ...freshSession(), backendId, loaded: false };
+        set((s) => {
+          // Beside the source rather than at the top: the fork continues that
+          // conversation rather than starting one of its own.
+          const at = s.sessions.findIndex((sess) => sess.id === id);
+          const sessions = [...s.sessions];
+          sessions.splice(at < 0 ? sessions.length : at + 1, 0, created);
+          return { sessions };
+        });
+        // Opening it replays the history the fork carries, which is the point.
+        get().select(created.id);
+      })
+      .catch((err) => {
+        set({ initError: String(err) });
+        toast.error(t('sidebar.forkFailed'));
+      });
   },
 
   deleteSession: (id) => {

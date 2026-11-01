@@ -10,9 +10,10 @@
 //! is what stands in for an index.
 //!
 //! A session works in a directory the client named, or in one of its own under
-//! the configuration directory, so one session's files are never another's.
-//! Removing a session removes a workspace this agent created for it; a directory
-//! the user pointed at is theirs and is left alone.
+//! the configuration directory. A fork shares its source's directory rather
+//! than taking one of its own — several conversations, one place to work — so
+//! a workspace is removed only with the last session standing in it. A
+//! directory the user pointed at is theirs and is left alone.
 //!
 //! The second half of that is a departure from ACP, which requires a session to
 //! work in the directory [`session/new`] named. [`usable_directory`] says when
@@ -63,9 +64,6 @@ struct Tracked {
     /// model's default when it declares thinking, and re-projected when the
     /// model changes.
     thinking: Option<String>,
-    /// Whether the working directory is one this agent created, and so may
-    /// remove. A directory the client named belongs to the user.
-    workspace_is_ours: bool,
 }
 
 /// The workspace for a session that named no directory of its own.
@@ -73,6 +71,19 @@ fn workspace_for(id: srud_core::types::SessionId) -> Result<PathBuf, config::Con
     config::home()
         .map(|home| home.join(WORKSPACES_DIR).join(id.to_string()))
         .ok_or(config::ConfigError::NoHome)
+}
+
+/// Whether `cwd` is one of the workspaces under this agent's configuration
+/// directory.
+///
+/// The workspaces root is the agent's own registry: a directory directly in it
+/// is one this agent made — for the session being removed, or for a source
+/// whose fork stands there now — and is the agent's to remove when nothing
+/// works in it anymore. Anything elsewhere is the user's.
+fn is_our_workspace(cwd: &Path) -> bool {
+    config::home()
+        .map(|home| home.join(WORKSPACES_DIR))
+        .is_some_and(|root| cwd.parent() == Some(root.as_path()))
 }
 
 /// The directory a client named, if it named one the session can work in.
@@ -121,6 +132,14 @@ fn normalise_title(title: &str) -> Option<String> {
         None
     } else {
         Some(collapsed)
+    }
+}
+
+/// The name a fork takes when its request named none.
+fn fork_title(source: Option<&str>) -> String {
+    match source {
+        Some(title) => format!("Fork of {title}"),
+        None => "Fork".to_owned(),
     }
 }
 
@@ -185,6 +204,34 @@ pub enum RestoreError {
     /// A repair the log needed could not be written back.
     #[error(transparent)]
     Repair(#[from] srud_core::session_log::RecordError),
+}
+
+/// Why a session could not be forked.
+#[derive(Debug, thiserror::Error)]
+pub enum ForkError {
+    /// There is no configuration directory to look in.
+    #[error(transparent)]
+    Config(#[from] config::ConfigError),
+
+    /// The source's log could not be found.
+    #[error(transparent)]
+    Restore(#[from] RestoreError),
+
+    /// The source's log could not be rebuilt.
+    #[error(transparent)]
+    Load(#[from] srud_core::session_store::LoadError),
+
+    /// The source has a turn in flight.
+    #[error("the session has a turn in flight")]
+    Busy,
+
+    /// The fork's workspace or log could not be created.
+    #[error(transparent)]
+    Create(#[from] CreateError),
+
+    /// A record could not be written to the fork's log.
+    #[error(transparent)]
+    Record(#[from] srud_core::session_log::RecordError),
 }
 
 /// Every session log under the configuration directory.
@@ -337,15 +384,15 @@ impl SessionManager {
         thinking: Option<String>,
     ) -> Result<SessionId, CreateError> {
         let session_id = srud_core::types::SessionId::new();
-        let (cwd, workspace_is_ours) = match usable_directory(cwd) {
-            Some(cwd) => (cwd, false),
+        let cwd = match usable_directory(cwd) {
+            Some(cwd) => cwd,
             None => {
                 let path = workspace_for(session_id)?;
                 std::fs::create_dir_all(&path).map_err(|source| CreateError::Workspace {
                     path: path.clone(),
                     source,
                 })?;
-                (path, true)
+                path
             }
         };
 
@@ -404,7 +451,6 @@ impl SessionManager {
                     title: None,
                     model,
                     thinking,
-                    workspace_is_ours,
                 },
             );
         Ok(id)
@@ -486,13 +532,119 @@ impl SessionManager {
                     title: loaded.title.clone(),
                     model: loaded.model.clone(),
                     thinking: loaded.thinking.clone(),
-                    // A directory this agent made is one it may remove again; the
-                    // recorded cwd says which it was.
-                    workspace_is_ours: workspace_for(loaded.session_id)
-                        .is_ok_and(|own| own == loaded.cwd),
                 },
             );
         Ok(loaded)
+    }
+
+    /// Copies a session's history into a session of its own.
+    ///
+    /// The fork stands where the source stands: every record the source's log
+    /// holds is recorded again under the new id, and the source is left as it
+    /// was. The working directory is shared rather than copied — the same
+    /// files under two conversations — and a source whose directory is gone
+    /// gives the fork a workspace of its own. A turn in flight refuses the
+    /// fork rather than copying one — "the current history point" is only a
+    /// point between turns.
+    ///
+    /// `title` names the fork, and a fork of an unnamed session is named
+    /// `Fork`; a fork of a named one is named after it. The model and the
+    /// thinking level come along, so the fork continues on what the source ran.
+    ///
+    /// # Errors
+    ///
+    /// [`ForkError::Restore`] when no log holds the source, [`ForkError::Load`]
+    /// when that log cannot be rebuilt, [`ForkError::Busy`] while the source has
+    /// a turn in flight, and the rest when the fork's workspace or log cannot be
+    /// created or written.
+    pub async fn fork(
+        &self,
+        id: &SessionId,
+        title: Option<String>,
+    ) -> Result<SessionId, ForkError> {
+        if self
+            .with_log(id)
+            .is_some_and(|(session, _)| session.is_busy())
+        {
+            return Err(ForkError::Busy);
+        }
+        let path = find_log(id).await?;
+        let live = self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .contains_key(id.0.as_ref());
+        let loaded = if live {
+            srud_core::session_store::load_running(&path).await?
+        } else {
+            srud_core::session_store::load(&path).await?
+        };
+
+        let session_id = srud_core::types::SessionId::new();
+        // The fork shares the source's directory; only a source whose directory
+        // is no longer there leaves the fork with a workspace of its own.
+        let cwd = match usable_directory(Some(loaded.cwd.clone())) {
+            Some(cwd) => cwd,
+            None => {
+                let path = workspace_for(session_id)?;
+                std::fs::create_dir_all(&path).map_err(|source| CreateError::Workspace {
+                    path: path.clone(),
+                    source,
+                })?;
+                path
+            }
+        };
+
+        let log = open_log(session_id).await?;
+        SessionLog::record(&log, &SessionEvent::session(session_id, cwd.clone())).await?;
+        // The source's records, in order, carry the history and the conversation
+        // together — one copy serves both. Its own header is left behind: the
+        // header above names the fork. What the source left open is closed in the
+        // fork, so its next turn starts from a settled point.
+        let read = srud_core::session_store::read(&path)
+            .await
+            .map_err(|source| CreateError::Log {
+                what: "the source's records".into(),
+                source,
+            })?;
+        for entry in &read.entries {
+            if matches!(entry.event, SessionEvent::Session { .. }) {
+                continue;
+            }
+            SessionLog::record(&log, &entry.event).await?;
+        }
+        for repair in &loaded.repairs {
+            SessionLog::record(&log, repair).await?;
+        }
+
+        // Recorded last so the fork answers to its own name rather than to the
+        // one its records carried: a title a reader takes as last set.
+        let title = normalise_title(title.as_deref().unwrap_or_default())
+            .or_else(|| Some(fork_title(loaded.title.as_deref())));
+        if let Some(title) = &title {
+            SessionLog::record(&log, &SessionEvent::title(Some(title.clone()))).await?;
+        }
+
+        let session = Arc::new(Session::restored(
+            session_id,
+            cwd.clone(),
+            loaded.history.clone(),
+        ));
+        let wire_id = SessionId::new(session_id.to_string());
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .insert(
+                wire_id.to_string(),
+                Tracked {
+                    session,
+                    log: Arc::new(log),
+                    title,
+                    model: loaded.model.clone(),
+                    thinking: loaded.thinking.clone(),
+                },
+            );
+        Ok(wire_id)
     }
 
     /// A session and its log, if the session exists.
@@ -711,15 +863,49 @@ impl SessionManager {
             .is_some()
     }
 
+    /// Whether any session other than the one owning the log at `except` works
+    /// in `cwd`.
+    ///
+    /// Read from the map and the logs at the moment it matters rather than
+    /// kept as a tally beside them: the logs are the record of who works
+    /// where, and a second record of it would drift from them across a
+    /// restart. A stored session counts even though nothing has opened it —
+    /// its log is what holds its claim on the directory. The caller has
+    /// already taken the session being removed out of the map.
+    async fn workspace_shared(&self, cwd: &Path, except: &Path) -> bool {
+        let live = self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .values()
+            .any(|tracked| same_directory(tracked.session.cwd(), cwd));
+        if live {
+            return true;
+        }
+        for path in log_files().await.unwrap_or_default() {
+            if path.as_path() == except {
+                continue;
+            }
+            if let Ok(origin) = srud_core::session_store::origin(&path).await {
+                if same_directory(&origin.cwd, cwd) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Removes a session, returning whether it existed.
     ///
-    /// A workspace this agent created goes with it, and so does the log: a client
-    /// listing sessions reads what is on disk, so a log left behind would bring the
-    /// session back on the next start. A directory the client named does not go: the
-    /// session record is the agent's, the files in there are the user's. Failing to
-    /// delete leaves files behind rather than failing the call, because the session
-    /// is gone either way and the caller has nothing useful to do about files that
-    /// would not go.
+    /// The log always goes: a client listing sessions reads what is on disk,
+    /// so a log left behind would bring the session back on the next start.
+    /// The workspace goes only when it is the agent's and this was the last
+    /// session standing in it — a fork shares its source's directory, and
+    /// either may be removed first. A directory the client named does not go:
+    /// the session record is the agent's, the files in there are the user's.
+    /// Failing to delete leaves files behind rather than failing the call,
+    /// because the session is gone either way and the caller has nothing
+    /// useful to do about files that would not go.
     ///
     /// A session this agent is not holding is removed from disk alone. A client can
     /// only be shown a session it was told about, and every one of those came from
@@ -737,11 +923,8 @@ impl SessionManager {
 
         // A session this agent is not holding is deleted from disk alone, so what
         // it worked in is in its log rather than in memory.
-        let (cwd, workspace_is_ours) = match &removed {
-            Some(tracked) => (
-                tracked.session.cwd().to_path_buf(),
-                tracked.workspace_is_ours,
-            ),
+        let cwd = match &removed {
+            Some(tracked) => tracked.session.cwd().to_path_buf(),
             // The session came from a listing and is deleted without ever being
             // opened, so what it worked in is in its log and nowhere else.
             None => {
@@ -751,13 +934,14 @@ impl SessionManager {
                 let Ok(origin) = srud_core::session_store::origin(&path).await else {
                     return false;
                 };
-                // Whether the directory is the agent's to remove is decided the
-                // same way as at creation, by whether it is the one the agent
-                // would have made for this session.
-                let ours = workspace_for(origin.session_id).is_ok_and(|w| w == origin.cwd);
-                (origin.cwd, ours)
+                origin.cwd
             }
         };
+
+        // Counted while everything still stands, skipping this session's own
+        // log: the question is whether anyone else works here, and only the
+        // directory the last one leaves is the agent's to take.
+        let shared = self.workspace_shared(&cwd, &path).await;
 
         // The log goes before the reply: a log left behind would bring the
         // session back on the next listing, and that is a race this call can
@@ -766,7 +950,7 @@ impl SessionManager {
         // than held open: a workspace of thousands of files would otherwise
         // hold the delete, and its row, open for as long as it took.
         let _ = tokio::fs::remove_file(path).await;
-        if workspace_is_ours {
+        if is_our_workspace(&cwd) && !shared {
             tokio::spawn(async move {
                 let _ = tokio::fs::remove_dir_all(cwd).await;
             });
@@ -1143,6 +1327,54 @@ mod tests {
         assert!(
             chosen.exists(),
             "the user's files are not the agent's to delete"
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_a_fork_first_leaves_the_source_its_workspace() {
+        // A fork stands in its source's directory, so the directory is not the
+        // fork's to take with it.
+        let (manager, _env) = manager();
+        let source = create(&manager).await;
+        let cwd = manager
+            .get(&source)
+            .expect("registered")
+            .cwd()
+            .to_path_buf();
+        let fork = manager.fork(&source, None).await.expect("forked");
+
+        assert!(manager.remove(&fork).await);
+
+        assert!(cwd.exists(), "the source still works in {cwd:?}");
+        assert!(manager.remove(&source).await);
+        assert!(wait_until_gone(&cwd).await, "{cwd:?} went with the source");
+    }
+
+    #[tokio::test]
+    async fn a_shared_workspace_goes_with_its_last_session() {
+        // Deleted in any order: the directory survives until the last session
+        // standing in it goes, whoever that is — here a fork of a fork outlives
+        // its source.
+        let (manager, _env) = manager();
+        let source = create(&manager).await;
+        let cwd = manager
+            .get(&source)
+            .expect("registered")
+            .cwd()
+            .to_path_buf();
+        let fork = manager.fork(&source, None).await.expect("forked");
+        let fork_of_fork = manager.fork(&fork, None).await.expect("forked again");
+
+        assert!(manager.remove(&source).await);
+        assert!(cwd.exists(), "two forks still work in {cwd:?}");
+
+        assert!(manager.remove(&fork).await);
+        assert!(cwd.exists(), "one fork still works in {cwd:?}");
+
+        assert!(manager.remove(&fork_of_fork).await);
+        assert!(
+            wait_until_gone(&cwd).await,
+            "{cwd:?} went with its last session"
         );
     }
 
