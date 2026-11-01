@@ -172,6 +172,7 @@ const en = {
   'chat.placeholder':
     'Type a message… (Enter to send, Shift+Enter for newline)',
   'chat.send': 'Send',
+  'chat.scrollToBottom': 'Scroll to bottom',
   'chat.steer': 'Steer',
   'chat.stop': 'Stop',
   'chat.context': 'Context: {pct}% ({used} / {size} tokens)',

@@ -1,4 +1,12 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type Ref,
+} from 'react';
 import {
   Brain,
   Check,
@@ -35,6 +43,20 @@ interface MessageListProps {
   // the slot the discarded one held, so there is never an older answer underneath
   // to keep.
   onRegenerate?: (turn: Turn) => void;
+  // Whether the reader is following the bottom, reported as that changes. The
+  // control that offers to bring them back sits with the composer, which cannot
+  // see how far the transcript has been scrolled.
+  onFollowingChange?: (following: boolean) => void;
+  // React 19 passes a function component its ref as a prop. Only this pane can
+  // scroll the transcript, so it offers the way back through here rather than
+  // by reaching into its DOM.
+  ref?: Ref<MessageListHandle>;
+}
+
+/** What a host can ask the transcript to do. */
+export interface MessageListHandle {
+  /** Glides to the newest message and resumes following what still arrives. */
+  scrollToBottom: () => void;
 }
 
 // Wall-clock time of an event, 24-hour. The hour must be included: minutes
@@ -190,12 +212,26 @@ export const MessageList = memo(function MessageList({
   reopening,
   bottomInset = 140,
   onRegenerate,
+  onFollowingChange,
+  ref,
 }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   // The image opened from a message, shown large over the transcript.
   const [preview, setPreview] = useState<Attachment | null>(null);
+
+  // The ref decides whether the list follows; the host is told only when that
+  // changes. A scroll event fires many times on the way up, and reporting every
+  // one would re-render the composer as many times.
+  const reportFollowing = useCallback(
+    (next: boolean) => {
+      if (followingRef.current === next) return;
+      followingRef.current = next;
+      onFollowingChange?.(next);
+    },
+    [onFollowingChange],
+  );
 
   // Whether the reader is at the bottom, tracked from their scrolling rather than
   // from the content growing. Somebody reading back through a long answer would
@@ -206,20 +242,38 @@ export const MessageList = memo(function MessageList({
 
     const onScroll = () => {
       const distance = list.scrollHeight - list.scrollTop - list.clientHeight;
-      followingRef.current = distance <= STICK_SLOP;
+      reportFollowing(distance <= STICK_SLOP);
     };
     list.addEventListener('scroll', onScroll, { passive: true });
     return () => list.removeEventListener('scroll', onScroll);
-  }, []);
+  }, [reportFollowing]);
 
   // A new turn means the reader just sent something and wants to watch it arrive,
   // so following resumes even if they had scrolled back to read something.
   const turnCount = turns.length;
   const seenTurns = useRef(turnCount);
   useEffect(() => {
-    if (turnCount > seenTurns.current) followingRef.current = true;
+    if (turnCount > seenTurns.current) reportFollowing(true);
     seenTurns.current = turnCount;
-  }, [turnCount]);
+  }, [turnCount, reportFollowing]);
+
+  // The way back for a reader who scrolled away: glide down to the newest
+  // message. This move is animated on purpose — the reader asked for it, and
+  // unlike the follow it has one place to reach. Following resumes from the
+  // scroll that lands on the bottom, so nothing here has to claim it, and the
+  // container keeps its CSS `scroll-behavior` at the default: smooth there would
+  // animate the follow's own jumps, which is the behaviour measured as broken.
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToBottom() {
+        const list = listRef.current;
+        if (!list) return;
+        list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
+      },
+    }),
+    [],
+  );
 
   // Follow the bottom, but only while following.
   //
