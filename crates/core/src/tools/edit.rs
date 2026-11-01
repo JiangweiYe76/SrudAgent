@@ -584,8 +584,8 @@ fn open_failure(path: &std::path::Path, err: &std::io::Error) -> String {
         }
         std::io::ErrorKind::PermissionDenied => "The path exists but this process may not read it.",
         std::io::ErrorKind::IsADirectory => "It is a directory. Name a file inside it.",
-        // What `read_to_string` answers for bytes that are not text, which for a
-        // coding agent means an image, a binary, or a file in another encoding.
+        // What `read_to_string` answers for bytes that are not text: an image,
+        // a binary, or a file in another encoding.
         std::io::ErrorKind::InvalidData => {
             "The bytes are not UTF-8 text, so there is no way to say what to replace. The file \
              may be binary, or in another encoding; `shell` is what reaches those."
