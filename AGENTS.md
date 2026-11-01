@@ -5,15 +5,14 @@
 ### Branching
 
 - `main` is protected — always branch from it and open a PR back
-- Branch names: `feature/<what>`, `fix/<what>`, `docs/<what>`, `refactor/<what>`
+- Branch names: `<prefix>/<what>` in kebab-case: `feature/`, `fix/`, `docs/`, `refactor/`, `chore/`, `build/`, `style/`, `test/`, `perf/`
 
 ### Commit Messages
 
-[Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `refactor:`, `docs:`, `test:`
-
-Include a body in most commits — explain what changed and why, not just the type.
-
-All commit messages in English.
+- Follow Conventional Commits, with a scope in most commits
+- Include a body in most commits — explain what changed and why, not just the type
+- Wrap body text into short lines instead of one long line
+- All commit messages in English
 
 ### Code Style
 
@@ -25,8 +24,8 @@ All commit messages in English.
 ### Comments
 
 - All comments in English
-- Use `///` for public API docs
-- Use `//` for inline explanations
+- Rust: `///` for public API docs, `//` for inline explanations
+- TypeScript / TSX: `/** */` above the declaration it documents, `//` for inline explanations
 - Avoid obvious comments — let code speak for itself
 - Comments explain what the code does and why; never decision history, dates, or roadmap ("reserved for future...", "the plan was...")
 
