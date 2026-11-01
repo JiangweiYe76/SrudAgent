@@ -8,7 +8,7 @@
 //! boundaries.
 
 use super::{parse_params, session_not_found, Agent};
-use crate::convert::{end_reason_wire, replay_notification};
+use crate::convert::{end_reason_wire, replay_notification, ToolDiffIndex};
 use crate::sessions::RestoreError;
 use serde_json::Value;
 use srud_protocol::acp::{
@@ -44,9 +44,10 @@ impl Agent {
         // sent after would arrive as a change to a session the client already
         // believes it has.
         let context_size = self.context_size_for(&request.session_id);
+        let mut diffs = ToolDiffIndex::default();
         for event in &loaded.conversation {
             if let Some(notification) =
-                replay_notification(&request.session_id, event, context_size)
+                replay_notification(&request.session_id, event, context_size, &mut diffs)
             {
                 self.hub.send(notification);
             }
