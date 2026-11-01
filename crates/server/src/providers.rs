@@ -17,8 +17,9 @@
 //!
 //! `providerId/modelId`. The provider is part of it because the same model id
 //! (`gpt-4o`) is offered by several providers, so the id alone names nothing.
-//! `/` is not in either id's character set, which is what makes the split
-//! unambiguous.
+//! The split is on the first `/`, which is unambiguous because provider ids
+//! never carry one. Model ids may: providers like SiliconFlow and OpenRouter
+//! name their models `vendor/model`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -281,11 +282,11 @@ pub enum ProviderError {
     BadReference(String),
 }
 
-/// Whether an id is usable as one half of a model reference.
+/// Whether a provider id is usable as the first half of a model reference.
 ///
 /// `[a-z0-9][a-z0-9-_]*`: lowercase, so two ids differing only in case cannot
 /// both be configured into a reference that reads as one; and no `/`, which is
-/// the separator.
+/// what a reference splits on.
 fn valid_id(id: &str) -> bool {
     let mut chars = id.chars();
     match chars.next() {
@@ -336,13 +337,12 @@ fn thinking_label(level: ThinkingLevel) -> &'static str {
 }
 
 /// Splits a model reference into its provider and model halves.
+///
+/// On the first `/`: provider ids never carry one, so everything after it —
+/// slashes and all — is the model id.
 fn split_reference(reference: &str) -> Option<(&str, &str)> {
     let (provider_id, model_id) = reference.split_once('/')?;
-    let usable = !provider_id.is_empty()
-        && !model_id.is_empty()
-        && !provider_id.contains('/')
-        && !model_id.contains('/');
-    usable.then_some((provider_id, model_id))
+    (!provider_id.is_empty() && !model_id.is_empty()).then_some((provider_id, model_id))
 }
 
 /// How a key reads once it has been masked for display.
@@ -781,11 +781,6 @@ fn validate_provider(provider: &Provider) -> Result<(), ProviderError> {
                 "a model id must not be blank".to_owned(),
             ));
         }
-        if id.contains('/') {
-            return Err(ProviderError::Invalid(format!(
-                "model id `{id}` must not contain `/`, which separates a reference from its provider"
-            )));
-        }
         if !seen.insert(id) {
             return Err(ProviderError::Invalid(format!(
                 "model id `{id}` is listed twice"
@@ -1160,13 +1155,24 @@ mod tests {
     }
 
     #[test]
-    fn a_slash_in_a_model_id_is_refused() {
-        // It is the reference separator, so allowing it would make two different
-        // references read as one.
+    fn a_slash_in_a_model_id_is_allowed() {
+        // Some providers name their models `vendor/model` — SiliconFlow and
+        // OpenRouter both do — and the reference stays unambiguous because the
+        // split is on the first slash and provider ids never carry one.
         let (store, _path, _env) = store();
-        let mut bad = sample("openai", None);
-        bad.models[0].id = "a/b".into();
-        assert!(matches!(store.upsert(bad), Err(ProviderError::Invalid(_))));
+        let mut slashed = sample("siliconflow", None);
+        slashed.models[0].id = "Qwen/Qwen3.5-4B".into();
+        store.upsert(slashed).unwrap();
+
+        let (provider, model) = store.resolve("siliconflow/Qwen/Qwen3.5-4B").unwrap();
+        assert_eq!(provider.id, "siliconflow");
+        assert_eq!(model.id, "Qwen/Qwen3.5-4B");
+
+        store.set_default("siliconflow/Qwen/Qwen3.5-4B").unwrap();
+        assert_eq!(
+            store.start_reference().as_deref(),
+            Some("siliconflow/Qwen/Qwen3.5-4B")
+        );
     }
 
     #[test]
@@ -1185,7 +1191,7 @@ mod tests {
     #[test]
     fn a_reference_splits_on_the_first_slash_only() {
         assert_eq!(split_reference("openai/gpt-4o"), Some(("openai", "gpt-4o")));
-        assert_eq!(split_reference("openai/a/b"), None);
+        assert_eq!(split_reference("openai/a/b"), Some(("openai", "a/b")));
         assert_eq!(split_reference("openai"), None);
         assert_eq!(split_reference("/gpt"), None);
         assert_eq!(split_reference("openai/"), None);
