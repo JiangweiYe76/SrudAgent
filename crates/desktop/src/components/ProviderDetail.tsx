@@ -163,8 +163,9 @@ export function ProviderDetail({
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+        {/* Side by side: `flex-1` here splits the row's width. */}
         <div className="flex gap-2">
-          <Field label={t('providers.field.id')}>
+          <Field label={t('providers.field.id')} className="flex-1">
             <TextInput
               value={draft.id}
               placeholder="my-provider"
@@ -175,7 +176,7 @@ export function ProviderDetail({
               onChange={(id) => setDraft((d) => ({ ...d, id }))}
             />
           </Field>
-          <Field label={t('providers.field.name')}>
+          <Field label={t('providers.field.name')} className="flex-1">
             <TextInput
               value={draft.name}
               placeholder="My provider"

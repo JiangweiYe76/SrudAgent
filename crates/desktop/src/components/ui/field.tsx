@@ -16,12 +16,22 @@ interface FieldProps {
   // clicks to that descendant. A field holding a set of buttons therefore has
   // to render in a plain div, where the caption is no longer a label at all.
   as?: 'label' | 'div';
+  // Classes for the field's own box, merged after the defaults. A field in a
+  // row takes `flex-1` to split that row's width; a field in a column must
+  // not, or it grows to fill the height and leaves a gap under its control.
+  className?: string;
 }
 
-export function Field({ label, hint, children, as = 'label' }: FieldProps) {
+export function Field({
+  label,
+  hint,
+  children,
+  as = 'label',
+  className,
+}: FieldProps) {
   const Tag = as;
   return (
-    <Tag className="flex min-w-0 flex-1 flex-col gap-1">
+    <Tag className={cn('flex min-w-0 flex-col gap-1', className)}>
       <span className="text-xs text-muted-foreground">{label}</span>
       {children}
       {hint}
