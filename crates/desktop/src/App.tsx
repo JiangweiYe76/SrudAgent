@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Settings } from 'lucide-react';
 import { Toaster } from 'sonner';
 import { Sidebar } from './components/Sidebar';
-import { MessageList } from './components/MessageList';
+import { MessageList, type MessageListHandle } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 import { ModelSelect } from './components/ModelSelect';
 import { ThinkingSelect } from './components/ThinkingSelect';
@@ -69,6 +69,15 @@ function App() {
   const [composerHeight, setComposerHeight] = useState(140);
   const onComposerHeight = useCallback(
     (height: number) => setComposerHeight(height),
+    [],
+  );
+  // The list owns the scroll position, so the composer learns from it whether the
+  // reader is at the bottom, and asks it to bring them back. The list reports
+  // only the flip, so scrolling does not re-render the composer on every event.
+  const [atBottom, setAtBottom] = useState(true);
+  const messageList = useRef<MessageListHandle>(null);
+  const scrollToBottom = useCallback(
+    () => messageList.current?.scrollToBottom(),
     [],
   );
 
@@ -227,10 +236,12 @@ function App() {
           </div>
         )}
         <MessageList
+          ref={messageList}
           turns={active?.turns ?? []}
           reopening={reopening}
           bottomInset={composerHeight + 38}
           onRegenerate={regenerateTurn}
+          onFollowingChange={setAtBottom}
         />
         {/* Busy while a turn runs, and while a session is still being reopened:
             the conversation is arriving then, so a prompt would interleave with
@@ -250,6 +261,8 @@ function App() {
           onStop={stopTurn}
           usage={usage}
           onHeightChange={onComposerHeight}
+          showScrollToBottom={!atBottom}
+          onScrollToBottom={scrollToBottom}
         />
       </main>
       <SettingsModal

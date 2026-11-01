@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ClipboardEvent } from 'react';
 
 import {
+  ArrowDown,
   ArrowUp,
   ClipboardPaste,
   Copy,
@@ -53,6 +54,10 @@ interface ChatInputProps {
   // under its last message: the box floats over the list, and queued messages
   // make it taller than any fixed padding allows for.
   onHeightChange?: (height: number) => void;
+  // True while the transcript has been scrolled away from the bottom.
+  showScrollToBottom?: boolean;
+  // Takes the reader down to the newest message.
+  onScrollToBottom?: () => void;
 }
 
 /** The draft selection a right-click opened the editing menu over. */
@@ -76,6 +81,8 @@ export function ChatInput({
   onStop,
   usage,
   onHeightChange,
+  showScrollToBottom = false,
+  onScrollToBottom,
 }: ChatInputProps) {
   // The detail view behind the ring. It lives here so the indicator and its
   // modal come and go together with the usage data itself.
@@ -473,6 +480,24 @@ export function ChatInput({
       ref={rootRef}
       className="absolute inset-x-0 bottom-[18px] z-10 mx-auto flex w-full max-w-[836px] flex-col gap-2"
     >
+      {/* Above the box rather than inside it: `bottom-full` keeps the control
+          clear of the box whatever height the queue gives it, and
+          `right-[17px]` — the composer's 16px right padding plus its 1px
+          border — puts the 32px circle in the send button's column, sharing
+          its right edge. The surface is opaque because the transcript scrolls
+          behind it. */}
+      {showScrollToBottom && (
+        <Button
+          variant="outline"
+          size="icon"
+          title={t('chat.scrollToBottom')}
+          aria-label={t('chat.scrollToBottom')}
+          onClick={onScrollToBottom}
+          className="absolute right-[17px] bottom-full mb-2 bg-background shadow-md"
+        >
+          <ArrowDown className="h-4 w-4" />
+        </Button>
+      )}
       {/* Waiting messages are inserted into the composer rather than floating
           above it: the rows and the box are the same width and sit flush, so
           the two read as a single control. The rows take the elevated surface

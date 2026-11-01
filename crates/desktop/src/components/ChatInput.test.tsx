@@ -330,3 +330,30 @@ describe('ChatInput', () => {
     expect(idle.onStop).not.toHaveBeenCalled();
   });
 });
+
+describe('the way back to the bottom', () => {
+  it('is offered only while the reader is away from it', () => {
+    render();
+    expect(
+      container.querySelector('button[aria-label="Scroll to bottom"]'),
+    ).toBeNull();
+  });
+
+  it('floats over the send control column and reports a press', () => {
+    const onScrollToBottom = vi.fn();
+    render({ showScrollToBottom: true, onScrollToBottom });
+
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Scroll to bottom"]',
+    );
+    expect(button).not.toBeNull();
+    // Clear of the box whatever height the queue gives it, and over the 16px
+    // padding plus 1px border that position the send button's right edge.
+    expect(button!.className).toContain('absolute');
+    expect(button!.className).toContain('bottom-full');
+    expect(button!.className).toContain('right-[17px]');
+
+    click('[aria-label="Scroll to bottom"]');
+    expect(onScrollToBottom).toHaveBeenCalledOnce();
+  });
+});

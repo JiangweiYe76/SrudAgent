@@ -6,12 +6,15 @@
 // reader who cannot tell whether the app heard them.
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
-import { act } from 'react';
-import { MessageList } from './MessageList';
+import { act, type ComponentProps } from 'react';
+import { MessageList, type MessageListHandle } from './MessageList';
 import type { Step, Turn } from '@/lib/types';
 
 let container: HTMLDivElement;
 let root: Root;
+
+/** The props a test adds beyond the transcript it wants drawn. */
+let lastExtra: Partial<ComponentProps<typeof MessageList>> = {};
 
 // jsdom implements no ResizeObserver and no layout, so both are stood in for. The
 // observer here keeps its callbacks so a test can fire one by hand, which is the
@@ -64,8 +67,10 @@ function turn(partial: Partial<Turn> & { id: string }): Turn {
 function render(
   turns: Turn[],
   onRegenerate?: (turn: Turn) => void,
+  extra: Partial<ComponentProps<typeof MessageList>> = {},
 ): HTMLElement {
   lastTurns = turns;
+  lastExtra = extra;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -75,6 +80,7 @@ function render(
         reopening={false}
         turns={turns}
         onRegenerate={onRegenerate}
+        {...extra}
       />,
     );
   });
@@ -137,7 +143,9 @@ function follow(): void {
   // hands out a new one per token, and re-rendering with the same reference would
   // not count as a new token.
   act(() => {
-    root.render(<MessageList reopening={false} turns={[...lastTurns]} />);
+    root.render(
+      <MessageList reopening={false} turns={[...lastTurns]} {...lastExtra} />,
+    );
   });
 }
 
@@ -154,6 +162,9 @@ function dots(): NodeListOf<Element> {
   return container.querySelectorAll('.animate-thinking-dot');
 }
 
+/** The smooth moves the list was asked to make, so a test can read the ask. */
+let scrollRequests: { top: number; behavior?: ScrollBehavior }[] = [];
+
 beforeAll(() => {
   (
     globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -162,12 +173,31 @@ beforeAll(() => {
   // calls it to follow a growing transcript; that is real browser behaviour, and
   // stubbing it here is cheaper than pretending this suite tests scrolling.
   Element.prototype.scrollIntoView = () => {};
+  // The same for `scrollTo`, which also has no animation to run here. The stub
+  // lands where a smooth move would end and reports the scroll the browser would
+  // have reported, which is what resuming the follow is keyed off.
+  Element.prototype.scrollTo = function (
+    this: Element,
+    options?: ScrollToOptions | number,
+  ) {
+    const top =
+      typeof options === 'number'
+        ? options
+        : (options?.top ?? (this as HTMLElement).scrollTop);
+    scrollRequests.push({
+      top,
+      behavior: typeof options === 'number' ? undefined : options?.behavior,
+    });
+    (this as HTMLElement).scrollTop = top;
+    this.dispatchEvent(new Event('scroll'));
+  } as typeof Element.prototype.scrollTo;
   globalThis.ResizeObserver =
     ManualResizeObserver as unknown as typeof ResizeObserver;
 });
 
 beforeEach(() => {
   resizeCallbacks = [];
+  scrollRequests = [];
 });
 
 afterEach(() => {
@@ -784,5 +814,59 @@ describe('asking a turn again', () => {
     ]);
 
     expect(container.querySelectorAll('button[title="Copy"]')).toHaveLength(2);
+  });
+});
+
+describe('the way back to the bottom', () => {
+  // The control that offers it sits with the composer, which cannot see the
+  // transcript, so the list reports where the reader is and does the scroll.
+  it('reports a reader who scrolls away, and again once they are back', () => {
+    const reported: boolean[] = [];
+    render([turn({ id: 't1' })], undefined, {
+      onFollowingChange: (following) => reported.push(following),
+    });
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+
+    scrollTo(el, 100);
+    expect(reported).toEqual([false]);
+
+    // Back within the slop that already counts as the bottom.
+    scrollTo(el, 1570);
+    expect(reported).toEqual([false, true]);
+  });
+
+  it('glides to the bottom and keeps following the answer', () => {
+    const handle: { current: MessageListHandle | null } = { current: null };
+    render([turn({ id: 't1' })], undefined, { ref: handle });
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+    scrollTo(el, 100);
+
+    act(() => handle.current!.scrollToBottom());
+    // A glide, not a jump: the move is animated, and it aims at the whole
+    // scrollable height rather than at where the reader was.
+    const last = scrollRequests[scrollRequests.length - 1];
+    expect(last).toEqual({ top: 2000, behavior: 'smooth' });
+    expect(distanceFromBottom(el)).toBe(0);
+
+    // A token landing now has to keep the reader at the bottom, which is the
+    // difference between this and a single scroll.
+    setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
+    act(() => {
+      root.render(
+        <MessageList
+          reopening={false}
+          ref={handle}
+          turns={[
+            turn({
+              id: 't1',
+              steps: [{ id: 's1', assistantText: 'more', toolCalls: [] }],
+            }),
+          ]}
+        />,
+      );
+    });
+    expect(distanceFromBottom(el)).toBe(0);
   });
 });
