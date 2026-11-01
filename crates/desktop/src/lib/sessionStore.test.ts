@@ -1321,6 +1321,54 @@ describe('sessionStore listing path', () => {
     }
   });
 
+  it('closes replayed turns whose updates straggle in after the reply', async () => {
+    // The reply is settled first and the replayed updates fired after: the
+    // order the two channels can land in. The turns must end up closed — and
+    // as history.
+    const { useSessionStore, fire, active, load } = await boot({
+      listed: [LISTED],
+    });
+
+    load.resolve(
+      turnsReply([
+        { turnId: 'T1', endReason: 'completed' },
+        { turnId: 'T2', endReason: 'interrupted' },
+      ]),
+    );
+    await vi.waitFor(() => {
+      expect(isReopening(useSessionStore.getState())).toBe(false);
+    });
+
+    fire(
+      {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'the question' },
+      },
+      { turnId: 'T1' },
+    );
+    fire(
+      {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'the answer' },
+      },
+      { turnId: 'T1' },
+    );
+    fire(
+      {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'and then' },
+      },
+      { turnId: 'T2' },
+    );
+
+    expect(active().turns).toHaveLength(2);
+    expect(active().turns[0].endReason).toBe('completed');
+    expect(active().turns[1].endReason).toBe('interrupted');
+    expect(isBusy(active())).toBe(false);
+    // Stragglers are conversation from the past: the row keeps its timestamp.
+    expect(active().updatedAt).toBe(Date.parse(LISTED.updatedAt));
+  });
+
   it('keeps the listed timestamp while the conversation replays', async () => {
     // A replayed update carries a conversation from the past. Restamping the
     // session as of now would make the sidebar read a two-hour-old session as

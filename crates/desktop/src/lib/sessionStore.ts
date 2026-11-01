@@ -194,10 +194,10 @@ function replacingTurn(turns: Turn[]): number {
 function locateTurn(
   turns: Turn[],
   turnId: string | null,
-): { turns: Turn[]; index: number } | null {
+): { turns: Turn[]; index: number; opened: boolean } | null {
   const named =
     turnId === null ? -1 : turns.findIndex((tt) => tt.backendTurnId === turnId);
-  if (named >= 0) return { turns, index: named };
+  if (named >= 0) return { turns, index: named, opened: false };
 
   // The answer a replacement is waiting for, named by the agent's first update
   // of the turn it is running in place of the one that was taken back.
@@ -206,7 +206,7 @@ function locateTurn(
     if (replacing >= 0) {
       const next = [...turns];
       next[replacing] = { ...next[replacing], backendTurnId: turnId };
-      return { turns: next, index: replacing };
+      return { turns: next, index: replacing, opened: false };
     }
   }
 
@@ -219,18 +219,18 @@ function locateTurn(
       ...next[unclaimed],
       backendTurnId: turnId ?? undefined,
     };
-    return { turns: next, index: unclaimed };
+    return { turns: next, index: unclaimed, opened: false };
   }
 
   if (turnId === null) return null;
-  const opened: Turn = {
+  const fresh: Turn = {
     id: uid('t'),
     userInput: '',
     steps: [],
     backendTurnId: turnId,
     createdAt: Date.now(),
   };
-  return { turns: [...turns, opened], index: turns.length };
+  return { turns: [...turns, fresh], index: turns.length, opened: true };
 }
 
 // The newest turn the agent has not named yet, or -1. Backwards because the turn
@@ -273,6 +273,11 @@ function applyUpdate(
   if (!update) return null;
   const kind = String(update.sessionUpdate ?? '');
 
+  // A replayed update that straggles in after the reply is still history: the
+  // reply already listed the end of the turn it names.
+  const replayedEnd = replayEndOf(session, turnIdOf(params));
+  const historical = replaying || replayedEnd !== undefined;
+
   // A discard is read before the update it rides on, because that update is a
   // `session_info_update` with no title, and the title branch below would
   // otherwise take it for a session renamed to nothing.
@@ -293,7 +298,7 @@ function applyUpdate(
     return {
       ...session,
       turns: next,
-      updatedAt: replaying ? session.updatedAt : Date.now(),
+      updatedAt: historical ? session.updatedAt : Date.now(),
     };
   }
 
@@ -304,7 +309,7 @@ function applyUpdate(
     return {
       ...session,
       title,
-      updatedAt: replaying ? session.updatedAt : Date.now(),
+      updatedAt: historical ? session.updatedAt : Date.now(),
     };
   }
 
@@ -334,7 +339,7 @@ function applyUpdate(
         cacheWriteInputTokens: total('cacheWriteInputTokens'),
         reasoningOutputTokens: total('reasoningOutputTokens'),
       },
-      updatedAt: replaying ? session.updatedAt : Date.now(),
+      updatedAt: historical ? session.updatedAt : Date.now(),
     };
   }
 
@@ -351,7 +356,7 @@ function applyUpdate(
       ...session,
       model,
       thinking,
-      updatedAt: replaying ? session.updatedAt : Date.now(),
+      updatedAt: historical ? session.updatedAt : Date.now(),
     };
   }
 
@@ -369,6 +374,18 @@ function applyUpdate(
   const { index } = found;
 
   const turn = { ...found.turns[index] };
+
+  // A turn this update opens is the replay catching up with a reply that
+  // already listed its end, so it lands closed (see `replayTurnEnds`). A turn
+  // already open under the id keeps whatever it has: updates land in it live.
+  if (
+    found.opened &&
+    replayedEnd !== undefined &&
+    turn.endReason === undefined
+  ) {
+    turn.endReason = replayedEnd;
+    turn.endedAt = Date.now();
+  }
 
   if (kind === 'user_message_chunk') {
     // An image is recorded after the text it was sent with, so it extends the
@@ -482,7 +499,7 @@ function applyUpdate(
   return {
     ...session,
     turns: next,
-    updatedAt: replaying ? session.updatedAt : Date.now(),
+    updatedAt: historical ? session.updatedAt : Date.now(),
   };
 }
 
@@ -645,6 +662,32 @@ function endReopen(backendId: string) {
   useSessionStore.setState((s) => ({
     reopeningCount: Math.max(0, s.reopeningCount - 1),
   }));
+}
+
+// How each replayed turn ended, as the `session/load` reply reported it, under
+// the backend session id and the agent's own turn ids.
+//
+// The reply and the replayed updates travel on different channels — the reply
+// answers the request while the updates are notifications — so the reply can
+// land first, and the turns it ended are then opened by updates still on their
+// way. The record closes them as they open, so a replay lands the same however
+// the two order themselves. Not consumed on a match: every update of a listed
+// turn is history from the same replay and reads the record to stay so.
+const replayTurnEnds = new Map<string, Map<string, TurnEndReason>>();
+
+function rememberReplayTurnEnds(backendId: string, turns: LoadedTurnEnd[]) {
+  const ends = new Map<string, TurnEndReason>();
+  for (const turn of turns) ends.set(turn.turnId, turn.endReason);
+  replayTurnEnds.set(backendId, ends);
+}
+
+// How the replay ended the turn this update names, when the reply listed it.
+function replayEndOf(
+  session: Session,
+  turnId: string | null,
+): TurnEndReason | undefined {
+  if (turnId === null || session.backendId === null) return undefined;
+  return replayTurnEnds.get(session.backendId)?.get(turnId);
 }
 
 // A session is busy while its newest turn has not been closed. Cancellation is
@@ -871,6 +914,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void loadSession(backendId, session.cwd)
       .then((result) => {
         loaded = result;
+        // Stored here, at the reply: the updates it ended can arrive after it
+        // (see `replayTurnEnds`).
+        rememberReplayTurnEnds(backendId, result.turns);
         // The reply says which model and thinking level the replayed
         // conversation was left on. Written before the updates stop arriving, so
         // the pickers are right from the moment the conversation appears.
@@ -1490,7 +1536,8 @@ function closeTurn(
 // agent's own turn ids. A turn the response leaves out is one the agent is still
 // running, so it stays open. The session's `updatedAt` is left alone: this is a
 // conversation from the past, and stamping it now would make a stale row read as
-// "just now".
+// "just now". A turn the replay opens after this runs is closed the same way
+// as it opens — see `replayTurnEnds`.
 function closeReplayedTurns(sessionId: string, turns: LoadedTurnEnd[]) {
   if (turns.length === 0) return;
   const ended = new Map(turns.map((turn) => [turn.turnId, turn.endReason]));
