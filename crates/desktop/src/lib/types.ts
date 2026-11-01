@@ -74,10 +74,27 @@ export interface ThinkingOptions {
   choices: ModelChoice[];
 }
 
+// One file change a tool call made, as ACP's diff content block carries it:
+// the text before and after, not a patch. Drawing the comparison is the
+// renderer's job.
+export interface ToolDiff {
+  path: string;
+  // Null for a file the call created, which has no text before it.
+  oldText: string | null;
+  newText: string;
+}
+
 // One tool invocation issued by a step's model response.
 export interface ToolCall {
   id: string;
   name: string;
+  /**
+   * The agent's one-line description of the call ("Edit main.rs").
+   *
+   * Falls back to the name for a call the agent never titled. Rendered in the
+   * call's row, where a human reads what happened without opening the JSON.
+   */
+  title?: string;
   args: string;
   /**
    * Whether the model is still writing this call's arguments.
@@ -88,6 +105,13 @@ export interface ToolCall {
    * there is nothing left to wait for.
    */
   pending: boolean;
+  /**
+   * The file changes the call reports, when it reports any.
+   *
+   * Absent for a call that made none and for a tool that cannot say from its
+   * arguments alone which text it replaced.
+   */
+  diffs?: ToolDiff[];
   result?: string;
   /**
    * Whether the tool ran and failed.

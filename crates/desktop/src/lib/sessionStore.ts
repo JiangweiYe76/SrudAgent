@@ -7,6 +7,7 @@ import type {
   Step,
   ThinkingOptions,
   ToolCall,
+  ToolDiff,
   Turn,
   TurnEndReason,
   UsageState,
@@ -83,6 +84,26 @@ function resultOf(update: Json): string {
   return update.rawOutput === undefined ? '' : JSON.stringify(update.rawOutput);
 }
 
+// The file changes a tool call reports from its content blocks.
+//
+// Returns null when the update carries no content collection at all: ACP
+// updates replace collections rather than extend them, so absent means "leave
+// what is there" while an empty list means "the call reports no changes".
+function diffsOf(update: Json): ToolDiff[] | null {
+  const items = update.content as Json[] | undefined;
+  if (!Array.isArray(items)) return null;
+  return items
+    .filter((item) => (item as Json | undefined)?.type === 'diff')
+    .map((item) => {
+      const block = item as Json;
+      return {
+        path: String(block.path ?? ''),
+        oldText: typeof block.oldText === 'string' ? block.oldText : null,
+        newText: String(block.newText ?? ''),
+      };
+    });
+}
+
 // Whether a tool call is still being written out by the model.
 //
 // ACP's `pending` is documented as a call whose input is streaming, and it is the
@@ -106,12 +127,19 @@ function isPending(update: Json): boolean {
 // later — either as an update or, from a replayed log, in the same update. Which
 // is why `args` is empty rather than absent for one that has none yet.
 function toolCallFields(update: Json, id: string): ToolCall {
-  return {
+  const name = String(update.name ?? update.title ?? 'tool');
+  const call: ToolCall = {
     id,
-    name: String(update.name ?? update.title ?? 'tool'),
+    name,
+    title: typeof update.title === 'string' ? update.title : name,
     args: update.rawInput === undefined ? '' : JSON.stringify(update.rawInput),
     pending: isPending(update),
   };
+  // Set only when the update carries content, so a call described further by a
+  // content-less update keeps the diffs it already reported.
+  const diffs = diffsOf(update);
+  if (diffs) call.diffs = diffs;
+  return call;
 }
 
 // The call with this id, wherever it is among the steps.
@@ -422,6 +450,9 @@ function applyUpdate(
           if (!isPending(update)) tc.pending = false;
           if (update.rawInput !== undefined)
             tc.args = JSON.stringify(update.rawInput);
+          if (typeof update.title === 'string') tc.title = update.title;
+          const diffs = diffsOf(update);
+          if (diffs) tc.diffs = diffs;
           tc.result = resultOf(update);
           // The backend states whether the tool failed rather than leaving it to
           // be read off the text, which the UI needs before it can render
