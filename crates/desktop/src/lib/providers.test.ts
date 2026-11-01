@@ -122,4 +122,23 @@ describe('draftThinkingOptions', () => {
     expect(draftThinkingOptions([DECLARED], '', null)).toBeNull();
     expect(draftThinkingOptions([DECLARED], 'openai', null)).toBeNull();
   });
+
+  it('resolves a model whose id carries a slash', () => {
+    // The reference splits on the first slash only, so `vendor/model` ids —
+    // SiliconFlow and OpenRouter name their models that way — resolve whole.
+    const slashed = provider('siliconflow', [
+      {
+        id: 'Qwen/Qwen3.5-4B',
+        thinking: {
+          default: 'medium',
+          levels: { medium: 'medium', max: 'high' },
+        },
+      },
+    ]);
+
+    expect(
+      draftThinkingOptions([slashed], 'siliconflow/Qwen/Qwen3.5-4B', null)
+        ?.currentValue,
+    ).toBe('medium');
+  });
 });

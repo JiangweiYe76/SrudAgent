@@ -263,12 +263,13 @@ function App() {
 
 // The configured window of the model a reference names, or undefined when the
 // reference is empty, malformed, or names a model that is gone. A reference is
-// spelled `providerId/modelId`, and model ids never carry a slash.
+// spelled `providerId/modelId`; provider ids never carry a slash, so the first
+// one splits it — model ids may carry slashes of their own.
 function contextWindowOf(
   providers: Provider[],
   reference: string,
 ): number | undefined {
-  const slash = reference.lastIndexOf('/');
+  const slash = reference.indexOf('/');
   if (slash <= 0) return undefined;
   const provider = providers.find((p) => p.id === reference.slice(0, slash));
   return provider?.models.find((m) => m.id === reference.slice(slash + 1))
