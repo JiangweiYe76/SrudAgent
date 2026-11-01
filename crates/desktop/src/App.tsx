@@ -46,6 +46,7 @@ function App() {
   const setModel = useSessionStore((s) => s.setModel);
   const setThinking = useSessionStore((s) => s.setThinking);
   const renameSession = useSessionStore((s) => s.renameSession);
+  const forkSession = useSessionStore((s) => s.forkSession);
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
@@ -185,6 +186,7 @@ function App() {
         onSelect={select}
         onNew={addSession}
         onRename={renameSession}
+        onFork={forkSession}
         onDelete={deleteSession}
       />
       <main className="relative flex min-w-0 flex-1 flex-col">

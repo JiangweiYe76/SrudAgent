@@ -163,6 +163,8 @@ async function boot(
           return reply(payload.id, {});
         case '_srud/unstable/session/set_title':
           return reply(payload.id, { title: 'Renamed' });
+        case '_srud/unstable/session/fork':
+          return reply(payload.id, { sessionId: 'SFork' });
         case '_srud/unstable/session/steer':
           if (options.steerFails) throw new Error('steer refused');
           return reply(payload.id, {});
@@ -529,6 +531,30 @@ describe('sessionStore live path', () => {
     });
     // The agent echoes the accepted title back; nothing is written locally.
     expect(active().title).toBe('Derived');
+  });
+
+  it('forking a materialized session opens the fork beside it', async () => {
+    const { useSessionStore, active, calls, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const source = active();
+
+    useSessionStore.getState().forkSession(source.id);
+    await vi.waitFor(() => {
+      expect(calls).toContain('_srud/unstable/session/fork');
+    });
+    const sessions = useSessionStore.getState().sessions;
+    const at = sessions.findIndex((s) => s.id === source.id);
+    expect(sessions[at + 1].backendId).toBe('SFork');
+    // The fork is the one on screen, and its history is asked for on the way.
+    expect(useSessionStore.getState().activeId).toBe(sessions[at + 1].id);
+    expect(calls).toContain('session/load');
+  });
+
+  it('forking a draft does nothing', async () => {
+    const { useSessionStore, active, calls } = await boot();
+    useSessionStore.getState().forkSession(active().id);
+    expect(calls).not.toContain('_srud/unstable/session/fork');
   });
 
   it('deletes a draft without touching the backend', async () => {

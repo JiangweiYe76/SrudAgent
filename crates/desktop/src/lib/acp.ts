@@ -255,6 +255,20 @@ export async function setSessionTitle(
   await rpcRequest('_srud/unstable/session/set_title', { sessionId, title });
 }
 
+// Copies a session's history into a session of its own. ACP has no fork, so
+// this too is a SrudAgent extension. The agent names the fork when the request
+// names none; the reply is the new session's id.
+export async function forkSession(
+  sessionId: string,
+  title?: string,
+): Promise<string> {
+  const result = await rpcRequest('_srud/unstable/session/fork', {
+    sessionId,
+    ...(title === undefined ? {} : { title }),
+  });
+  return String(result.sessionId);
+}
+
 // Every session the agent knows about, the live ones first and then the stored
 // ones newest first. A session outlives the run that created it, so this is how a
 // client learns what it could load after a restart.

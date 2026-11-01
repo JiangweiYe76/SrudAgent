@@ -39,6 +39,7 @@ function render(
   sessions: Session[],
   deletingIds: string[] = [],
   unreadIds: string[] = [],
+  onFork: (id: string) => void = () => {},
 ): void {
   act(() => {
     root.render(
@@ -50,6 +51,7 @@ function render(
         onSelect={() => {}}
         onNew={() => {}}
         onRename={() => {}}
+        onFork={onFork}
         onDelete={() => {}}
       />,
     );
@@ -120,5 +122,52 @@ describe('Sidebar deleting rows', () => {
     // Streaming outranks unread, so one row never carries both.
     expect(streaming.querySelector('[title="Unread reply"]')).toBeNull();
     expect(unread.querySelector('[title="Still replying…"]')).toBeNull();
+  });
+});
+
+describe('Sidebar fork action', () => {
+  // Opens the row's actions menu the way a keyboard does it: the trigger is a
+  // menu button, and jsdom has no pointer pipeline for the mouse path.
+  function openActions(row: Element): void {
+    const trigger = row.querySelector('[aria-label="Session actions"]');
+    act(() => {
+      (trigger as HTMLElement).focus();
+      trigger!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+    });
+  }
+
+  function menuItem(text: string): Element | null {
+    return (
+      Array.from(document.body.querySelectorAll('[role="menuitem"]')).find(
+        (item) => item.textContent?.includes(text),
+      ) ?? null
+    );
+  }
+
+  it('offers fork for a session the agent holds and reports its id', () => {
+    mount();
+    const source = { ...session('s1'), backendId: 'S1' };
+    let forked: string | null = null;
+    render([source], [], [], (id) => {
+      forked = id;
+    });
+
+    openActions(rows()[0]);
+    const item = menuItem('Fork session');
+    expect(item).not.toBeNull();
+    act(() => (item as HTMLElement).click());
+    expect(forked).toBe('s1');
+  });
+
+  it('offers no fork for a draft, which holds nothing to copy', () => {
+    mount();
+    render([session('s1')]);
+    openActions(rows()[0]);
+    expect(menuItem('Fork session')).toBeNull();
+    // Rename and delete are still there; only fork is held back.
+    expect(menuItem('Rename session')).not.toBeNull();
+    expect(menuItem('Delete session')).not.toBeNull();
   });
 });
