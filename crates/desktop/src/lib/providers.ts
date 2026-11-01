@@ -199,8 +199,12 @@ export function draftThinkingOptions(
   modelRef: string,
   current: string | null,
 ): ThinkingOptions | null {
-  const [providerId, modelId] = modelRef.split('/');
-  if (!providerId || !modelId) return null;
+  // Split on the first slash: provider ids never carry one, model ids may.
+  const slash = modelRef.indexOf('/');
+  if (slash <= 0) return null;
+  const providerId = modelRef.slice(0, slash);
+  const modelId = modelRef.slice(slash + 1);
+  if (modelId === '') return null;
   const model = providers
     .find((provider) => provider.id === providerId)
     ?.models.find((entry) => entry.id === modelId);

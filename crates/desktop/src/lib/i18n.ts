@@ -165,8 +165,6 @@ const en = {
   'providers.modality.image': 'Image',
   'providers.modality.audio': 'Audio',
   'providers.modality.video': 'Video',
-  'providers.model.badId':
-    'A model id must not contain `/` — it is what separates a model from its provider.',
   'providers.model.duplicate': 'This provider already offers `{id}`.',
   'providers.key.set': 'key {key}',
   'providers.key.none': 'no key',

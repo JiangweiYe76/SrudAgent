@@ -81,14 +81,12 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
     (!Number.isInteger(contextNumber) || contextNumber <= 0)
       ? t('providers.model.badContext')
       : null;
-  // The agent's own rules, in the same words it would refuse with: an id cannot
-  // be blank, cannot carry `/` (which separates a reference from its provider),
-  // and cannot be listed twice under one provider.
-  const problem = trimmed.includes('/')
-    ? t('providers.model.badId')
-    : taken.includes(trimmed)
-      ? t('providers.model.duplicate', { id: trimmed })
-      : contextProblem;
+  // The agent's own rules, in the same words it would refuse with: an id
+  // cannot be listed twice under one provider. A slash is fine — providers
+  // like SiliconFlow and OpenRouter name their models `vendor/model`.
+  const problem = taken.includes(trimmed)
+    ? t('providers.model.duplicate', { id: trimmed })
+    : contextProblem;
 
   // A declaration is only checked once there is something to declare: an empty
   // list means this model has no thinking control, which is a model saved

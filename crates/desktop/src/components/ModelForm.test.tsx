@@ -142,12 +142,17 @@ describe('ModelForm', () => {
     expect(button('Save').disabled).toBe(true);
   });
 
-  it('refuses a model id carrying a slash', async () => {
+  it('saves a model id carrying a slash', async () => {
+    // Providers like SiliconFlow and OpenRouter name their models
+    // `vendor/model`, and a reference splits on the first slash only.
     await renderForm(null);
-    await type(inputByLabel('Model id'), 'openai/gpt-4o');
+    await type(inputByLabel('Model id'), 'Qwen/Qwen3.5-4B');
+    await click(button('Save'));
 
-    expect(document.body.textContent).toContain('must not contain `/`');
-    expect(button('Save').disabled).toBe(true);
+    expect(onSave).toHaveBeenCalledWith({
+      id: 'Qwen/Qwen3.5-4B',
+      modalities: [],
+    });
   });
 
   it('records what a model accepts besides text', async () => {
