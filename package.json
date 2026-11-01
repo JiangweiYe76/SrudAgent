@@ -1,0 +1,18 @@
+{
+  "name": "srud-agent",
+  "private": true,
+  "description": "Repository-level shortcuts. Every script delegates to crates/desktop/package.json or to cargo, which stay the single source of truth for the commands they wrap.",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "setup": "pnpm --dir crates/desktop install",
+    "dev": "pnpm --dir crates/desktop run dev:app",
+    "dev:web": "pnpm --dir crates/desktop run dev",
+    "build": "pnpm --dir crates/desktop run tauri build",
+    "test:web": "pnpm --dir crates/desktop run test",
+    "test:rust": "cargo test --workspace",
+    "format": "cargo fmt && pnpm --dir crates/desktop run format",
+    "format:check": "cargo fmt --check && pnpm --dir crates/desktop run format:check",
+    "lint": "cargo clippy -- -D warnings",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run test:rust && pnpm run test:web"
+  }
+}
