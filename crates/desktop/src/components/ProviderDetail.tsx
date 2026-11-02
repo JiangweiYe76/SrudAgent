@@ -248,24 +248,8 @@ export function ProviderDetail({
                       onClick={() => setModelForm({ index })}
                       className="flex min-w-0 flex-1 cursor-pointer flex-col items-start text-left"
                     >
-                      <span className="flex w-full items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate text-[13px]">
-                          {model.name ?? model.id}
-                        </span>
-                        {/* What it takes besides text, as icons: a row is a
-                            summary, and three words per model crowd it. */}
-                        {model.modalities.length > 0 && (
-                          <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
-                            {model.modalities.map((modality) => (
-                              <span
-                                key={modality}
-                                title={t(`providers.modality.${modality}`)}
-                              >
-                                {MODALITY_ICONS[modality]}
-                              </span>
-                            ))}
-                          </span>
-                        )}
+                      <span className="w-full truncate text-[13px]">
+                        {model.name ?? model.id}
                       </span>
                       {/* The id is what a reference is built from, so it is always
                           on screen — not only when it differs from the label
@@ -276,6 +260,20 @@ export function ProviderDetail({
                         </span>
                       )}
                     </button>
+                    {/* What it takes besides text, as icons: a row is a
+                        summary, and three words per model crowd it. */}
+                    {model.modalities.length > 0 && (
+                      <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
+                        {model.modalities.map((modality) => (
+                          <span
+                            key={modality}
+                            title={t(`providers.modality.${modality}`)}
+                          >
+                            {MODALITY_ICONS[modality]}
+                          </span>
+                        ))}
+                      </span>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon"
