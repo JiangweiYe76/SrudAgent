@@ -122,6 +122,7 @@ mod tests {
         let ctx = ToolContext {
             cwd: root.clone(),
             cancel: tokio_util::sync::CancellationToken::new(),
+            sandbox: crate::sandbox::SandboxPolicy::Unrestricted,
         };
         let outcome = SkillTool
             .call(&ctx, serde_json::json!({ "name": "demo" }))
@@ -142,6 +143,7 @@ mod tests {
         let ctx = ToolContext {
             cwd: root.clone(),
             cancel: tokio_util::sync::CancellationToken::new(),
+            sandbox: crate::sandbox::SandboxPolicy::Unrestricted,
         };
         let outcome = SkillTool
             .call(&ctx, serde_json::json!({ "name": "nope" }))

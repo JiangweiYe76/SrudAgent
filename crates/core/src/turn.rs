@@ -321,6 +321,11 @@ pub async fn run_turn_after(
     let cancel = guard.cancellation();
     let journal = Journal::new(session, log, sink, turn_id);
 
+    // The sandbox level is read once, at the turn's start. A setting changed
+    // while this turn is running applies to the next one, so every tool call in
+    // this turn runs under the same boundary.
+    let sandbox = journal.session().sandbox().policy(journal.session().cwd());
+
     // The sections are chosen here and handed down, rather than rebuilt inside
     // `drive`, so the instruction recorded and the instruction sent are rendered
     // from one value. Built in both places they would agree only until one of them
@@ -369,7 +374,7 @@ pub async fn run_turn_after(
         return Err(TurnError::Unrecordable(err));
     }
 
-    let reason = drive(&journal, client, tools, &cancel, &sections).await;
+    let reason = drive(&journal, client, tools, &cancel, &sections, &sandbox).await;
 
     // The end is announced even when it could not be recorded. A log one record
     // short is recoverable; a turn left open on the wire is not, because the
@@ -501,6 +506,7 @@ async fn drive(
     tools: &ToolRegistry,
     cancel: &tokio_util::sync::CancellationToken,
     sections: &[prompt::Section],
+    sandbox: &srud_sandbox::SandboxPolicy,
 ) -> TurnEndReason {
     loop {
         if cancel.is_cancelled() {
@@ -519,7 +525,7 @@ async fn drive(
             prompt::build_prompt(&state, tools.definitions(), Some(sections))
         };
 
-        match run_step(journal, client, tools, cancel, request).await {
+        match run_step(journal, client, tools, cancel, request, sandbox).await {
             Ok(StepOutcome::Finished) => {
                 // The model is only done if nothing is waiting for it: a steer
                 // that arrived during this step is answered by another request
@@ -553,6 +559,7 @@ async fn run_step(
     tools: &ToolRegistry,
     cancel: &tokio_util::sync::CancellationToken,
     request: ModelRequest,
+    sandbox: &srud_sandbox::SandboxPolicy,
 ) -> Result<StepOutcome, TurnEndReason> {
     let mut stream = match client.stream(request, cancel.clone()).await {
         Ok(stream) => stream,
@@ -658,7 +665,7 @@ async fn run_step(
         if cancel.is_cancelled() {
             return Err(TurnEndReason::Interrupted);
         }
-        if run_tool_call(journal, tools, call, cancel.clone())
+        if run_tool_call(journal, tools, call, cancel.clone(), sandbox)
             .await
             .is_err()
         {
@@ -751,6 +758,7 @@ async fn run_tool_call(
     tools: &ToolRegistry,
     call: PendingToolCall,
     cancel: tokio_util::sync::CancellationToken,
+    sandbox: &srud_sandbox::SandboxPolicy,
 ) -> Result<(), RecordError> {
     let arguments: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
@@ -778,6 +786,7 @@ async fn run_tool_call(
     let ctx = ToolContext {
         cwd: journal.session().cwd().to_path_buf(),
         cancel: cancel.clone(),
+        sandbox: sandbox.clone(),
     };
     let outcome = match tools.dispatch(&call.name, &ctx, arguments).await {
         Ok(outcome) => outcome,

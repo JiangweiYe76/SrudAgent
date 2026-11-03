@@ -74,6 +74,11 @@ pub use acp_schema::v1::{
     SessionNotification, SessionUpdate, UnstructuredCommandInput, UsageUpdate,
 };
 
+// Session modes.
+pub use acp_schema::v1::{
+    SessionMode, SessionModeId, SessionModeState, SetSessionModeRequest, SetSessionModeResponse,
+};
+
 // Permission flow (agent -> client reverse request).
 pub use acp_schema::v1::{
     PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,

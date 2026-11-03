@@ -137,6 +137,7 @@ pub fn describe(entry: &SessionEvent) -> String {
         SessionEvent::Title { .. } => "the title".into(),
         SessionEvent::Model { .. } => "the model choice".into(),
         SessionEvent::Thinking { .. } => "the thinking level".into(),
+        SessionEvent::Sandbox { .. } => "the sandbox level".into(),
         SessionEvent::TurnStarted { turn_id } => format!("the start of turn {turn_id}"),
         SessionEvent::TurnEnded { turn_id, .. } => format!("the end of turn {turn_id}"),
         SessionEvent::UsageRecorded { turn_id, .. } => {

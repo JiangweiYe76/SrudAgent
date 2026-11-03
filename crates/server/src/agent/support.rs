@@ -14,11 +14,8 @@ use tokio_util::sync::CancellationToken;
 
 /// The method names that answer `METHOD_NOT_FOUND`, so tests can assert
 /// the coverage boundary.
-pub(super) const UNIMPLEMENTED_METHODS: &[&str] = &[
-    AGENT_METHOD_NAMES.session_set_mode,
-    AGENT_METHOD_NAMES.authenticate,
-    SRUD_SESSION_ROLLOUT_READ,
-];
+pub(super) const UNIMPLEMENTED_METHODS: &[&str] =
+    &[AGENT_METHOD_NAMES.authenticate, SRUD_SESSION_ROLLOUT_READ];
 
 /// Prompts a session, drains its turn, and returns the broadcast titles.
 ///

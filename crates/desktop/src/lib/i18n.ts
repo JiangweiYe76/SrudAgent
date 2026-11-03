@@ -27,6 +27,10 @@ const en = {
 
   'app.newSession': 'New session',
 
+  'sandbox.fullAccess': 'Full access',
+  'sandbox.fullAccessHint':
+    'The agent can read and write any file this account can. Commands run without an OS sandbox.',
+
   'empty.startChat': 'Start a new chat',
   'empty.loadingSession': 'Loading conversation…',
 

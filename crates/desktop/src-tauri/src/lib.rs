@@ -711,8 +711,9 @@ mod tests {
                 json!({ "cwd": "/tmp", "mcpServers": [] }),
             ))
             .await;
-        let Response::Result { result, .. } = reply.into_inner() else {
-            panic!("session/new failed");
+        let result = match reply.into_inner() {
+            Response::Result { result, .. } => result,
+            other => panic!("session/new failed: {other:?}"),
         };
         result["sessionId"].as_str().expect("sessionId").to_string()
     }

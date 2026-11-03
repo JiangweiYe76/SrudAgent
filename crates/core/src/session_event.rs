@@ -60,6 +60,8 @@ use std::path::PathBuf;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
+use srud_sandbox::SandboxLevel;
+
 use crate::types::{ResponseItem, TurnEndReason, TurnId};
 
 /// Identifies one model's message within a turn.
@@ -182,6 +184,16 @@ pub enum SessionEvent {
         /// The level, or `None` when the session holds no level.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         level: Option<String>,
+    },
+
+    /// The sandbox level this session runs under, as last chosen.
+    ///
+    /// Written whenever the choice changes, and a reader takes the last one.
+    /// A session that never wrote one runs on the default level, which is why
+    /// an absent record is not the same as a cleared selection.
+    Sandbox {
+        /// The level in effect.
+        mode: SandboxLevel,
     },
 
     /// A turn began. Has no wire counterpart.
@@ -330,6 +342,12 @@ impl SessionEvent {
         Self::Thinking { level }
     }
 
+    /// Builds a sandbox-level record.
+    #[must_use]
+    pub fn sandbox(mode: SandboxLevel) -> Self {
+        Self::Sandbox { mode }
+    }
+
     /// Builds a history-entry record.
     #[must_use]
     pub fn item(turn_id: TurnId, message_id: Option<MessageId>, item: ResponseItem) -> Self {
@@ -348,9 +366,9 @@ impl SessionEvent {
 
     /// The turn this record belongs to, if it belongs to one.
     ///
-    /// The session's own record, the system instruction, the title, the model
-    /// and the thinking level do not: all five are written at session scope,
-    /// outside any turn.
+    /// The session's own record, the system instruction, the title, the model,
+    /// the thinking level, and the sandbox level do not: all six are written at
+    /// session scope, outside any turn.
     #[must_use]
     pub fn turn_id(&self) -> Option<TurnId> {
         match self {
@@ -358,7 +376,8 @@ impl SessionEvent {
             | Self::System { .. }
             | Self::Title { .. }
             | Self::Model { .. }
-            | Self::Thinking { .. } => None,
+            | Self::Thinking { .. }
+            | Self::Sandbox { .. } => None,
             Self::TurnStarted { turn_id }
             | Self::Item { turn_id, .. }
             | Self::TurnEnded { turn_id, .. }

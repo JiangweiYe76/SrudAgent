@@ -14,10 +14,11 @@ import {
 import { toast } from 'sonner';
 import { t } from '@/lib/i18n';
 import { isTauri, readClipboard, readImageFile } from '@/lib/acp';
-import type { Attachment, UsageState } from '@/lib/types';
+import type { Attachment, SandboxModeOptions, UsageState } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { ContextMenu } from '@/components/ContextMenu';
 import { Modal, ModalContent } from '@/components/ui/modal';
+import { SandboxModeSelect } from '@/components/SandboxModeSelect';
 import { UsageModal } from '@/components/UsageModal';
 
 // Images are sent as base64 inside the prompt, so an oversized file is refused
@@ -50,6 +51,8 @@ interface ChatInputProps {
   // Token usage of the session on screen. Absent until a step reports any —
   // a model with no configured window shows nothing here.
   usage?: UsageState;
+  // The sandbox mode the session runs in, shown under the composer.
+  sandboxMode?: SandboxModeOptions | null;
   // Reports the composer's height, so the conversation can keep enough room
   // under its last message: the box floats over the list, and queued messages
   // make it taller than any fixed padding allows for.
@@ -80,6 +83,7 @@ export function ChatInput({
   busy,
   onStop,
   usage,
+  sandboxMode,
   onHeightChange,
   showScrollToBottom = false,
   onScrollToBottom,
@@ -415,35 +419,38 @@ export function ChatInput({
           }}
         />
       </ContextMenu>
-      <div className="flex items-center justify-end gap-1.5">
-        {usage && (
-          <UsageIndicator usage={usage} onOpen={() => setUsageOpen(true)} />
-        )}
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={onStop}
-          disabled={!busy}
-          title={t('chat.stop')}
-          aria-label={t('chat.stop')}
-          // Red while it can be pressed, and back to the neutral outline once
-          // there is nothing to stop. Coloured rather than plain outline because
-          // stopping a running turn is the one control here that discards work
-          // rather than adding it.
-          className="text-destructive hover:bg-destructive/10 hover:text-destructive disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-        >
-          <Square className="h-3 w-3 fill-current" />
-        </Button>
-        <Button
-          size="icon"
-          onClick={submit}
-          disabled={(!value.trim() && attachments.length === 0) || busy}
-          title={t('chat.send')}
-          aria-label={t('chat.send')}
-          className="disabled:bg-border disabled:text-muted-foreground"
-        >
-          <ArrowUp className="h-4 w-4" />
-        </Button>
+      <div className="flex items-center justify-between gap-1.5">
+        <SandboxModeSelect options={sandboxMode} />
+        <div className="flex items-center gap-1.5">
+          {usage && (
+            <UsageIndicator usage={usage} onOpen={() => setUsageOpen(true)} />
+          )}
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={onStop}
+            disabled={!busy}
+            title={t('chat.stop')}
+            aria-label={t('chat.stop')}
+            // Red while it can be pressed, and back to the neutral outline once
+            // there is nothing to stop. Coloured rather than plain outline because
+            // stopping a running turn is the one control here that discards work
+            // rather than adding it.
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          >
+            <Square className="h-3 w-3 fill-current" />
+          </Button>
+          <Button
+            size="icon"
+            onClick={submit}
+            disabled={(!value.trim() && attachments.length === 0) || busy}
+            title={t('chat.send')}
+            aria-label={t('chat.send')}
+            className="disabled:bg-border disabled:text-muted-foreground"
+          >
+            <ArrowUp className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
       {usage && (
         <UsageModal

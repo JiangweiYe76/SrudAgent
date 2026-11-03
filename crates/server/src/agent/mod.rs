@@ -19,15 +19,16 @@
 //! | `session/close`   | interrupt + deregister                               |
 //! | `session/delete`  | deregister                                           |
 //! | `session/set_config_option` | choose the model a session runs on          |
+//! | `session/set_mode` | choose the session's sandbox mode                   |
 //! | `_srud/unstable/session/set_title` | rename a session               |
 //! | `_srud/unstable/provider/list` | list providers, with keys masked      |
 //! | `_srud/unstable/provider/set` | add or replace a provider             |
 //! | `_srud/unstable/provider/delete` | remove a provider                   |
 //! | `_srud/unstable/provider/set_default` | choose new sessions' model     |
 //!
-//! Everything else — `session/set_mode`, `authenticate`, and the remaining
-//! `_srud/unstable/*` extensions — answers `METHOD_NOT_FOUND`, matching what the
-//! advertised capabilities promise.
+//! Everything else — `authenticate` and the remaining `_srud/unstable/*`
+//! extensions — answers `METHOD_NOT_FOUND`, matching what the advertised
+//! capabilities promise.
 //!
 //! # Where a model client comes from
 //!
@@ -54,9 +55,9 @@ use srud_core::session::Session;
 use srud_core::tools::ToolRegistry;
 use srud_protocol::acp::methods::{
     INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_LOAD,
-    SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SRUD_PROVIDER_DELETE,
-    SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT, SRUD_SESSION_FORK,
-    SRUD_SESSION_REGENERATE, SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
+    SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SESSION_SET_MODE,
+    SRUD_PROVIDER_DELETE, SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT,
+    SRUD_SESSION_FORK, SRUD_SESSION_REGENERATE, SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
 };
 use srud_protocol::acp::{
     AcpError, CloseSessionResponse, DeleteSessionResponse, Implementation, InitializeRequest,
@@ -69,6 +70,7 @@ use srud_protocol::error::{INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SE
 use crate::events::{EventHub, TurnSink};
 use crate::providers::{ModelFactory, ProviderStore};
 use crate::sessions::SessionManager;
+mod mode;
 mod model;
 mod provider;
 mod restore;
@@ -265,6 +267,7 @@ impl Agent {
                 .await
                 .map(|()| serialize(DeleteSessionResponse::new())),
             SESSION_SET_CONFIG_OPTION => self.handle_set_config_option(params).await.map(serialize),
+            SESSION_SET_MODE => self.handle_set_mode(params).await.map(serialize),
             SRUD_SESSION_SET_TITLE => self.handle_set_title(params).await.map(serialize),
             SRUD_SESSION_FORK => self.handle_fork(params).await.map(serialize),
             SRUD_SESSION_STEER => self.handle_steer(params).await.map(serialize),

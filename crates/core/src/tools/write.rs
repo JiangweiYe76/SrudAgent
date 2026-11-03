@@ -180,6 +180,7 @@ mod tests {
         ToolContext {
             cwd: dir.to_path_buf(),
             cancel: tokio_util::sync::CancellationToken::new(),
+            sandbox: crate::sandbox::SandboxPolicy::Unrestricted,
         }
     }
 

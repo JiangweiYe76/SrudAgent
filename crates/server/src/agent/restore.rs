@@ -32,6 +32,9 @@ impl Agent {
         if let Some(options) = self.config_options(&request.session_id) {
             response = response.config_options(options);
         }
+        if let Some(modes) = self.mode_state(&request.session_id) {
+            response = response.modes(modes);
+        }
         Ok(response)
     }
 
@@ -58,6 +61,9 @@ impl Agent {
         // session is told which model it ran on without asking.
         if let Some(options) = self.config_options(&request.session_id) {
             response = response.config_options(options);
+        }
+        if let Some(modes) = self.mode_state(&request.session_id) {
+            response = response.modes(modes);
         }
         // How each turn ended travels here: a replayed item is the update live
         // streaming sent, and none of those carries a turn boundary. A turn the log
