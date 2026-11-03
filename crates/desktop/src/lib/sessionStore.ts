@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import type {
   Attachment,
   ModelOptions,
+  SandboxModeOptions,
   Session,
   Step,
   ThinkingOptions,
@@ -356,6 +357,19 @@ function applyUpdate(
       ...session,
       model,
       thinking,
+      updatedAt: historical ? session.updatedAt : Date.now(),
+    };
+  }
+
+  // A mode switch carries only the id that is now active; the available list
+  // came with the session and does not change while it is open.
+  if (kind === 'current_mode_update') {
+    const currentValue =
+      typeof update.currentModeId === 'string' ? update.currentModeId : null;
+    if (!currentValue || !session.sandboxMode) return null;
+    return {
+      ...session,
+      sandboxMode: { ...session.sandboxMode, currentValue },
       updatedAt: historical ? session.updatedAt : Date.now(),
     };
   }
@@ -738,6 +752,8 @@ function freshSession(): Session {
     loaded: true,
     title: null,
     model: null,
+    thinking: null,
+    sandboxMode: null,
     turns: [],
     followups: [],
     createdAt: now,
@@ -759,6 +775,8 @@ function listedSession(info: ListedSession, now: number): Session {
     title: info.title,
     // Known once the conversation is loaded: the model comes back with it.
     model: null,
+    thinking: null,
+    sandboxMode: null,
     turns: [],
     followups: [],
     createdAt: now,
@@ -917,11 +935,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Stored here, at the reply: the updates it ended can arrive after it
         // (see `replayTurnEnds`).
         rememberReplayTurnEnds(backendId, result.turns);
-        // The reply says which model and thinking level the replayed
-        // conversation was left on. Written before the updates stop arriving, so
-        // the pickers are right from the moment the conversation appears.
+        // The reply says which model, thinking level, and sandbox mode the
+        // replayed conversation was left on. Written before the updates stop
+        // arriving, so the pickers are right from the moment the conversation
+        // appears.
         if (result.model) setModelOf(id, result.model);
         setThinkingOf(id, result.thinking);
+        setSandboxModeOf(id, result.sandboxMode);
       })
       .catch((err: unknown) => {
         // A session the agent will not name is one this app cannot show, and
@@ -1084,6 +1104,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                       backendId: created.sessionId,
                       model: options.model,
                       thinking: options.thinking,
+                      sandboxMode: created.sandboxMode,
                     }
                   : sess,
               ),
@@ -1497,6 +1518,18 @@ function setThinkingOf(localId: string, thinking: ThinkingOptions | null) {
   useSessionStore.setState((s) => ({
     sessions: s.sessions.map((sess) =>
       sess.id === localId ? { ...sess, thinking } : sess,
+    ),
+  }));
+}
+
+// Writes a session's sandbox mode, by this client's own id.
+function setSandboxModeOf(
+  localId: string,
+  sandboxMode: SandboxModeOptions | null,
+) {
+  useSessionStore.setState((s) => ({
+    sessions: s.sessions.map((sess) =>
+      sess.id === localId ? { ...sess, sandboxMode } : sess,
     ),
   }));
 }

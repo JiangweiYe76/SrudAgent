@@ -165,6 +165,18 @@ function App() {
   );
   const thinkingOptions = isDraft ? draftThinking : (active?.thinking ?? null);
 
+  // The mode the composer shows. A draft has no session, so it shows the mode
+  // a new session starts on; a session that has not loaded shows the same one
+  // until its reply names the real mode.
+  const sandboxMode = useMemo(
+    () =>
+      active?.sandboxMode ?? {
+        currentValue: 'full-access',
+        choices: [{ value: 'full-access', name: t('sandbox.fullAccess') }],
+      },
+    [active?.sandboxMode],
+  );
+
   // The ring shows context pressure from the moment the session names a model,
   // not only after the first report: the window comes from the catalog, and
   // occupancy reads as zero until the agent says otherwise. Once reports
@@ -260,6 +272,7 @@ function App() {
           busy={isBusy(active) || reopening}
           onStop={stopTurn}
           usage={usage}
+          sandboxMode={sandboxMode}
           onHeightChange={onComposerHeight}
           showScrollToBottom={!atBottom}
           onScrollToBottom={scrollToBottom}

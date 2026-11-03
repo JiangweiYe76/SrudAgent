@@ -7,6 +7,7 @@ import type {
   ModelChoice,
   ModelGroup,
   ModelOptions,
+  SandboxModeOptions,
   ThinkingConfig,
   ThinkingLevel,
   ThinkingOptions,
@@ -115,12 +116,14 @@ export async function newSession(cwd: string): Promise<NewSession> {
   return {
     sessionId: String(result.sessionId),
     ...parseSessionOptions(result.configOptions),
+    sandboxMode: parseSandboxModeState(result.modes),
   };
 }
 
 // A session the agent created, and the selectors it came with.
 export interface NewSession extends SessionOptions {
   sessionId: string;
+  sandboxMode: SandboxModeOptions | null;
 }
 
 // Deletes a session and everything the agent holds for it. Standard ACP, so no
@@ -201,6 +204,7 @@ export interface LoadedTurnEnd {
 
 // The selectors the session was left on, plus how each replayed turn ended.
 export interface LoadedSession extends SessionOptions {
+  sandboxMode: SandboxModeOptions | null;
   // Every turn the session has finished. A turn this leaves out is one still
   // running.
   turns: LoadedTurnEnd[];
@@ -242,6 +246,7 @@ export async function loadSession(
   });
   return {
     ...parseSessionOptions(result.configOptions),
+    sandboxMode: parseSandboxModeState(result.modes),
     turns: parseTurnEnds(result._meta),
   };
 }
@@ -456,6 +461,38 @@ export function parseThinkingOptions(
       typeof option.currentValue === 'string' ? option.currentValue : '',
     choices,
   };
+}
+
+// The sandbox mode state out of a response's `modes`, or null when the agent
+// advertises none.
+export function parseSandboxModeState(
+  modes: unknown,
+): SandboxModeOptions | null {
+  const state = modes as Json | undefined;
+  if (!state || typeof state.currentModeId !== 'string') return null;
+  const raw = Array.isArray(state.availableModes) ? state.availableModes : [];
+  const choices: ModelChoice[] = raw.flatMap((entry) => {
+    if (!isJson(entry) || typeof entry.id !== 'string') return [];
+    return [
+      {
+        value: entry.id,
+        name: typeof entry.name === 'string' ? entry.name : entry.id,
+      },
+    ];
+  });
+  return {
+    currentValue: state.currentModeId,
+    choices,
+  };
+}
+
+// Switches a session's sandbox mode. Standard ACP, so a third-party client can
+// do this too; which modes exist is the agent's decision.
+export async function setSessionMode(
+  sessionId: string,
+  modeId: string,
+): Promise<void> {
+  await rpcRequest('session/set_mode', { sessionId, modeId });
 }
 
 // Everything a response's `configOptions` may carry that this client renders.

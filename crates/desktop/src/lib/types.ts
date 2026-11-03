@@ -74,6 +74,16 @@ export interface ThinkingOptions {
   choices: ModelChoice[];
 }
 
+// The sandbox modes a session may run in.
+//
+// `currentValue` is the level in effect and `choices` is the set the agent
+// advertises. A client shows the set as a selector, and a single entry reads as
+// the state it already is.
+export interface SandboxModeOptions {
+  currentValue: string;
+  choices: ModelChoice[];
+}
+
 // One file change a tool call made, as ACP's diff content block carries it:
 // the text before and after, not a patch. Drawing the comparison is the
 // renderer's job.
@@ -199,6 +209,9 @@ export interface Session {
   // Which thinking level this conversation sends. Null when the selected model
   // declares no thinking control.
   thinking?: ThinkingOptions | null;
+  // The sandbox mode this conversation runs in. Null for a draft and for a
+  // session the agent has not loaded yet.
+  sandboxMode?: SandboxModeOptions | null;
   turns: Turn[];
   // Token usage, once a step has reported any. Absent for a session whose
   // model has no configured window — the agent sends nothing to show.
