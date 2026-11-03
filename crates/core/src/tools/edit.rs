@@ -7,8 +7,8 @@ use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 
 use super::{
-    failure_text, invalid_arguments, resolve, LenientBool, Tool, ToolContext, ToolError,
-    ToolOutcome,
+    denied_write, failure_text, invalid_arguments, resolve, LenientBool, Tool, ToolContext,
+    ToolError, ToolOutcome,
 };
 
 /// The name the model calls.
@@ -152,6 +152,9 @@ impl Tool for EditTool {
         let replace_all = args.replace_all.is_some_and(|flag| flag.0);
 
         let path = resolve(ctx, &args.path);
+        if let Some(message) = denied_write(ctx, &path) {
+            return Ok(ToolOutcome::failure(message));
+        }
         let shown = path.display().to_string();
 
         let content = match read_source(&path).await {
@@ -637,6 +640,14 @@ mod tests {
             cwd: dir.to_path_buf(),
             cancel: tokio_util::sync::CancellationToken::new(),
             sandbox: crate::sandbox::SandboxPolicy::Unrestricted,
+        }
+    }
+
+    fn bounded_ctx(dir: &Path) -> ToolContext {
+        ToolContext {
+            cwd: dir.to_path_buf(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            sandbox: crate::sandbox::SandboxLevel::WorkspaceWrite.policy(dir),
         }
     }
 
@@ -1268,5 +1279,49 @@ mod tests {
             diff.ends_with("```"),
             "and the block closes at the end: {diff}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_bounded_session_edits_inside_its_roots() {
+        let dir = scratch_with("bounded-inside", "note.txt", "old\n");
+        let outcome = EditTool
+            .call(
+                &bounded_ctx(&dir),
+                serde_json::json!({
+                    "path": "note.txt",
+                    "edits": [{ "old_string": "old", "new_string": "new" }]
+                }),
+            )
+            .await
+            .expect("the arguments match the schema");
+
+        reply(&outcome);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("note.txt")).unwrap(),
+            "new\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bounded_session_refuses_a_path_outside_its_roots() {
+        let dir = scratch("bounded-outside");
+        let outside = PathBuf::from(format!(
+            "/var/tmp/srud-edit-outside-{}.txt",
+            std::process::id()
+        ));
+        let outcome = EditTool
+            .call(
+                &bounded_ctx(&dir),
+                serde_json::json!({
+                    "path": outside.display().to_string(),
+                    "edits": [{ "old_string": "x", "new_string": "y" }]
+                }),
+            )
+            .await
+            .expect("the arguments match the schema");
+
+        let message = refusal(&outcome);
+        assert!(message.contains("writable roots"), "{message}");
+        assert!(!outside.exists(), "nothing was written outside the roots");
     }
 }

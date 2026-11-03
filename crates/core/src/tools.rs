@@ -106,6 +106,29 @@ pub(crate) fn resolve(ctx: &ToolContext, path: &str) -> PathBuf {
     }
 }
 
+/// Refuses a write outside the roots a bounded session may modify.
+///
+/// `None` when the write is allowed, including every write in an unrestricted
+/// session. The refusal is returned as the text a tool hands back, so every
+/// file-writing tool reports the same boundary the same way.
+#[must_use]
+pub(crate) fn denied_write(ctx: &ToolContext, path: &Path) -> Option<String> {
+    let SandboxPolicy::Bounded(policy) = &ctx.sandbox else {
+        return None;
+    };
+    if policy.allows_write(path) {
+        return None;
+    }
+    let shown = path.display();
+    Some(failure_text(
+        format!("Cannot write {shown}: it is outside this session's writable roots."),
+        Some(
+            "Nothing was written. This session writes inside its workspace and temporary \
+             directories only; do not try to reach the path another way.",
+        ),
+    ))
+}
+
 /// The error for arguments a tool's schema permits but it cannot act on.
 pub(crate) fn invalid_arguments(name: &str, message: impl Into<String>) -> ToolError {
     ToolError::InvalidArguments {
