@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::acp::Meta;
+use crate::acp::{Meta, SessionNotification};
 
 /// The `_meta` key under which all SrudAgent private data is nested.
 pub const SRUD_META_KEY: &str = "srud";
@@ -29,9 +29,17 @@ pub const RESERVED_TRACE_KEYS: &[&str] = &["traceparent", "tracestate", "baggage
 ///
 /// Every field is optional: a payload carries only what its message needs.
 /// Keys are camelCase on the wire (ACP convention).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SrudMeta {
+    /// One session's notification sequence number.
+    ///
+    /// Every notification the session emits carries the next number, starting at
+    /// one and increasing without gaps. Updates are increments, so a client that
+    /// misses one cannot rebuild what it said; the number is how it learns that
+    /// it missed something rather than reading a shortened conversation as whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
     /// The domain turn id. Required to target a `session/cancel` and to index
     /// the rollout, since ACP v1 has no turn id of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +85,20 @@ pub struct SrudMeta {
     /// answers those same words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_discarded: Option<String>,
+    /// The replayed conversation, on the `session/load` response.
+    ///
+    /// Each entry is the `session/update` notification that item would have been
+    /// streamed as. The stream is a bounded, lossy channel while a response is
+    /// neither, so a client reading a long conversation takes it from here. The
+    /// notifications are still sent for clients that only follow the stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<Vec<SessionNotification>>,
+    /// The [`seq`](Self::seq) of the last entry in [`history`](Self::history).
+    ///
+    /// A notification numbered after this one happened after the replay, so a
+    /// client can tell the copy it just applied from one still to come.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seq: Option<u64>,
 }
 
 /// One finished turn, as `_meta.srud.turns` reports it.

@@ -20,6 +20,9 @@ const en = {
   'sidebar.streaming': 'Still replying…',
   'sidebar.unread': 'Unread reply',
 
+  'session.repairFailed':
+    'Part of this conversation was lost while loading and could not be restored.',
+
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',
   'time.hoursAgo': '{n} h ago',

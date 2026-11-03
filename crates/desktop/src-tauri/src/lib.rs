@@ -150,15 +150,22 @@ fn emit_notify(app: &AppHandle, notification: Notification<SessionNotification>)
 ///
 /// A single subscription spans all turns and sessions. A slow webview that
 /// falls behind the broadcast channel loses the oldest updates and keeps
-/// draining; message deltas are accumulative, so a dropped chunk only costs
-/// rendering granularity, never correctness.
+/// draining. Updates are increments, so a dropped chunk is text the webview
+/// never sees; it is told which ones it missed by `_meta.srud.seq` and rebuilds
+/// the affected session from `session/load`. The count is logged so a loss
+/// stops being invisible to whoever is reading the app's output.
 fn spawn_notify_pump(app: AppHandle, agent: &Agent) {
     let mut rx = agent.subscribe();
     tauri::async_runtime::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(notification) => emit_notify(&app, notification),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!(
+                        "srud: notification stream lagged, {skipped} update(s) dropped; \
+                         a client tracking `_meta.srud.seq` detects the gap and reloads the session"
+                    );
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }

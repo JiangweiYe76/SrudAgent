@@ -18,13 +18,21 @@
 //! arriving between the turn starting and its id being reported — is held
 //! until the id arrives rather than dropped, since it belongs to the turn all
 //! the same and cannot be re-announced later.
+//!
+//! Every notification also carries the session's next sequence number under
+//! `_meta.srud.seq`. Updates are increments, so a dropped one costs text, not
+//! just rendering granularity: the number is what lets a client notice that the
+//! stream skipped something instead of reading a shortened conversation as
+//! complete.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use srud_core::types::{Event, EventSink, SessionId as CoreSessionId, TurnId};
 use srud_protocol::acp::{Notification, SessionId, SessionNotification};
+use srud_protocol::srud::meta::SrudMeta;
 use tokio::sync::broadcast;
 
 use crate::convert::{to_notification, ToolDiffIndex};
@@ -33,14 +41,51 @@ use crate::convert::{to_notification, ToolDiffIndex};
 ///
 /// A slow subscriber that falls behind loses the oldest notifications rather
 /// than blocking the turn — `broadcast` reports `Lagged`, and the host decides
-/// whether to reconcile. Chunk-level message deltas are accumulative, so a
-/// dropped chunk only costs rendering granularity, not correctness.
+/// whether to reconcile. Message deltas are increments, so a dropped chunk is
+/// text the subscriber never sees; `_meta.srud.seq` is how it detects that.
 const CHANNEL_CAPACITY: usize = 512;
+
+/// The per-session sequence numbers every notification is stamped with.
+///
+/// The hub and the turn sinks both write to one session's stream, so they draw
+/// from one counter: a title sent from outside a turn and the turn's own updates
+/// must not hand out the same number. Cloning shares the count.
+#[derive(Clone, Default)]
+struct SeqCounter {
+    next: Arc<Mutex<HashMap<SessionId, u64>>>,
+}
+
+impl SeqCounter {
+    fn take(&self, session: &SessionId) -> u64 {
+        let mut next = self.next.lock().expect("sequence counter lock poisoned");
+        let seq = next.get(session).copied().unwrap_or(0).saturating_add(1);
+        next.insert(session.clone(), seq);
+        seq
+    }
+
+    /// Adds the session's next number to a notification's `_meta.srud`.
+    ///
+    /// Any other keys the notification's `_meta` carries are preserved.
+    fn stamp(&self, notification: &mut Notification<SessionNotification>) {
+        let Some(params) = notification.params.as_mut() else {
+            return;
+        };
+        let seq = self.take(&params.session_id);
+        let mut meta = params.meta.take().unwrap_or_default();
+        let mut srud = SrudMeta::from_meta(&meta).unwrap_or_default();
+        srud.seq = Some(seq);
+        // Our own notifications never occupy a reserved trace key, so this
+        // cannot fail.
+        let _ = srud.insert_into(&mut meta);
+        params.meta = Some(meta);
+    }
+}
 
 /// A cloneable hub that fans core events out to ACP notification subscribers.
 #[derive(Clone)]
 pub struct EventHub {
     tx: broadcast::Sender<Notification<SessionNotification>>,
+    seq: SeqCounter,
 }
 
 impl EventHub {
@@ -48,7 +93,10 @@ impl EventHub {
     #[must_use]
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
-        Self { tx }
+        Self {
+            tx,
+            seq: SeqCounter::default(),
+        }
     }
 
     /// Subscribes to the notification stream.
@@ -63,7 +111,28 @@ impl EventHub {
     ///
     /// Session-level changes such as a new title are not runtime events, so
     /// they have no [`EventSink`] to travel through and are sent directly.
-    pub fn send(&self, notification: Notification<SessionNotification>) {
+    pub fn send(&self, mut notification: Notification<SessionNotification>) {
+        self.seq.stamp(&mut notification);
+        self.publish(notification);
+    }
+
+    /// Stamps the next sequence number and broadcasts, returning what went out.
+    ///
+    /// A caller that also hands the conversation over on a response — `session/load`
+    /// does — uses the returned copy so the response and the stream agree on both
+    /// content and numbering.
+    pub(crate) fn send_replayed(
+        &self,
+        mut notification: Notification<SessionNotification>,
+    ) -> Option<SessionNotification> {
+        self.seq.stamp(&mut notification);
+        let params = notification.params.clone();
+        self.publish(notification);
+        params
+    }
+
+    /// Sends a notification as it stands, without assigning it a number.
+    fn publish(&self, notification: Notification<SessionNotification>) {
         // A send error only means there are no subscribers right now; a missing
         // listener must never fail the request that caused the notification.
         let _ = self.tx.send(notification);
@@ -78,6 +147,7 @@ impl EventHub {
     pub fn sink_for(&self, session_id: CoreSessionId, context_size: Option<u64>) -> TurnSink {
         TurnSink {
             tx: self.tx.clone(),
+            seq: self.seq.clone(),
             session_id: SessionId::new(session_id.to_string()),
             turn_id: Arc::new(OnceLock::new()),
             context_size,
@@ -97,6 +167,9 @@ impl Default for EventHub {
 #[derive(Clone)]
 pub struct TurnSink {
     tx: broadcast::Sender<Notification<SessionNotification>>,
+    /// The session's counter, shared with the hub and with the sink of every
+    /// turn the session runs.
+    seq: SeqCounter,
     session_id: SessionId,
     turn_id: Arc<OnceLock<TurnId>>,
     context_size: Option<u64>,
@@ -124,7 +197,7 @@ impl TurnSink {
     /// is sent before that turn's replacement starts.
     pub(crate) fn broadcast(&self, turn_id: TurnId, event: Event) {
         let mut diffs = self.diffs.lock().expect("tool diff index lock poisoned");
-        let Some(notification) = to_notification(
+        let Some(mut notification) = to_notification(
             &self.session_id,
             &turn_id.to_string(),
             event,
@@ -133,6 +206,7 @@ impl TurnSink {
         ) else {
             return;
         };
+        self.seq.stamp(&mut notification);
         // A send error only means there are no subscribers right now; the
         // turn must never block or fail because nobody is listening.
         let _ = self.tx.send(notification);
@@ -256,6 +330,70 @@ mod tests {
             value["params"]["_meta"]["srud"]["turnId"],
             serde_json::json!(turn_id.to_string())
         );
+    }
+
+    #[test]
+    fn one_session_is_numbered_in_order_across_sink_and_hub() {
+        // A title sent from outside a turn and a turn's own updates are one
+        // stream; they must draw from one counter or a client reads a gap
+        // between two updates that were never dropped.
+        let hub = EventHub::new();
+        let mut rx = hub.subscribe();
+        let core_session = CoreSessionId::new();
+        let sink = hub.sink_for(core_session, None);
+        let title = Notification {
+            method: CLIENT_METHOD_NAMES.session_update.into(),
+            params: Some(SessionNotification::new(
+                SessionId::new(core_session.to_string()),
+                SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("named")),
+            )),
+        };
+
+        let turn_id = TurnId::new();
+        sink.emit(Event::TurnStarted { turn_id });
+        sink.emit(Event::AgentMessageDelta {
+            message_id: None,
+            delta: "x".into(),
+        });
+        hub.send(title);
+
+        let seqs: Vec<u64> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|notification| {
+                let value = serde_json::to_value(&notification).unwrap();
+                value["params"]["_meta"]["srud"]["seq"]
+                    .as_u64()
+                    .expect("every notification is numbered")
+            })
+            .collect();
+        assert_eq!(seqs, vec![1, 2]);
+    }
+
+    #[test]
+    fn each_session_is_numbered_from_its_own_start() {
+        let hub = EventHub::new();
+        let mut rx = hub.subscribe();
+        let first = hub.sink_for(CoreSessionId::new(), None);
+        let second = hub.sink_for(CoreSessionId::new(), None);
+
+        for sink in [&first, &second] {
+            sink.emit(Event::TurnStarted {
+                turn_id: TurnId::new(),
+            });
+            sink.emit(Event::AgentMessageDelta {
+                message_id: None,
+                delta: "x".into(),
+            });
+        }
+
+        let seqs: Vec<u64> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|notification| {
+                let value = serde_json::to_value(&notification).unwrap();
+                value["params"]["_meta"]["srud"]["seq"]
+                    .as_u64()
+                    .expect("every notification is numbered")
+            })
+            .collect();
+        assert_eq!(seqs, vec![1, 1], "a session's numbers are only its own");
     }
 
     #[test]

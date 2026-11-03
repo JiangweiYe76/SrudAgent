@@ -39,7 +39,11 @@ pub enum SrudTurnEndReason {
 }
 
 /// The wire shape of a turn that ended with a result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Eq` is not derived: the payload can carry a replayed conversation
+/// ([`SrudMeta::history`]), and the standard ACP update types it is built from
+/// are `PartialEq` only.
+#[derive(Debug, Clone, PartialEq)]
 pub struct TurnEndWire {
     /// The standard stop reason to return on `session/prompt`.
     pub stop_reason: StopReason,

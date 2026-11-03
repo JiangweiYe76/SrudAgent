@@ -191,7 +191,8 @@ export async function regenerateTurn(
 
 // Hands a client the session's whole conversation as `session/update`
 // notifications, arriving before the response. Each update names the turn it
-// belongs to; how each turn ended comes back on the response.
+// belongs to; how each turn ended, and the whole conversation itself when the
+// agent sends it, come back on the response.
 //
 // `cwd` is how ACP has a client confirm the session's directory. It comes from
 // `session/list`, which reports the directory of every session it names; an empty
@@ -202,12 +203,20 @@ export interface LoadedTurnEnd {
   endReason: TurnEndReason;
 }
 
-// The selectors the session was left on, plus how each replayed turn ended.
+// The selectors the session was left on, how each replayed turn ended, and the
+// replayed conversation itself.
 export interface LoadedSession extends SessionOptions {
   sandboxMode: SandboxModeOptions | null;
   // Every turn the session has finished. A turn this leaves out is one still
   // running.
   turns: LoadedTurnEnd[];
+  // The replayed updates in order, each shaped like the `session/update` params
+  // the stream would have carried. Empty when the agent sends none, and then the
+  // streamed copy is the only one there is.
+  history: Json[];
+  // The sequence number of the last replayed update, or null when `history`
+  // names none. Anything numbered above it happened after the replay.
+  lastSeq: number | null;
 }
 
 function isTurnEndReason(value: unknown): value is TurnEndReason {
@@ -219,12 +228,16 @@ function isTurnEndReason(value: unknown): value is TurnEndReason {
   );
 }
 
+// The `_meta.srud` payload a reply carries, if any.
+function srudOf(meta: unknown): Json | undefined {
+  return (meta as Json | undefined)?.srud as Json | undefined;
+}
+
 // The turn ends the response reports. An entry that cannot be read is left out,
 // which leaves that turn open: a client shows a session as running when it cannot
 // tell.
 function parseTurnEnds(meta: unknown): LoadedTurnEnd[] {
-  const srud = (meta as Json | undefined)?.srud as Json | undefined;
-  const turns = srud?.turns;
+  const turns = srudOf(meta)?.turns;
   if (!Array.isArray(turns)) return [];
   return turns.flatMap((entry) => {
     const turn = entry as Json | undefined;
@@ -233,6 +246,29 @@ function parseTurnEnds(meta: unknown): LoadedTurnEnd[] {
     if (typeof turnId !== 'string' || !isTurnEndReason(endReason)) return [];
     return [{ turnId, endReason }];
   });
+}
+
+// The replayed conversation the response carries, in the order it happened. An
+// entry that is not shaped like a `SessionUpdate` notification is left out
+// rather than handed to the transcript applier.
+function parseHistory(meta: unknown): Json[] {
+  const history = srudOf(meta)?.history;
+  if (!Array.isArray(history)) return [];
+  return history.filter((entry) => {
+    const params = entry as Json | undefined;
+    return (
+      typeof params?.sessionId === 'string' &&
+      typeof params?.update === 'object'
+    );
+  }) as Json[];
+}
+
+// The last sequence number the replay assigned, when the agent reports one.
+function parseLastSeq(meta: unknown): number | null {
+  const value = srudOf(meta)?.lastSeq;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : null;
 }
 
 export async function loadSession(
@@ -248,6 +284,8 @@ export async function loadSession(
     ...parseSessionOptions(result.configOptions),
     sandboxMode: parseSandboxModeState(result.modes),
     turns: parseTurnEnds(result._meta),
+    history: parseHistory(result._meta),
+    lastSeq: parseLastSeq(result._meta),
   };
 }
 

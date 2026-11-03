@@ -3,9 +3,10 @@
 //! `session/load` rebuilds the session and replays its conversation as
 //! `session/update` notifications before the response, because ACP requires the
 //! client to hold the whole conversation by the time the call resolves.
-//! `session/resume` rebuilds it without replaying. How each recorded turn ended
-//! rides on the `session/load` response: the replayed stream carries no turn
-//! boundaries.
+//! `session/resume` rebuilds it without replaying. How each recorded turn ended,
+//! and the replayed conversation itself, ride on the `session/load` response:
+//! the replayed stream carries no turn boundaries, and a bounded channel can
+//! drop updates under a burst, while a response can do neither.
 
 use super::{parse_params, session_not_found, Agent};
 use crate::convert::{end_reason_wire, replay_notification, ToolDiffIndex};
@@ -17,6 +18,14 @@ use srud_protocol::acp::{
 };
 use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS};
 use srud_protocol::srud::meta::{SrudMeta, SrudTurnEnd};
+
+/// How many replayed updates go out between two yields.
+///
+/// The replay is the one producer that runs at memory speed. Pacing it keeps a
+/// single conversation from filling the hub's shared channel and evicting
+/// another session's live updates. It is pacing, not a guarantee: the copy on
+/// the response is what makes the replay lossless for a client that reads it.
+const REPLAY_YIELD_EVERY: usize = 32;
 
 impl Agent {
     pub(super) async fn handle_resume(
@@ -46,13 +55,30 @@ impl Agent {
         // the whole conversation by the time `session/load` resolves. Anything
         // sent after would arrive as a change to a session the client already
         // believes it has.
+        //
+        // The stream is a bounded channel that drops on lag, so the same updates
+        // are also collected here and returned on the response. A response cannot
+        // lag, which makes the conversation lossless for a client that reads it;
+        // the notifications remain for clients that only follow the stream.
         let context_size = self.context_size_for(&request.session_id);
         let mut diffs = ToolDiffIndex::default();
-        for event in &loaded.conversation {
+        let mut history = Vec::with_capacity(loaded.conversation.len());
+        let mut last_seq = None;
+        for (index, event) in loaded.conversation.iter().enumerate() {
             if let Some(notification) =
                 replay_notification(&request.session_id, event, context_size, &mut diffs)
             {
-                self.hub.send(notification);
+                if let Some(params) = self.hub.send_replayed(notification) {
+                    last_seq = params
+                        .meta
+                        .as_ref()
+                        .and_then(SrudMeta::from_meta)
+                        .and_then(|srud| srud.seq);
+                    history.push(params);
+                }
+            }
+            if index % REPLAY_YIELD_EVERY == REPLAY_YIELD_EVERY - 1 {
+                tokio::task::yield_now().await;
             }
         }
         self.broadcast_title(&request.session_id, loaded.title.clone());
@@ -78,6 +104,8 @@ impl Agent {
             .collect();
         let srud = SrudMeta {
             turns: Some(turns),
+            history: (!history.is_empty()).then_some(history),
+            last_seq,
             ..Default::default()
         };
         Ok(response.meta(srud.to_meta()))
@@ -453,6 +481,153 @@ mod tests {
         assert!(
             updates.iter().all(|(_, end)| end.is_none()),
             "no update closes a turn: {updates:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_load_response_carries_the_replayed_conversation() {
+        // The notification stream is a bounded channel that drops on lag, so a
+        // client cannot rely on receiving a whole replay. The response carries
+        // the same updates and numbers them, so the client can apply them once
+        // and tell which of the streamed copies it has already seen.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load-history"),
+        );
+
+        let first = agent(scripted(vec![ModelEvent::TextDelta {
+            delta: "answer".into(),
+        }]));
+        initialize(&first).await;
+        let (session_id, cwd) = session_with_a_home(&first).await;
+        prompt_titles(&first, &session_id, "hello").await;
+        prompt_titles(&first, &session_id, "again").await;
+
+        let second = agent(scripted(vec![]));
+        initialize(&second).await;
+        let mut rx = second.subscribe();
+        let response = result_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        let history = response["_meta"]["srud"]["history"]
+            .as_array()
+            .expect("the response carries the replay");
+        assert_eq!(history.len(), 4, "{history:?}");
+        let seqs: Vec<u64> = history
+            .iter()
+            .map(|item| {
+                item["_meta"]["srud"]["seq"]
+                    .as_u64()
+                    .expect("every replayed update is numbered")
+            })
+            .collect();
+        assert_eq!(seqs, vec![1, 2, 3, 4]);
+        assert_eq!(
+            response["_meta"]["srud"]["lastSeq"],
+            json!(4),
+            "the response says where its replay ended"
+        );
+        // Each entry is the update the stream would have carried: the turn it
+        // belongs to is on it, and so is the text.
+        assert_eq!(
+            history[0]["update"]["content"]["text"],
+            json!("hello"),
+            "{history:?}"
+        );
+        assert_eq!(history[1]["update"]["content"]["text"], json!("answer"));
+        assert_eq!(history[2]["update"]["content"]["text"], json!("again"));
+        assert_eq!(history[3]["update"]["content"]["text"], json!("answer"));
+        let turns: Vec<&str> = history
+            .iter()
+            .map(|item| {
+                item["_meta"]["srud"]["turnId"]
+                    .as_str()
+                    .expect("every replayed update names its turn")
+            })
+            .collect();
+        assert_eq!(turns[0], turns[1], "one turn");
+        assert_ne!(turns[0], turns[2], "the next prompt is its own turn");
+
+        // The streamed copy is the same updates under the same numbers. The
+        // title that follows the replay is not one of them.
+        let streamed: Vec<u64> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|notification| {
+                let value = serde_json::to_value(&notification).unwrap();
+                let srud = &value["params"]["_meta"]["srud"];
+                srud["turnId"].as_str()?;
+                srud["seq"].as_u64()
+            })
+            .collect();
+        assert_eq!(streamed, seqs);
+    }
+
+    #[tokio::test]
+    async fn a_replay_longer_than_the_channel_is_complete_on_the_response() {
+        // More updates than the hub's 512 slots, replayed while the subscriber
+        // is not draining: the stream must lose some, because that is what a
+        // bounded channel does. The response must not — that is the difference
+        // this fix is about.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load-long"),
+        );
+
+        let first = agent(scripted(vec![ModelEvent::TextDelta { delta: "hi".into() }]));
+        initialize(&first).await;
+        let (session_id, cwd) = session_with_a_home(&first).await;
+        // Each turn replays a user and an assistant chunk: 260 turns is 520
+        // items, past the channel's capacity.
+        for _ in 0..260 {
+            prompt_once(&first, &session_id).await;
+        }
+
+        let second = agent(scripted(vec![]));
+        initialize(&second).await;
+        let mut rx = second.subscribe();
+        let response = result_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        let history = response["_meta"]["srud"]["history"]
+            .as_array()
+            .expect("the response carries the replay");
+        assert_eq!(history.len(), 520);
+        assert_eq!(response["_meta"]["srud"]["lastSeq"], json!(520));
+
+        // Drained only now: the subscriber was never keeping up, so the stream
+        // is short by exactly what the channel dropped.
+        let mut streamed = 0;
+        loop {
+            match rx.try_recv() {
+                Ok(_) => streamed += 1,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        assert!(
+            streamed < history.len(),
+            "the stream should have lost part of the replay, got {streamed}"
         );
     }
 

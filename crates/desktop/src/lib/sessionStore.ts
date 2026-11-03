@@ -167,6 +167,16 @@ function turnIdOf(params: Json): string | null {
   return typeof id === 'string' ? id : null;
 }
 
+// The number an update was assigned in its session's stream, when the agent
+// numbers it. Absent means the agent does not number updates, and then nothing
+// can be said about what was missed.
+function seqOf(params: Json): number | null {
+  const seq = srudMeta(params).seq;
+  return typeof seq === 'number' && Number.isInteger(seq) && seq > 0
+    ? seq
+    : null;
+}
+
 // The turn an update says was discarded, when it says so. A discard rides on an
 // otherwise empty `session_info_update`, because ACP has no update that takes a
 // turn back.
@@ -668,6 +678,27 @@ export function attachmentsFor(
 // session's `updatedAt` and make a stale row read as "just now".
 const replaying = new Set<string>();
 
+// The newest sequence number applied for each backend session.
+//
+// Updates are increments, so a number that skips means the channel dropped what
+// came between. Cleared when a load starts, then seeded from the load response's
+// own last number: the replay is taken from there rather than from the stream,
+// so what counts as "already applied" is exactly what the response carried.
+const lastSeq = new Map<string, number>();
+
+// The repairs already spent on one open of a session. A session with a
+// persistently lagging stream would otherwise reload in a loop; once the budget
+// is gone the loss is reported instead of retried.
+const repairCounts = new Map<string, number>();
+
+// How many times one open may rebuild its conversation before giving up.
+const MAX_REPAIRS = 3;
+
+// A gap while a turn was running waits for the turn to close: the text a turn
+// has produced since its last flush exists only in the stream, and rebuilding
+// the conversation mid-turn would drop it.
+const repairPending = new Set<string>();
+
 function beginReopen(backendId: string) {
   replaying.add(backendId);
   useSessionStore.setState((s) => ({ reopeningCount: s.reopeningCount + 1 }));
@@ -679,6 +710,164 @@ function endReopen(backendId: string) {
   useSessionStore.setState((s) => ({
     reopeningCount: Math.max(0, s.reopeningCount - 1),
   }));
+}
+
+// Whether an update is the next one in its session's stream.
+//
+// Returns `false` for one already applied — a replay notification that straggled
+// past the response — and schedules a repair for a number that skipped the ones
+// before it. The update itself is still applied: leaving the transcript frozen
+// until the repair lands would hide the live text that came after the gap.
+//
+// Until a load's reply says where its replay ended, the stream's numbers cannot
+// be placed: the response's copy defines that boundary, so nothing is seeded from
+// an update arriving before it.
+function trackSeq(backendId: string, seq: number): boolean {
+  // A session this client does not hold has nowhere to put the update, so its
+  // numbers are not worth remembering: the load that brings it will reset them.
+  if (
+    !useSessionStore
+      .getState()
+      .sessions.some((session) => session.backendId === backendId)
+  ) {
+    return true;
+  }
+  const last = lastSeq.get(backendId);
+  if (last === undefined) {
+    if (!replaying.has(backendId)) lastSeq.set(backendId, seq);
+    return true;
+  }
+  if (seq <= last) return false;
+  lastSeq.set(backendId, seq);
+  if (seq > last + 1) requestRepair(backendId);
+  return true;
+}
+
+// Rebuilds one session's conversation from the log, because the stream it was
+// reading lost part of it. Deferred while a turn runs, or while a load is already
+// rebuilding it.
+function requestRepair(backendId: string) {
+  if (replaying.has(backendId)) {
+    repairPending.add(backendId);
+    return;
+  }
+  const session = useSessionStore
+    .getState()
+    .sessions.find((s) => s.backendId === backendId);
+  if (!session) return;
+  if (isBusy(session)) {
+    repairPending.add(backendId);
+    return;
+  }
+  const spent = repairCounts.get(backendId) ?? 0;
+  if (spent >= MAX_REPAIRS) {
+    toast.error(t('session.repairFailed'));
+    return;
+  }
+  repairCounts.set(backendId, spent + 1);
+  startLoad(session.id, true);
+}
+
+// Replaces the turns the replayed stream built with the copy the response
+// carries.
+//
+// The stream is lossy under a burst and says nothing about what it dropped; the
+// response is the same updates delivered whole. Turns the copy does not name are
+// ones that happened after the log was read — a live turn still streaming — and
+// they stay, after the recorded ones.
+function replayTurns(backendId: string, history: Json[]) {
+  if (history.length === 0) return;
+  useSessionStore.setState((s) => ({
+    sessions: s.sessions.map((session) => {
+      if (session.backendId !== backendId) return session;
+      let base: Session = { ...session, turns: [] };
+      for (const params of history) {
+        const updated = applyUpdate(base, params, true);
+        if (updated) base = updated;
+      }
+      const recorded = new Set(
+        base.turns
+          .map((turn) => turn.backendTurnId)
+          .filter((id): id is string => id !== undefined),
+      );
+      const live = session.turns.filter(
+        (turn) =>
+          turn.backendTurnId === undefined || !recorded.has(turn.backendTurnId),
+      );
+      // The copy is the session, not just its turns: a usage report it carries
+      // fills in one the stream dropped, the same way its text does.
+      return { ...base, turns: [...base.turns, ...live] };
+    }),
+  }));
+}
+
+// Starts a `session/load` for one session and folds its answer in.
+//
+// `repairing` separates a repair from opening a session: a fresh open starts the
+// repair budget over, while a repair keeps what it has already spent.
+function startLoad(localId: string, repairing: boolean) {
+  const state = useSessionStore.getState();
+  const session = state.sessions.find((s) => s.id === localId);
+  const backendId = session?.backendId;
+  if (!session || !backendId) return;
+  // A load already on its way for this session would replay on top of itself.
+  if (replaying.has(backendId)) return;
+  // Marked before the request rather than after it answers: a second click while
+  // the first load is still in flight must not ask for the same conversation
+  // again, and waiting for the reply would leave that window open.
+  if (!session.loaded) {
+    useSessionStore.setState((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === localId ? { ...sess, loaded: true } : sess,
+      ),
+    }));
+  }
+  if (!repairing) repairCounts.delete(backendId);
+  beginReopen(backendId);
+  lastSeq.delete(backendId);
+  let loaded: LoadedSession | null = null;
+  void loadSession(backendId, session.cwd)
+    .then((result) => {
+      loaded = result;
+      // Stored before the copy is applied: a turn that landed in the reply as
+      // ended opens closed when the copy names it.
+      rememberReplayTurnEnds(backendId, result.turns);
+      // Whatever the stream delivered while the load was open is applied first
+      // and then replaced, so the copy is never layered on top of it.
+      flushPendingReplayUpdates();
+      replayTurns(backendId, result.history);
+      if (result.lastSeq !== null) lastSeq.set(backendId, result.lastSeq);
+      // The reply says which model, thinking level, and sandbox mode the
+      // conversation was left on, so the pickers are right from the moment it
+      // appears.
+      if (result.model) setModelOf(localId, result.model);
+      setThinkingOf(localId, result.thinking);
+      setSandboxModeOf(localId, result.sandboxMode);
+    })
+    .catch((err: unknown) => {
+      // A session the agent will not name is one this app cannot show, and
+      // showing it as an empty conversation would be a lie. It goes, and the
+      // sidebar is one row shorter rather than one wrong.
+      const gone = err instanceof RpcFailure && err.code === SESSION_NOT_FOUND;
+      if (!gone) {
+        useSessionStore.setState({ initError: String(err) });
+        return;
+      }
+      removeSession(localId);
+    })
+    .finally(() => {
+      // Only updates numbered after the copy are left: the ones the replay
+      // straggled in with are already in it, and applying them would duplicate.
+      flushPendingReplayUpdates();
+      if (loaded) closeReplayedTurns(localId, loaded.turns);
+      endReopen(backendId);
+      // A gap seen while the load was in flight had no way to rebuild anything;
+      // now that it has landed, the session is repaired if it still needs to be.
+      if (loaded && repairPending.delete(backendId)) requestRepair(backendId);
+      // A turn that closed while the replay was in flight had its follow-up
+      // refused; it is owed one now that the conversation is back.
+      flushFollowups(localId);
+    });
 }
 
 // How each replayed turn ended, as the `session/load` reply reported it, under
@@ -827,6 +1016,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         await initialize();
         onNotify((params) => {
           const target = String(params.sessionId ?? '');
+          const seq = seqOf(params);
+          // A numbered update is read before it is applied: one the reply's copy
+          // already carries is a duplicate, and one past the last applied number
+          // is either the next update or a gap that needs the session rebuilt.
+          if (seq !== null && !trackSeq(target, seq)) return;
           const isTest =
             typeof process !== 'undefined' &&
             (process.env?.VITEST || process.env?.NODE_ENV === 'test');
@@ -919,55 +1113,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // sessions are left alone: loading one again would replay it on top of itself.
     const session = get().sessions.find((s) => s.id === id);
     if (!session?.backendId || session.loaded) return;
-    const backendId = session.backendId;
-    // Marked before the request rather than after it answers: a second click while
-    // the first load is still in flight must not ask for the same conversation
-    // again, and waiting for the reply would leave that window open.
-    useSessionStore.setState((s) => ({
-      sessions: s.sessions.map((sess) =>
-        sess.id === id ? { ...sess, loaded: true } : sess,
-      ),
-    }));
-    beginReopen(backendId);
-    // How each replayed turn ended arrives on the response; the updates carry no
-    // turn boundary. Held here until the replay is on screen.
-    let loaded: LoadedSession | null = null;
-    void loadSession(backendId, session.cwd)
-      .then((result) => {
-        loaded = result;
-        // Stored here, at the reply: the updates it ended can arrive after it
-        // (see `replayTurnEnds`).
-        rememberReplayTurnEnds(backendId, result.turns);
-        // The reply says which model, thinking level, and sandbox mode the
-        // replayed conversation was left on. Written before the updates stop
-        // arriving, so the pickers are right from the moment the conversation
-        // appears.
-        if (result.model) setModelOf(id, result.model);
-        setThinkingOf(id, result.thinking);
-        setSandboxModeOf(id, result.sandboxMode);
-      })
-      .catch((err: unknown) => {
-        // A session the agent will not name is one this app cannot show, and
-        // showing it as an empty conversation would be a lie. It goes, and the
-        // sidebar is one row shorter rather than one wrong.
-        const gone =
-          err instanceof RpcFailure && err.code === SESSION_NOT_FOUND;
-        if (!gone) {
-          useSessionStore.setState({ initError: String(err) });
-          return;
-        }
-        removeSession(id);
-      })
-      .finally(() => {
-        flushPendingReplayUpdates();
-        // After the flush: a turn exists in the store only once the update that
-        // opened it has been applied, and the replay is applied in batches.
-        if (loaded) closeReplayedTurns(id, loaded.turns);
-        endReopen(backendId);
-        // A turn that closed while the replay was in flight had its follow-up
-        // refused; it is owed one now that the conversation is back.
-        flushFollowups(id);
-      });
+    startLoad(id, false);
   },
 
   addSession: () => {
@@ -1491,6 +1637,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 // flight keeps streaming updates into the old turn, which `applyUpdate` no
 // longer matches — harmless, since the session is gone from the list.
 function removeSession(id: string) {
+  // Read before the row is filtered out: its conversation's bookkeeping is filed
+  // under the backend id, which stops being reachable once the row is gone.
+  const backendId =
+    useSessionStore.getState().sessions.find((s) => s.id === id)?.backendId ??
+    null;
   // Where the view goes once the row is gone: `null` when the row that went was
   // not the one on screen, so the view stays where it is and there is nothing
   // more to ask for. An empty string means it was on screen and nothing is left.
@@ -1519,6 +1670,11 @@ function removeSession(id: string) {
     };
   });
   if (!removed) return;
+  if (backendId !== null) {
+    lastSeq.delete(backendId);
+    repairCounts.delete(backendId);
+    repairPending.delete(backendId);
+  }
   saveDrafts(useSessionStore.getState().drafts);
   if (movedTo === null) return;
   // Nothing left to fall back to, so a draft: the sidebar is never a dead end.
@@ -1601,6 +1757,14 @@ function closeTurn(
         : [...s.unreadIds, sessionId],
     ...(error ? { initError: error } : {}),
   }));
+  // The text a turn produces reaches the log only when it closes, so a repair
+  // that saw a gap during this turn waited for it to end.
+  const backendId =
+    useSessionStore.getState().sessions.find((s) => s.id === sessionId)
+      ?.backendId ?? null;
+  if (backendId !== null && repairPending.delete(backendId)) {
+    requestRepair(backendId);
+  }
   // A finished turn releases the first waiting follow-up as its own turn; that
   // turn's close releases the next, so the queue drains in arrival order.
   queueMicrotask(() => flushFollowups(sessionId));
