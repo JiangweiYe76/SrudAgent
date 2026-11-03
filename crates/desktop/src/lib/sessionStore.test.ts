@@ -63,6 +63,22 @@ const turnsReply = (turns: Array<{ turnId: string; endReason: string }>) => ({
   _meta: { srud: { turns } },
 });
 
+// One replayed update, as `session/load` hands it back: the update, the turn it
+// belongs to, and the number the stream gave it.
+const replayed = (
+  turnId: string,
+  update: Record<string, unknown>,
+  seq: number,
+) => ({ sessionId: 'S-previous', update, _meta: { srud: { turnId, seq } } });
+
+// A `session/load` reply that carries the conversation itself, how each turn
+// ended, and the number the last replayed update was given.
+const historyReply = (
+  history: Array<Record<string, unknown>>,
+  lastSeq: number,
+  turns: Array<{ turnId: string; endReason: string }> = [],
+) => ({ _meta: { srud: { history, lastSeq, turns } } });
+
 // Boots a fresh store with a scripted backend: handshake succeeds, `session/new`
 // hands out S1, S2, ... and `session/prompt` resolves only when the returned
 // deferred settles. `session/load` likewise stays open until its deferred
@@ -1609,6 +1625,105 @@ describe('sessionStore listing path', () => {
     // The session on screen is left alone, and keeps the conversation it has.
     expect(useSessionStore.getState().activeId).toBe(
       useSessionStore.getState().sessions[0].id,
+    );
+  });
+
+  it('restores a conversation the stream delivered only part of', async () => {
+    // The channel is bounded and drops on lag, so the stream can hand over a
+    // question and stop before the answer. The reply carries both, and replacing
+    // the streamed copy with it is what makes the transcript whole.
+    const { useSessionStore, active, fire, load } = await boot({
+      listed: [LISTED],
+    });
+
+    fire(
+      {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'q' },
+      },
+      { turnId: 'T1', seq: 1 },
+    );
+
+    const question = replayed(
+      'T1',
+      {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'q' },
+      },
+      1,
+    );
+    const answer = replayed(
+      'T1',
+      {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'a' },
+      },
+      2,
+    );
+    load.resolve(
+      historyReply([question, answer], 2, [
+        { turnId: 'T1', endReason: 'completed' },
+      ]),
+    );
+    await vi.waitFor(() => {
+      expect(isReopening(useSessionStore.getState())).toBe(false);
+    });
+
+    expect(active().turns).toHaveLength(1);
+    expect(active().turns[0].userInput).toBe('q');
+    expect(active().turns[0].steps[0].assistantText).toBe('a');
+    expect(active().turns[0].endReason).toBe('completed');
+
+    // A replayed notification that straggled past the reply is already in the
+    // copy, so it is not appended a second time.
+    fire(
+      {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'late' },
+      },
+      { turnId: 'T1', seq: 1 },
+    );
+    expect(active().turns[0].steps[0].assistantText).toBe('a');
+  });
+
+  it('rebuilds a session once when the stream skips an update', async () => {
+    const { useSessionStore, active, fire, load, calls } = await boot({
+      listed: [LISTED],
+    });
+
+    const question = replayed(
+      'T1',
+      {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'q' },
+      },
+      1,
+    );
+    load.resolve(
+      historyReply([question], 1, [{ turnId: 'T1', endReason: 'completed' }]),
+    );
+    await vi.waitFor(() => {
+      expect(isReopening(useSessionStore.getState())).toBe(false);
+    });
+
+    // The next update is number 3, so number 2 never arrived.
+    fire(
+      {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'b' },
+      },
+      { turnId: 'T2', seq: 3 },
+    );
+    await vi.waitFor(() => {
+      expect(calls.filter((m) => m === 'session/load')).toHaveLength(2);
+    });
+    // One repair, not a loop: a further tick asks for nothing more.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.filter((m) => m === 'session/load')).toHaveLength(2);
+    // The turn the gap was in is still on screen: the repair replaced the
+    // recorded part rather than dropping everything the user was reading.
+    expect(active().turns.some((turn) => turn.backendTurnId === 'T2')).toBe(
+      true,
     );
   });
 });
