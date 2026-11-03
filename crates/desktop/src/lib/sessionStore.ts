@@ -13,6 +13,7 @@ import type {
   TurnEndReason,
   UsageState,
 } from './types';
+import { DEFAULT_SANDBOX_MODE } from './types';
 import { t } from './i18n';
 import { loadDrafts, saveDrafts } from './drafts';
 import {
@@ -31,6 +32,7 @@ import {
   onNotify,
   parseSessionOptions,
   setSessionModel,
+  setSessionMode,
   setSessionThinking,
   type ListedSession,
   type LoadedSession,
@@ -624,6 +626,7 @@ interface SessionState {
   regenerateTurn: (turn: Turn) => void;
   setModel: (model: string) => void;
   setThinking: (level: string) => void;
+  setSandboxMode: (mode: string) => void;
   renameSession: (id: string, title: string) => void;
   // Copies the session's history into a session of its own and opens it. The
   // fork is a backend session from the first moment: a draft has nothing there
@@ -753,7 +756,7 @@ function freshSession(): Session {
     title: null,
     model: null,
     thinking: null,
-    sandboxMode: null,
+    sandboxMode: DEFAULT_SANDBOX_MODE,
     turns: [],
     followups: [],
     createdAt: now,
@@ -776,7 +779,7 @@ function listedSession(info: ListedSession, now: number): Session {
     // Known once the conversation is loaded: the model comes back with it.
     model: null,
     thinking: null,
-    sandboxMode: null,
+    sandboxMode: DEFAULT_SANDBOX_MODE,
     turns: [],
     followups: [],
     createdAt: now,
@@ -1040,6 +1043,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           const draft = get().sessions.find((s) => s.id === sessionId);
           const chosenModel = draft?.model?.currentValue ?? '';
           const chosenThinking = draft?.thinking?.currentValue ?? '';
+          const chosenSandbox = draft?.sandboxMode?.currentValue ?? '';
+          let sandboxMode = created.sandboxMode;
+          if (
+            sandboxMode &&
+            chosenSandbox &&
+            chosenSandbox !== sandboxMode.currentValue &&
+            sandboxMode.choices.some((choice) => choice.value === chosenSandbox)
+          ) {
+            try {
+              await setSessionMode(created.sessionId, chosenSandbox);
+              sandboxMode = { ...sandboxMode, currentValue: chosenSandbox };
+            } catch (err) {
+              useSessionStore.setState({ initError: String(err) });
+            }
+          }
           let options: SessionOptions = {
             model: created.model,
             thinking: created.thinking,
@@ -1104,7 +1122,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                       backendId: created.sessionId,
                       model: options.model,
                       thinking: options.thinking,
-                      sandboxMode: created.sandboxMode,
+                      sandboxMode,
                     }
                   : sess,
               ),
@@ -1357,6 +1375,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (next.model) setModelOf(localId, next.model);
         setThinkingOf(localId, next.thinking);
       })
+      .catch((err) => set({ initError: String(err) }));
+  },
+
+  setSandboxMode: (mode) => {
+    const session = get().sessions.find((s) => s.id === get().activeId);
+    if (!session) return;
+    const options = session.sandboxMode ?? DEFAULT_SANDBOX_MODE;
+    if (!options.choices.some((choice) => choice.value === mode)) return;
+    // A draft has no agent session to switch, so the choice is recorded against
+    // the draft and applied when the first prompt creates one.
+    if (!session.backendId) {
+      set((s) => ({
+        sessions: s.sessions.map((sess) =>
+          sess.id === session.id
+            ? { ...sess, sandboxMode: { ...options, currentValue: mode } }
+            : sess,
+        ),
+      }));
+      return;
+    }
+    const localId = session.id;
+    void setSessionMode(session.backendId, mode)
+      .then(() => setSandboxModeOf(localId, { ...options, currentValue: mode }))
       .catch((err) => set({ initError: String(err) }));
   },
 

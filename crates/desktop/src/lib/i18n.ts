@@ -28,8 +28,16 @@ const en = {
   'app.newSession': 'New session',
 
   'sandbox.fullAccess': 'Full access',
+  'sandbox.workspaceWrite': 'Workspace write',
   'sandbox.fullAccessHint':
     'The agent can read and write any file this account can. Commands run without an OS sandbox.',
+  'sandbox.fullAccessTitle': 'Enable full access?',
+  'sandbox.fullAccessScope': 'Applies to this session only.',
+  'sandbox.fullAccessConsequence':
+    'The agent can read and write any file this account can.',
+  'sandbox.fullAccessExit':
+    'Switch back to Workspace write, or end the session, to leave this mode.',
+  'sandbox.enableFullAccess': 'Enable full access',
 
   'empty.startChat': 'Start a new chat',
   'empty.loadingSession': 'Loading conversation…',

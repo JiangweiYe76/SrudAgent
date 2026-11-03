@@ -17,9 +17,17 @@ const FULL_ACCESS: SandboxModeOptions = {
   choices: [{ value: 'full-access', name: 'Full access' }],
 };
 
-function render(options: SandboxModeOptions | null): void {
+const WORKSPACE_WRITE: SandboxModeOptions = {
+  currentValue: 'workspace-write',
+  choices: [
+    { value: 'workspace-write', name: 'Workspace write' },
+    { value: 'full-access', name: 'Full access' },
+  ],
+};
+
+function render(options: SandboxModeOptions | null, disabled = false): void {
   act(() => {
-    root.render(<SandboxModeSelect options={options} />);
+    root.render(<SandboxModeSelect options={options} disabled={disabled} />);
   });
 }
 
@@ -53,11 +61,24 @@ describe('SandboxModeSelect', () => {
     expect(trigger()?.className).toContain('text-destructive');
   });
 
+  it('shows workspace write without the destructive colour', () => {
+    mount();
+    render(WORKSPACE_WRITE);
+    expect(trigger()?.textContent).toBe('Workspace write');
+    expect(trigger()?.className).not.toContain('text-destructive');
+  });
+
+  it('can be disabled while a turn runs', () => {
+    mount();
+    render(WORKSPACE_WRITE, true);
+    expect(trigger()?.disabled).toBe(true);
+  });
+
   it('shows nothing when the agent advertised no mode', () => {
     mount();
     render(null);
     expect(trigger()).toBeNull();
-    render({ currentValue: 'full-access', choices: [] });
+    render({ currentValue: 'workspace-write', choices: [] });
     expect(trigger()).toBeNull();
   });
 });

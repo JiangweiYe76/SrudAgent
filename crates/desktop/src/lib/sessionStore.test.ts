@@ -84,6 +84,9 @@ async function boot(
     newModel?: unknown;
     loadModel?: unknown;
     switched?: unknown;
+    // The `modes` the agent hangs on each reply.
+    newModes?: unknown;
+    loadModes?: unknown;
   } = {},
 ) {
   vi.resetModules();
@@ -125,6 +128,9 @@ async function boot(
             ...(options.newModel === undefined
               ? {}
               : { configOptions: options.newModel }),
+            ...(options.newModes === undefined
+              ? {}
+              : { modes: options.newModes }),
           });
         case 'session/prompt':
           return prompt.promise.then((r) => reply(payload.id, r));
@@ -149,6 +155,9 @@ async function boot(
               ...(options.loadModel === undefined
                 ? {}
                 : { configOptions: options.loadModel }),
+              ...(options.loadModes === undefined
+                ? {}
+                : { modes: options.loadModes }),
               ...(extra ?? {}),
             }),
           );
@@ -159,6 +168,8 @@ async function boot(
               ? {}
               : { configOptions: options.switched }),
           });
+        case 'session/set_mode':
+          return reply(payload.id, {});
         case 'session/cancel':
           return reply(payload.id, {});
         case '_srud/unstable/session/set_title':
@@ -1632,6 +1643,17 @@ function modelOptions(currentValue: string, configId = 'model') {
   ];
 }
 
+// The `modes` of a reply, as the agent serializes them.
+function sandboxModes(currentModeId = 'workspace-write') {
+  return {
+    currentModeId,
+    availableModes: [
+      { id: 'workspace-write', name: 'Workspace write' },
+      { id: 'full-access', name: 'Full access' },
+    ],
+  };
+}
+
 // The provider catalog behind the model references `modelOptions` offers, as
 // the settings panel would have loaded it.
 function providerCatalog(defaultModel: string | null) {
@@ -2523,5 +2545,24 @@ describe('sessionStore regenerate', () => {
     useSessionStore.getState().regenerateTurn(active().turns[0]);
     await new Promise((r) => setTimeout(r, 0));
     expect(calls).not.toContain('_srud/unstable/session/regenerate');
+  });
+});
+
+describe('sessionStore sandbox mode', () => {
+  it('applies a draft mode when the first prompt creates the session', async () => {
+    const { useSessionStore, active, calls, waitForBackend } = await boot({
+      newModes: sandboxModes(),
+    });
+    expect(active().sandboxMode?.currentValue).toBe('workspace-write');
+
+    useSessionStore.getState().setSandboxMode('full-access');
+    expect(active().backendId).toBeNull();
+    expect(active().sandboxMode?.currentValue).toBe('full-access');
+
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    expect(active().sandboxMode?.currentValue).toBe('full-access');
+    expect(calls).toContain('session/set_mode');
   });
 });
