@@ -84,6 +84,16 @@ export interface SandboxModeOptions {
   choices: ModelChoice[];
 }
 
+// The mode a new session starts on, and the set a client shows before the agent
+// has answered with its own.
+export const DEFAULT_SANDBOX_MODE: SandboxModeOptions = {
+  currentValue: 'workspace-write',
+  choices: [
+    { value: 'workspace-write', name: 'Workspace write' },
+    { value: 'full-access', name: 'Full access' },
+  ],
+};
+
 // One file change a tool call made, as ACP's diff content block carries it:
 // the text before and after, not a patch. Drawing the comparison is the
 // renderer's job.

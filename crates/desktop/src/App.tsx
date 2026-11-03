@@ -6,6 +6,7 @@ import { MessageList, type MessageListHandle } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 import { ModelSelect } from './components/ModelSelect';
 import { ThinkingSelect } from './components/ThinkingSelect';
+import { FullAccessModal } from './components/FullAccessModal';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
 import {
@@ -27,6 +28,7 @@ import { suppressSelectAll, suppressWebviewContextMenu } from './lib/webview';
 import { preserveMarkdownWhenCopying } from './lib/markdownSource';
 import type { Provider } from './lib/acp';
 import type { UsageState } from './lib/types';
+import { DEFAULT_SANDBOX_MODE } from './lib/types';
 import { t } from './lib/i18n';
 import './styles.css';
 
@@ -45,6 +47,7 @@ function App() {
   const regenerateTurn = useSessionStore((s) => s.regenerateTurn);
   const setModel = useSessionStore((s) => s.setModel);
   const setThinking = useSessionStore((s) => s.setThinking);
+  const setSandboxMode = useSessionStore((s) => s.setSandboxMode);
   const renameSession = useSessionStore((s) => s.renameSession);
   const forkSession = useSessionStore((s) => s.forkSession);
   const deleteSession = useSessionStore((s) => s.deleteSession);
@@ -59,6 +62,7 @@ function App() {
   const defaultModel = useProviderStore((s) => s.defaultModel);
   const bindings = useShortcutStore((s) => s.bindings);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [fullAccessOpen, setFullAccessOpen] = useState(false);
   // The composer floats over the conversation, so the list keeps room under its
   // last message for it. Measured rather than fixed: queued messages make the
   // composer taller than any static padding accounts for. The inset adds 38 on
@@ -168,14 +172,17 @@ function App() {
   // The mode the composer shows. A draft has no session, so it shows the mode
   // a new session starts on; a session that has not loaded shows the same one
   // until its reply names the real mode.
-  const sandboxMode = useMemo(
-    () =>
-      active?.sandboxMode ?? {
-        currentValue: 'full-access',
-        choices: [{ value: 'full-access', name: t('sandbox.fullAccess') }],
-      },
-    [active?.sandboxMode],
-  );
+  const sandboxMode = active?.sandboxMode ?? DEFAULT_SANDBOX_MODE;
+
+  // Full access removes the OS boundary, so entering it is confirmed first.
+  // Switching back needs no confirmation.
+  const chooseSandboxMode = (mode: string) => {
+    if (mode === 'full-access' && sandboxMode.currentValue !== 'full-access') {
+      setFullAccessOpen(true);
+      return;
+    }
+    setSandboxMode(mode);
+  };
 
   // The ring shows context pressure from the moment the session names a model,
   // not only after the first report: the window comes from the catalog, and
@@ -273,6 +280,7 @@ function App() {
           onStop={stopTurn}
           usage={usage}
           sandboxMode={sandboxMode}
+          onSandboxModeSelect={chooseSandboxMode}
           onHeightChange={onComposerHeight}
           showScrollToBottom={!atBottom}
           onScrollToBottom={scrollToBottom}
@@ -281,6 +289,14 @@ function App() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+      <FullAccessModal
+        open={fullAccessOpen}
+        onClose={() => setFullAccessOpen(false)}
+        onConfirm={() => {
+          setSandboxMode('full-access');
+          setFullAccessOpen(false);
+        }}
       />
       <Toaster theme={theme} position="top-center" />
     </div>

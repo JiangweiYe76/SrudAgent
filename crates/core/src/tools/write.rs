@@ -4,7 +4,10 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use super::{failure_text, invalid_arguments, resolve, Tool, ToolContext, ToolError, ToolOutcome};
+use super::{
+    denied_write, failure_text, invalid_arguments, resolve, Tool, ToolContext, ToolError,
+    ToolOutcome,
+};
 
 /// The name the model calls.
 const NAME: &str = "write";
@@ -71,6 +74,9 @@ impl Tool for WriteTool {
         let args: Args = serde_json::from_value(arguments)
             .map_err(|err| invalid_arguments(NAME, err.to_string()))?;
         let path = resolve(ctx, &args.path);
+        if let Some(message) = denied_write(ctx, &path) {
+            return Ok(ToolOutcome::failure(message));
+        }
         let shown = path.display();
 
         // One look at the path before anything is created. It settles both what the
@@ -181,6 +187,14 @@ mod tests {
             cwd: dir.to_path_buf(),
             cancel: tokio_util::sync::CancellationToken::new(),
             sandbox: crate::sandbox::SandboxPolicy::Unrestricted,
+        }
+    }
+
+    fn bounded_ctx(dir: &Path) -> ToolContext {
+        ToolContext {
+            cwd: dir.to_path_buf(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            sandbox: crate::sandbox::SandboxLevel::WorkspaceWrite.policy(dir),
         }
     }
 
@@ -451,5 +465,46 @@ mod tests {
             !dir.join("made").exists(),
             "the directories above the file are not made for a call that cannot run"
         );
+    }
+
+    #[tokio::test]
+    async fn a_bounded_session_writes_inside_its_roots() {
+        let dir = scratch("bounded-inside");
+        let outcome = WriteTool
+            .call(
+                &bounded_ctx(&dir),
+                serde_json::json!({ "path": "inside.txt", "content": "ok" }),
+            )
+            .await
+            .expect("the arguments match the schema");
+
+        reply(&outcome);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("inside.txt")).unwrap(),
+            "ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bounded_session_refuses_a_path_outside_its_roots() {
+        let dir = scratch("bounded-outside");
+        let outside = PathBuf::from(format!(
+            "/var/tmp/srud-write-outside-{}.txt",
+            std::process::id()
+        ));
+        let outcome = WriteTool
+            .call(
+                &bounded_ctx(&dir),
+                serde_json::json!({
+                    "path": outside.display().to_string(),
+                    "content": "no"
+                }),
+            )
+            .await
+            .expect("the arguments match the schema");
+
+        let message = refusal(&outcome);
+        assert!(message.contains("writable roots"), "{message}");
+        assert!(!outside.exists(), "nothing was written outside the roots");
     }
 }

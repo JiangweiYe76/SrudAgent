@@ -53,6 +53,8 @@ interface ChatInputProps {
   usage?: UsageState;
   // The sandbox mode the session runs in, shown under the composer.
   sandboxMode?: SandboxModeOptions | null;
+  // Asks for another mode. The owner decides whether to apply it.
+  onSandboxModeSelect?: (mode: string) => void;
   // Reports the composer's height, so the conversation can keep enough room
   // under its last message: the box floats over the list, and queued messages
   // make it taller than any fixed padding allows for.
@@ -84,6 +86,7 @@ export function ChatInput({
   onStop,
   usage,
   sandboxMode,
+  onSandboxModeSelect,
   onHeightChange,
   showScrollToBottom = false,
   onScrollToBottom,
@@ -420,7 +423,11 @@ export function ChatInput({
         />
       </ContextMenu>
       <div className="flex items-center justify-between gap-1.5">
-        <SandboxModeSelect options={sandboxMode} />
+        <SandboxModeSelect
+          options={sandboxMode}
+          disabled={busy}
+          onSelect={onSandboxModeSelect}
+        />
         <div className="flex items-center gap-1.5">
           {usage && (
             <UsageIndicator usage={usage} onOpen={() => setUsageOpen(true)} />

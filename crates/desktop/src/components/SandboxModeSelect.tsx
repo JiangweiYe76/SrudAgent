@@ -13,6 +13,8 @@ import { t } from '@/lib/i18n';
 
 interface SandboxModeSelectProps {
   options: SandboxModeOptions | null | undefined;
+  // Set while a turn runs: the mode applies from the next turn boundary.
+  disabled?: boolean;
   // Switching a mode is a session-level action. Selecting the mode already in
   // effect changes nothing.
   onSelect?: (mode: string) => void;
@@ -27,6 +29,7 @@ interface SandboxModeSelectProps {
  */
 export function SandboxModeSelect({
   options,
+  disabled,
   onSelect,
 }: SandboxModeSelectProps) {
   const [open, setOpen] = useState(false);
@@ -47,10 +50,12 @@ export function SandboxModeSelect({
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger
+        disabled={disabled}
         title={fullAccess ? t('sandbox.fullAccessHint') : current}
         className={cn(
           'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] font-normal transition-colors',
           'hover:bg-item-hover focus-visible:bg-item-hover focus-visible:outline-none',
+          'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
           fullAccess
             ? 'text-destructive hover:bg-destructive/10'
             : 'text-muted-foreground hover:text-foreground',

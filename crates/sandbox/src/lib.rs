@@ -6,8 +6,8 @@
 //!
 //! [`SandboxLevel::FullAccess`] maps to [`SandboxPolicy::Unrestricted`], which
 //! spawns the caller's argv as written. The bounded levels map to
-//! [`SandboxPolicy::Bounded`]; no sandbox runner backs that policy in this
-//! build, so [`wrap_argv`] refuses it rather than running without a boundary.
+//! [`SandboxPolicy::Bounded`], which [`wrap_argv`] turns into a bubblewrap
+//! command on Linux. Network access is left as this machine has it.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -24,9 +24,9 @@ pub enum SandboxLevel {
     /// Reads are allowed; writes are refused.
     ReadOnly,
     /// Writes are limited to the workspace and its temporary directories.
+    #[default]
     WorkspaceWrite,
     /// No OS boundary: the command runs with this process's own access.
-    #[default]
     FullAccess,
 }
 
@@ -84,7 +84,6 @@ impl SandboxLevel {
             Self::ReadOnly => SandboxPolicy::Bounded(BoundedPolicy {
                 mode: SandboxMode::ReadOnly,
                 writable_roots: Vec::new(),
-                network: NetworkPolicy::Enabled,
             }),
             Self::WorkspaceWrite => SandboxPolicy::Bounded(BoundedPolicy::workspace_write(cwd)),
         }
@@ -104,15 +103,6 @@ pub enum SandboxMode {
     WorkspaceWrite,
 }
 
-/// Whether a sandboxed process may use the network.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetworkPolicy {
-    /// No outbound network.
-    Disabled,
-    /// The process keeps this machine's network access.
-    Enabled,
-}
-
 /// A policy that can be handed to the argv boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundedPolicy {
@@ -123,8 +113,6 @@ pub struct BoundedPolicy {
     /// Canonical, absolute, and de-duplicated, because this is the one source
     /// both the OS wrapper and the file tools are meant to agree on.
     pub writable_roots: Vec<PathBuf>,
-    /// Whether the process keeps its network access.
-    pub network: NetworkPolicy,
 }
 
 impl BoundedPolicy {
@@ -146,7 +134,6 @@ impl BoundedPolicy {
         Self {
             mode: SandboxMode::WorkspaceWrite,
             writable_roots: roots,
-            network: NetworkPolicy::Enabled,
         }
     }
 
@@ -205,26 +192,40 @@ pub struct WrappedArgv {
     pub enforcement: Enforcement,
 }
 
+mod platform;
+
+pub use platform::Platform;
+
 /// A bounded policy could not be turned into an executable argv.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SandboxUnavailable {
-    /// No runner is present to enforce the policy.
-    #[error("no sandbox runner is available")]
-    NoRunner,
+    /// The runner a bounded policy needs is not on this machine.
+    #[error("the sandbox runner `{program}` was not found")]
+    RunnerMissing {
+        /// The program that was looked for.
+        program: &'static str,
+    },
+    /// The platform has no runner that implements this policy.
+    #[error("sandboxing is not supported on {platform}")]
+    UnsupportedPlatform {
+        /// The platform the build targets.
+        platform: Platform,
+    },
 }
 
 /// Wraps `argv` in the boundary `policy` describes.
 ///
 /// # Errors
 ///
-/// Returns [`SandboxUnavailable::NoRunner`]: the caller must fail closed, since
-/// running the raw argv here would silently turn a bounded request into full
-/// access.
+/// Returns [`SandboxUnavailable::RunnerMissing`] or
+/// [`SandboxUnavailable::UnsupportedPlatform`]. The caller must fail closed,
+/// since running the raw argv here would silently turn a bounded request into
+/// full access.
 pub fn wrap_argv(
-    _argv: &[OsString],
-    _policy: &BoundedPolicy,
+    argv: &[OsString],
+    policy: &BoundedPolicy,
 ) -> Result<WrappedArgv, SandboxUnavailable> {
-    Err(SandboxUnavailable::NoRunner)
+    platform::wrap(argv, policy)
 }
 
 /// Canonicalises an existing path, or returns `None` when it is not there.
@@ -272,6 +273,35 @@ mod tests {
     fn full_access_is_unrestricted() {
         let policy = SandboxLevel::FullAccess.policy(Path::new("/workspace"));
         assert!(policy.is_unrestricted());
+    }
+
+    #[test]
+    fn workspace_write_is_default() {
+        assert_eq!(SandboxLevel::default(), SandboxLevel::WorkspaceWrite);
+    }
+
+    #[test]
+    fn an_unsupported_platform_names_itself() {
+        let error = SandboxUnavailable::UnsupportedPlatform {
+            platform: Platform::MacOs,
+        };
+        assert_eq!(error.to_string(), "sandboxing is not supported on macOS");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_roots_is_refused() {
+        let dir = scratch("symlink");
+        let link = dir.join("escape");
+        std::os::unix::fs::symlink("/var/tmp", &link).expect("symlink");
+        let policy = SandboxLevel::WorkspaceWrite.policy(&dir);
+        let SandboxPolicy::Bounded(bounded) = policy else {
+            panic!("workspace write is bounded");
+        };
+        assert!(
+            !bounded.allows_write(&link.join("outside.txt")),
+            "a symlink cannot carry a write past the roots"
+        );
     }
 
     #[test]
