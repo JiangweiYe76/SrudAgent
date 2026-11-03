@@ -18,7 +18,7 @@ impl Agent {
     /// The mode state a session is offered.
     ///
     /// `None` for a session that does not exist. The available list is the set
-    /// this build advertises; only full access is in it.
+    /// this build advertises: workspace write and full access.
     pub(super) fn mode_state(&self, id: &SessionId) -> Option<SessionModeState> {
         let level = self.sessions.sandbox_level(id)?;
         Some(SessionModeState::new(
@@ -29,9 +29,9 @@ impl Agent {
 
     /// Switches a session's mode.
     ///
-    /// Only a mode this build advertises is accepted. A request for a level that
-    /// exists in the vocabulary but has no runner is refused rather than
-    /// silently run without a boundary.
+    /// Only a mode this build advertises is accepted. A level outside the
+    /// advertised set is refused rather than silently run with a different
+    /// boundary.
     pub(super) async fn handle_set_mode(
         &self,
         params: Value,
@@ -85,11 +85,18 @@ fn available_modes() -> &'static [SessionMode] {
     // client compares ids across responses.
     static MODES: std::sync::OnceLock<Vec<SessionMode>> = std::sync::OnceLock::new();
     MODES.get_or_init(|| {
-        vec![SessionMode::new(
-            SandboxLevel::FullAccess.id(),
-            SandboxLevel::FullAccess.name(),
-        )
-        .description(SandboxLevel::FullAccess.description())]
+        vec![
+            SessionMode::new(
+                SandboxLevel::WorkspaceWrite.id(),
+                SandboxLevel::WorkspaceWrite.name(),
+            )
+            .description(SandboxLevel::WorkspaceWrite.description()),
+            SessionMode::new(
+                SandboxLevel::FullAccess.id(),
+                SandboxLevel::FullAccess.name(),
+            )
+            .description(SandboxLevel::FullAccess.description()),
+        ]
     })
 }
 
@@ -100,18 +107,39 @@ mod tests {
     use srud_protocol::error::INVALID_PARAMS;
 
     #[tokio::test]
-    async fn a_new_session_offers_full_access() {
+    async fn a_new_session_offers_workspace_write() {
         let _home = home();
         let agent = agent(scripted(vec![]));
         initialize(&agent).await;
         let result = new_session_result(&agent).await;
 
-        assert_eq!(result["modes"]["currentModeId"], "full-access");
-        assert_eq!(result["modes"]["availableModes"][0]["id"], "full-access");
+        assert_eq!(result["modes"]["currentModeId"], "workspace-write");
+        assert_eq!(
+            result["modes"]["availableModes"][0]["id"],
+            "workspace-write"
+        );
+        assert_eq!(result["modes"]["availableModes"][1]["id"], "full-access");
     }
 
     #[tokio::test]
-    async fn a_mode_without_a_runner_is_refused() {
+    async fn full_access_is_accepted() {
+        let _home = home();
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let session_id = new_session_result(&agent).await["sessionId"].clone();
+
+        result_of(
+            agent
+                .handle(request(
+                    SESSION_SET_MODE,
+                    serde_json::json!({ "sessionId": session_id, "modeId": "full-access" }),
+                ))
+                .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mode_outside_the_advertised_set_is_refused() {
         let _home = home();
         let agent = agent(scripted(vec![]));
         initialize(&agent).await;
@@ -121,7 +149,7 @@ mod tests {
             agent
                 .handle(request(
                     SESSION_SET_MODE,
-                    serde_json::json!({ "sessionId": session_id, "modeId": "workspace-write" }),
+                    serde_json::json!({ "sessionId": session_id, "modeId": "read-only" }),
                 ))
                 .await,
         );
