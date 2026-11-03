@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::{Datelike, SecondsFormat};
+use srud_core::sandbox::SandboxLevel;
 use srud_core::session::Session;
 use srud_core::session_event::SessionEvent;
 use srud_core::session_log::{RecordError, SessionLog};
@@ -420,6 +421,15 @@ impl SessionManager {
             source: std::io::Error::other(source),
         })?;
 
+        // The level is recorded before the session is announced, beside the
+        // model, so a resumed session reads the level it was created with.
+        log.record(&SessionEvent::sandbox(session.sandbox()))
+            .await
+            .map_err(|source| CreateError::Log {
+                what: "the session's sandbox level".into(),
+                source: std::io::Error::other(source),
+            })?;
+
         // Recorded only when there is one, so a session that was offered no model
         // carries no record at all rather than a `null` a reader would have to
         // tell apart from a cleared selection.
@@ -521,6 +531,7 @@ impl SessionManager {
             loaded.cwd.clone(),
             loaded.history.clone(),
         ));
+        session.set_sandbox(loaded.sandbox);
         self.sessions
             .lock()
             .expect("session map lock poisoned")
@@ -624,12 +635,15 @@ impl SessionManager {
         if let Some(title) = &title {
             SessionLog::record(&log, &SessionEvent::title(Some(title.clone()))).await?;
         }
+        let sandbox = SandboxLevel::default();
+        SessionLog::record(&log, &SessionEvent::sandbox(sandbox)).await?;
 
         let session = Arc::new(Session::restored(
             session_id,
             cwd.clone(),
             loaded.history.clone(),
         ));
+        session.set_sandbox(sandbox);
         let wire_id = SessionId::new(session_id.to_string());
         self.sessions
             .lock()
@@ -828,6 +842,40 @@ impl SessionManager {
             .expect("session map lock poisoned")
             .get(id.0.as_ref())
             .and_then(|tracked| tracked.thinking.clone())
+    }
+
+    /// Reads the sandbox level a session runs under, if it exists.
+    #[must_use]
+    pub fn sandbox_level(&self, id: &SessionId) -> Option<SandboxLevel> {
+        self.get(id).map(|session| session.sandbox())
+    }
+
+    /// Sets the sandbox level a session runs under, returning whether it existed.
+    ///
+    /// The level is recorded before it is applied: the log is what a resumed
+    /// session is rebuilt from, so a level that only lived in memory would change
+    /// back on the next load.
+    ///
+    /// # Errors
+    ///
+    /// If the change could not be recorded.
+    pub async fn set_sandbox_level(
+        &self,
+        id: &SessionId,
+        level: SandboxLevel,
+    ) -> Result<bool, RecordError> {
+        let _changing = self.settings.lock().await;
+        let Some(log) = self.log_of(id) else {
+            return Ok(false);
+        };
+        SessionLog::record(log.as_ref(), &SessionEvent::sandbox(level)).await?;
+
+        let sessions = self.sessions.lock().expect("session map lock poisoned");
+        let Some(tracked) = sessions.get(id.0.as_ref()) else {
+            return Ok(false);
+        };
+        tracked.session.set_sandbox(level);
+        Ok(true)
     }
 
     /// Reads a session's display title, if it has one.

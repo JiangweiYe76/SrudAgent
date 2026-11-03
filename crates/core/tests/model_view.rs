@@ -25,6 +25,7 @@ fn ctx(dir: &Path) -> ToolContext {
     ToolContext {
         cwd: dir.to_path_buf(),
         cancel: tokio_util::sync::CancellationToken::new(),
+        sandbox: srud_core::sandbox::SandboxPolicy::Unrestricted,
     }
 }
 
@@ -42,6 +43,22 @@ async fn shell(dir: &Path, command: &str) -> ToolOutcome {
         .expect("the arguments match the schema")
 }
 
+/// Runs a command in a directory that does not exist, so the spawn fails.
+async fn shell_failure(dir: &Path, command: &str) -> ToolOutcome {
+    let missing = dir.join("not-a-directory");
+    ShellTool::default()
+        .call(
+            &ToolContext {
+                cwd: missing,
+                cancel: tokio_util::sync::CancellationToken::new(),
+                sandbox: srud_core::sandbox::SandboxPolicy::Unrestricted,
+            },
+            serde_json::json!({ "command": command }),
+        )
+        .await
+        .expect("the arguments match the schema")
+}
+
 /// The four things a model can be looking at after a turn: a result from either
 /// tool, or a failure from either.
 #[tokio::test]
@@ -51,7 +68,7 @@ async fn the_model_sees_four_distinguishable_shapes() {
     let read_ok = read(&dir, "note.txt").await;
     let read_missing = read(&dir, "nope.txt").await;
     let shell_ok = shell(&dir, "echo hello").await;
-    let shell_refused = shell(&dir, "rm note.txt").await;
+    let shell_failed = shell_failure(&dir, "echo hi").await;
 
     println!("── read, found ─────────────────────────");
     println!("{}", read_ok.output);
@@ -59,15 +76,15 @@ async fn the_model_sees_four_distinguishable_shapes() {
     println!("{}", read_missing.output);
     println!("── shell, ran ─────────────────────────");
     println!("{}", shell_ok.output);
-    println!("── shell, refused ─────────────────────");
-    println!("{}", shell_refused.output);
+    println!("── shell, failed ───────────────────────");
+    println!("{}", shell_failed.output);
 
     assert!(!read_ok.is_error && !shell_ok.is_error);
-    assert!(read_missing.is_error && shell_refused.is_error);
+    assert!(read_missing.is_error && shell_failed.is_error);
 
     // A failure is recognisable without parsing prose, whichever tool produced it.
     assert!(read_missing.output.starts_with(FAILURE_MARKER));
-    assert!(shell_refused.output.starts_with(FAILURE_MARKER));
+    assert!(shell_failed.output.starts_with(FAILURE_MARKER));
 }
 
 /// A result and a failure are distinguishable by the first line alone, which is
@@ -80,7 +97,7 @@ async fn the_first_line_is_enough_to_tell_them_apart() {
         read(&dir, "note.txt").await,
         shell(&dir, "echo hi").await,
         read(&dir, "nope.txt").await,
-        shell(&dir, "dd if=/dev/zero of=x").await,
+        shell_failure(&dir, "echo hi").await,
         read(&dir, ".").await,
     ] {
         let first = outcome.output.lines().next().unwrap_or_default();
@@ -135,7 +152,7 @@ async fn a_failure_carries_what_to_try() {
     let dir = scratch("hints", "note.txt", "one\n");
     let missing = read(&dir, "nope.txt").await;
     let directory = read(&dir, ".").await;
-    let refused = shell(&dir, "rm note.txt").await;
+    let failed = shell_failure(&dir, "echo hi").await;
 
     // The cause alone would leave these open; the second part closes them.
     assert!(
@@ -151,14 +168,14 @@ async fn a_failure_carries_what_to_try() {
         directory.output
     );
     assert!(
-        refused.output.contains("Do not work around it"),
-        "a refusal says not to retry it differently: {}",
-        refused.output
+        failed.output.contains("working directory does not exist"),
+        "a failed spawn says what to check: {}",
+        failed.output
     );
 
     // Each failure has a message and then advice, so advice is never the whole
     // reply.
-    for outcome in [missing, directory, refused] {
+    for outcome in [missing, directory, failed] {
         let (_, advice) = outcome
             .output
             .split_once("\n\n")

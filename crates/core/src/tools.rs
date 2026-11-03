@@ -20,6 +20,8 @@ use tokio_util::sync::CancellationToken;
 
 use serde::{Deserialize, Serialize};
 
+use srud_sandbox::SandboxPolicy;
+
 /// What a tool needs to know about the run it is part of.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
@@ -29,6 +31,11 @@ pub struct ToolContext {
     /// The turn's cancellation token. A tool that runs long enough to notice
     /// should stop when it fires.
     pub cancel: CancellationToken,
+    /// The boundary this turn runs under.
+    ///
+    /// Full access is [`SandboxPolicy::Unrestricted`]: a tool sees no OS boundary
+    /// and imposes none of its own.
+    pub sandbox: SandboxPolicy,
 }
 
 /// What a tool produced.
@@ -377,6 +384,7 @@ mod tests {
         ToolContext {
             cwd: PathBuf::from("workspace"),
             cancel: tokio_util::sync::CancellationToken::new(),
+            sandbox: crate::sandbox::SandboxPolicy::Unrestricted,
         }
     }
 

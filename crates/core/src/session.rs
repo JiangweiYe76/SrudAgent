@@ -11,6 +11,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use tokio_util::sync::CancellationToken;
 
+use srud_sandbox::SandboxLevel;
+
 use crate::types::{ImagePart, ResponseItem, Role, SessionId, TurnInput};
 
 /// The recorded conversation.
@@ -145,6 +147,11 @@ pub struct Session {
     /// that is already being built and puts them after whatever the current
     /// step produces.
     steers: Mutex<Vec<String>>,
+    /// The sandbox level this session runs under.
+    ///
+    /// Read when a turn starts, so a change between turns applies to the next
+    /// one, and never halfway through the current one.
+    sandbox: Mutex<SandboxLevel>,
 }
 
 /// Where the last turn's input ends, and what it was.
@@ -168,6 +175,16 @@ impl Session {
     /// Creates a session with a specific id, for loading an existing one.
     #[must_use]
     pub fn with_id(id: SessionId, cwd: impl Into<PathBuf>) -> Self {
+        Self::with_id_and_sandbox(id, cwd, SandboxLevel::default())
+    }
+
+    /// Creates a session with a specific id and sandbox level.
+    #[must_use]
+    pub fn with_id_and_sandbox(
+        id: SessionId,
+        cwd: impl Into<PathBuf>,
+        sandbox: SandboxLevel,
+    ) -> Self {
         Self {
             id,
             cwd: cwd.into(),
@@ -176,6 +193,7 @@ impl Session {
             opening: Mutex::new(None),
             last_input: Mutex::new(None),
             steers: Mutex::new(Vec::new()),
+            sandbox: Mutex::new(sandbox),
         }
     }
 
@@ -206,7 +224,23 @@ impl Session {
             opening,
             last_input,
             steers: Mutex::new(Vec::new()),
+            sandbox: Mutex::new(SandboxLevel::default()),
         }
+    }
+
+    /// Returns this session's sandbox level.
+    #[must_use]
+    pub fn sandbox(&self) -> SandboxLevel {
+        *self.sandbox.lock().expect("sandbox lock poisoned")
+    }
+
+    /// Replaces this session's sandbox level.
+    ///
+    /// The setting is read when a turn starts, so a change here applies to the
+    /// next turn. Recording the change is the caller's job: the log is what a
+    /// resumed session is rebuilt from.
+    pub fn set_sandbox(&self, level: SandboxLevel) {
+        *self.sandbox.lock().expect("sandbox lock poisoned") = level;
     }
 
     /// Returns this session's id.

@@ -17,10 +17,10 @@
 //!   session left behind. The `_srud/unstable/*` extensions that are not
 //!   implemented answer `METHOD_NOT_FOUND`, and none of them is advertised in
 //!   the capabilities.
-//! - No approval flow — `session/request_permission` is not implemented; a tool
-//!   call runs unless the tool itself refuses it. `shell` refuses a list of
-//!   commands by name, which is not a boundary: a command that deletes a file
-//!   without naming a deleted program goes through.
+//! - No approval flow — `session/request_permission` has no handler; a tool
+//!   call runs unless the tool itself refuses it. Full access adds no command
+//!   policy either: `shell` runs the command as written, and the operating
+//!   system's own permissions are what remain.
 //! - Text-only prompts — non-text content blocks are rejected with
 //!   `INVALID_PARAMS`, matching the declared prompt capabilities.
 //!

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Transport-agnostic agent runtime: session/turn domain model and the turn loop."
 
 [dependencies]
+srud-sandbox = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use srud_sandbox::SandboxLevel;
+
 use crate::session_event::{Logged, SessionEvent};
 use crate::session_log::{describe, RecordError};
 use crate::types::{ResponseItem, Role, SessionId, TurnEndReason, TurnId};
@@ -286,6 +288,8 @@ pub struct Loaded {
     /// The thinking level the session sends, as last chosen. `None` when the
     /// session never chose one, or when thinking stopped being controlled.
     pub thinking: Option<String>,
+    /// The sandbox level the session runs under, as last chosen.
+    pub sandbox: SandboxLevel,
     /// The history the model should see next, oldest first.
     pub history: Vec<ResponseItem>,
     /// What a client replaying the session should be shown, oldest first.
@@ -373,6 +377,7 @@ fn summarize_log(log: &ReadLog) -> Result<Summary, LoadError> {
             // listing only names sessions.
             SessionEvent::Model { .. }
             | SessionEvent::Thinking { .. }
+            | SessionEvent::Sandbox { .. }
             | SessionEvent::System { .. }
             | SessionEvent::TurnStarted { .. }
             | SessionEvent::Item { .. }
@@ -479,6 +484,9 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     // The thinking level the session sends, as last chosen. Same rule: the last
     // record is what is true now.
     let mut thinking = None;
+    // The sandbox level the session runs under, as last chosen. An absent record
+    // means the session never wrote one, and the default level applies.
+    let mut sandbox = SandboxLevel::default();
     // Every recorded entry, with the turn it was written in.
     let mut items: Vec<(TurnId, &SessionEvent)> = Vec::new();
     let mut turn_ends: Vec<(TurnId, TurnEndReason)> = Vec::new();
@@ -489,6 +497,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
             SessionEvent::Title { title: last } => title = last.clone(),
             SessionEvent::Model { model: last } => model = last.clone(),
             SessionEvent::Thinking { level } => thinking = level.clone(),
+            SessionEvent::Sandbox { mode } => sandbox = *mode,
             SessionEvent::TurnEnded { turn_id, reason } => {
                 // A turn ends once. A log carrying a second end for one is
                 // damaged, and the first is the one that says what happened, so
@@ -612,6 +621,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         title,
         model,
         thinking,
+        sandbox,
         history,
         conversation,
         turn_ends,

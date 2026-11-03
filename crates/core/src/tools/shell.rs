@@ -1,6 +1,9 @@
 //! The `shell` tool: run one shell command in the session's working directory.
 
-use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+#[cfg(windows)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -8,6 +11,8 @@ use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::join;
 use tokio::process::Command;
+
+use srud_sandbox::{wrap_argv, SandboxPolicy, SandboxUnavailable};
 
 use super::{failure_text, Tool, ToolContext, ToolError, ToolOutcome};
 
@@ -149,67 +154,6 @@ fn comspec() -> PathBuf {
     std::env::var_os("COMSPEC").map_or_else(|| PathBuf::from("cmd.exe"), PathBuf::from)
 }
 
-/// Commands refused under a POSIX shell, by the name the shell resolves them to.
-///
-/// Matched against the command name rather than searched for in the text, so
-/// `/bin/rm` and `rm;` are caught while `echo rm` is not. It catches a command
-/// that deletes what it names; it does not bound what a command can reach, since
-/// redirection (`> file`), `find -delete`, `git clean` and `mv x /dev/null` all
-/// destroy files without naming anything here.
-const DENIED_POSIX: &[&str] = &[
-    "rm", "rmdir", "dd", "mkfs", "fdisk", "shutdown", "reboot", "halt", "poweroff", "chown",
-    "chmod",
-];
-
-/// Commands refused under PowerShell and cmd, by the name they resolve to.
-///
-/// Every spelling is listed because PowerShell is case-insensitive and gives the
-/// same operation several names: `Remove-Item` also answers to `rm`, `ri`,
-/// `del`, `erase`, `rd` and `rmdir`. The POSIX names stay in: PowerShell answers
-/// to them as aliases as well, and a POSIX shell may still be reachable from a
-/// command line this tool runs.
-const DENIED_WINDOWS: &[&str] = &[
-    // Deleting what it names, under any of its names.
-    "remove-item",
-    "ri",
-    "rm",
-    "rmdir",
-    "del",
-    "erase",
-    "rd",
-    // Emptying a file without deleting it.
-    "clear-content",
-    "clc",
-    // Wiping a volume or a whole disk.
-    "format",
-    "format-volume",
-    "diskpart",
-    "clear-disk",
-    "remove-partition",
-    "initialize-disk",
-    // Stopping the machine.
-    "shutdown",
-    "stop-computer",
-    "restart-computer",
-    "reboot",
-    "halt",
-    "poweroff",
-    // The POSIX names.
-    "dd",
-    "mkfs",
-    "fdisk",
-    "chown",
-    "chmod",
-];
-
-/// The names `dialect` refuses.
-fn denied_commands(dialect: Dialect) -> &'static [&'static str] {
-    match dialect {
-        Dialect::Posix => DENIED_POSIX,
-        Dialect::Windows => DENIED_WINDOWS,
-    }
-}
-
 /// The most one command may print, bounding what this process holds while a pipe
 /// is still filling.
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -219,16 +163,10 @@ const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 
 /// What the model is told the tool does, for the shell it will run in.
 ///
-/// Derived rather than written out, so the interpreter named here and the
-/// commands listed as refused are the ones this tool actually uses: a model told
-/// `/bin/sh` on a machine that runs PowerShell writes the wrong dialect, and one
-/// told a name the tool does not refuse works around a wall that is not there.
+/// Derived rather than written out, so the interpreter named here is the one
+/// this tool actually uses: a model told `/bin/sh` on a machine that runs
+/// PowerShell writes the wrong dialect.
 fn describe(shell: &Shell) -> String {
-    let refused = denied_commands(shell.dialect)
-        .iter()
-        .map(|name| format!("`{name}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
     let chain = match shell.dialect {
         Dialect::Posix => "&&",
         Dialect::Windows => ";",
@@ -238,14 +176,11 @@ fn describe(shell: &Shell) -> String {
         "Run one shell command in the working directory and report what it did. `command` is a \
          single string handed to {label}, so pipes, redirection and {chain} work. The reply is \
          JSON: `stdout`, `stderr`, `exit_code`, and `truncated`. Long output is cut from the \
-         front, so the end — where a failure shows — is always there. {refused} are refused; a \
-         command that needs one is reported as refused, and spelling it differently will be \
-         refused too.",
+         front, so the end — where a failure shows — is always there.",
         label = shell.label,
     )
 }
 
-/// The arguments the model sends.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Args {
@@ -319,23 +254,24 @@ impl Tool for ShellTool {
         let args: Args =
             serde_json::from_value(arguments).map_err(|err| invalid_arguments(err.to_string()))?;
 
-        if let Some(name) = refused_command(&args.command, self.shell.dialect) {
-            let message = format!("`{name}` is not available through this tool.");
-            let hint = "The refusal is on the program name, so another spelling of it, a full \
-                        path, or an alias will be refused too. Do not work around it: say that \
-                        the task cannot be done this way.";
-            return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
-        }
-
-        let mut child = match builder(ctx, &self.shell, &args.command).spawn() {
-            Ok(child) => child,
+        let mut child = match builder(ctx, &self.shell, &args.command) {
+            Ok(mut command) => match command.spawn() {
+                Ok(child) => child,
+                Err(err) => {
+                    let message = format!("The command did not start: {err}");
+                    let hint = spawn_hint(&err, &self.shell);
+                    return Ok(ToolOutcome::failure(failure_text(
+                        message,
+                        Some(hint.as_str()),
+                    )));
+                }
+            },
             Err(err) => {
-                let message = format!("The command did not start: {err}");
-                let hint = spawn_hint(&err, &self.shell);
-                return Ok(ToolOutcome::failure(failure_text(
-                    message,
-                    Some(hint.as_str()),
-                )));
+                let message = format!("The sandbox could not be prepared: {err}");
+                let hint = "Nothing was run. A session in this mode needs a working sandbox \
+                            runner; switching the session to Full access is the explicit way to \
+                            run without one.";
+                return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
             }
         };
         let stdout = child.stdout.take().expect("stdout was piped");
@@ -412,11 +348,29 @@ impl Tool for ShellTool {
 }
 
 /// The command set up to run `command` in `ctx`'s working directory.
-fn builder(ctx: &ToolContext, shell: &Shell, command: &str) -> Command {
-    let mut child = Command::new(&shell.program);
+fn builder(ctx: &ToolContext, shell: &Shell, command: &str) -> Result<Command, SandboxUnavailable> {
+    let mut raw: Vec<OsString> = Vec::with_capacity(shell.args.len() + 2);
+    raw.push(shell.program.as_os_str().to_os_string());
+    raw.extend(shell.args.iter().map(OsString::from));
+    raw.push(OsString::from(command));
+
+    let (program, args) = match &ctx.sandbox {
+        SandboxPolicy::Unrestricted => {
+            let mut args = raw.into_iter();
+            let program = args.next().expect("the shell program is always first");
+            (program, args.collect::<Vec<_>>())
+        }
+        SandboxPolicy::Bounded(policy) => {
+            let wrapped = wrap_argv(&raw, policy)?;
+            let mut args = wrapped.argv.into_iter();
+            let program = args.next().expect("the wrapper always names a program");
+            (program, args.collect::<Vec<_>>())
+        }
+    };
+
+    let mut child = Command::new(program);
     child
-        .args(shell.args)
-        .arg(command)
+        .args(args)
         .current_dir(&ctx.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -430,7 +384,7 @@ fn builder(ctx: &ToolContext, shell: &Shell, command: &str) -> Command {
     // without.
     child.env_clear();
     keep_environment(&mut child);
-    child
+    Ok(child)
 }
 
 /// Puts back the environment a shell cannot start without, and none of the rest.
@@ -523,103 +477,6 @@ fn ending(text: &str, limit: usize) -> (String, bool) {
     (text[at..].to_owned(), true)
 }
 
-/// The first command in `script` that `dialect`'s denials refuse.
-fn refused_command(script: &str, dialect: Dialect) -> Option<String> {
-    split(script, dialect)
-        .iter()
-        .filter_map(|segment| segment.split_whitespace().next())
-        .filter_map(|token| program_name(token, dialect))
-        .find(|name| denied_commands(dialect).contains(&name.as_str()))
-}
-
-/// The extensions Windows runs as a program, from `PATHEXT`.
-///
-/// A name is refused whatever extension it is reached through: `format` is the
-/// disk formatter, and the program cmd finds for it is `format.com`.
-const PROGRAM_EXTENSIONS: &[&str] = &["exe", "com", "cmd", "bat"];
-
-/// The name a token would resolve to as a program, spelled the way the denials
-/// are.
-///
-/// Whatever directory it was reached through is dropped, and on Windows a
-/// trailing extension with it and the case with it: `C:\Windows\System32\DEL.EXE`
-/// is the command `del` names, and PowerShell would resolve it just as well
-/// without the extension or the capitals.
-///
-/// Quotes are not part of a name either. `& 'C:\bin\del.exe' x` is how PowerShell
-/// runs a path holding a space, and the quoted name is the same deletion as the
-/// bare one.
-///
-/// The Windows side reads the separators itself rather than asking `Path`, which
-/// answers differently depending on the platform this was compiled for: a
-/// Windows path has to mean the same thing wherever these tests run.
-fn program_name(token: &str, dialect: Dialect) -> Option<String> {
-    let token = token.trim_matches(['\'', '"']);
-
-    let name = match dialect {
-        Dialect::Posix => Path::new(token).file_name()?.to_str()?.to_owned(),
-        Dialect::Windows => {
-            let mut lowered = token
-                .split(['/', '\\'])
-                .next_back()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if let Some((stem, extension)) = lowered.rsplit_once('.') {
-                if PROGRAM_EXTENSIONS.contains(&extension) {
-                    lowered.truncate(stem.len());
-                }
-            }
-            lowered
-        }
-    };
-
-    (!name.is_empty()).then_some(name)
-}
-
-/// Splits a command line into the segments a shell would run separately.
-///
-/// Separators inside quotes are text, so `echo "a && b"` stays one segment and
-/// the `&&` in it cannot start a command that was never written.
-///
-/// The two dialects cut on the same characters but escape differently: a
-/// backslash is PowerShell's path separator, and treating it as an escape would
-/// swallow the character after it and run two segments together. cmd is cut by
-/// this table too, which is the strict direction — it separates on `;` where cmd
-/// would not.
-fn split(script: &str, dialect: Dialect) -> Vec<&str> {
-    let escape = match dialect {
-        Dialect::Posix => '\\',
-        Dialect::Windows => '`',
-    };
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-
-    for (at, ch) in script.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if let Some(open) = quote {
-            if ch == open {
-                quote = None;
-            }
-        } else {
-            match ch {
-                '\'' | '"' => quote = Some(ch),
-                _ if ch == escape => escaped = true,
-                ';' | '&' | '|' | '\n' | '(' | ')' | '{' | '}' => {
-                    segments.push(&script[start..at]);
-                    start = at + ch.len_utf8();
-                }
-                _ => {}
-            }
-        }
-    }
-    segments.push(&script[start..]);
-    segments
-}
-
-/// The error for arguments the schema permits but the tool cannot act on.
 fn invalid_arguments(message: impl Into<String>) -> ToolError {
     ToolError::InvalidArguments {
         name: NAME.to_owned(),
@@ -647,6 +504,7 @@ mod tests {
         ToolContext {
             cwd: dir.to_path_buf(),
             cancel: tokio_util::sync::CancellationToken::new(),
+            sandbox: crate::sandbox::SandboxPolicy::Unrestricted,
         }
     }
 
@@ -662,12 +520,6 @@ mod tests {
     fn reply(outcome: &ToolOutcome) -> serde_json::Value {
         assert!(!outcome.is_error, "expected a run: {}", outcome.output);
         serde_json::from_str(&outcome.output).expect("the reply is JSON")
-    }
-
-    /// The refusal message, asserting the tool refused before running anything.
-    fn refusal(outcome: &ToolOutcome) -> String {
-        assert!(outcome.is_error, "expected a refusal: {}", outcome.output);
-        outcome.output.clone()
     }
 
     #[tokio::test]
@@ -737,52 +589,6 @@ mod tests {
             "the command saw the working directory: {}",
             out["stdout"]
         );
-    }
-
-    #[tokio::test]
-    async fn refuses_a_denied_command() {
-        for command in [
-            "rm note.txt",
-            "/bin/rm -rf .",
-            "ls; rm -rf /",
-            "ls && rm note.txt",
-            "ls\nrm note.txt",
-            "echo hi | rm note.txt",
-            "chmod 777 note.txt",
-        ] {
-            let dir = scratch("refused");
-            std::fs::write(dir.join("note.txt"), "here").expect("fixture");
-            let message = refusal(&run(&dir, command).await);
-
-            assert!(
-                message.contains("rm") || message.contains("chmod"),
-                "the refusal names the command: {message} ({command})"
-            );
-            assert!(
-                dir.join("note.txt").exists(),
-                "the file is still there after {command}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn leaves_text_that_only_looks_like_a_denied_command() {
-        // Only the name the shell would run is refused. Text that merely contains
-        // one is not a command.
-        for command in [
-            "echo rm",
-            "echo 'rm -rf /'",
-            "grep -r rm .",
-            "echo done > rm",
-        ] {
-            let dir = scratch("allowed");
-            let outcome = run(&dir, command).await;
-            assert!(
-                !outcome.is_error,
-                "{command} should have run: {}",
-                outcome.output
-            );
-        }
     }
 
     #[cfg(unix)]
@@ -877,24 +683,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_refusal_is_marked_so_it_can_be_told_from_a_result() {
-        // A command that exits 1 is a result, not a refusal, and the two have to be
-        // separable from the text alone. That is what the marker is for.
-        let dir = scratch("marked");
-        let refused = refusal(&run(&dir, "rm note.txt").await);
-        let failed_but_ran = reply(&run(&dir, "exit 1").await);
-
-        assert!(
-            refused.starts_with(FAILURE_MARKER),
-            "a refusal is marked: {refused}"
-        );
-        assert!(
-            failed_but_ran["exit_code"] == 1 && failed_but_ran["truncated"] == false,
-            "a command that ran is a result carrying its exit code, not a refusal"
-        );
-    }
-
-    #[tokio::test]
     async fn a_result_never_carries_the_marker() {
         // The marker is the only thing telling the two apart, so a result that
         // happened to print it would make itself unreadable.
@@ -911,21 +699,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refusal_says_working_around_it_will_not_help() {
-        let dir = scratch("no-workaround");
-        let message = refusal(&run(&dir, "rm note.txt").await);
-
-        assert!(
-            message.contains("another spelling"),
-            "the refusal says the name is what is refused: {message}"
-        );
-        assert!(
-            message.contains("Do not work around it"),
-            "the refusal tells the model not to try: {message}"
-        );
-    }
-
-    #[tokio::test]
     async fn an_unknown_argument_is_refused() {
         let dir = scratch("unknown-argument");
         let err = ShellTool::default()
@@ -936,127 +709,6 @@ mod tests {
             .await
             .expect_err("unknown fields are refused rather than ignored");
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
-    }
-
-    /// A shell of `dialect`, for the tests that ask what a command line means
-    /// without starting one.
-    fn shell(dialect: Dialect) -> Shell {
-        Shell {
-            program: PathBuf::from("shell"),
-            args: &["-c"],
-            dialect,
-            label: "shell",
-        }
-    }
-
-    #[test]
-    fn refuses_the_commands_it_lists() {
-        // A command the description names and the tool does not refuse is one the model
-        // tries, and then works around.
-        for dialect in [Dialect::Posix, Dialect::Windows] {
-            let description = describe(&shell(dialect));
-            for name in denied_commands(dialect) {
-                let script = refused_command(&format!("{name} --help"), dialect);
-                assert_eq!(
-                    script.as_deref(),
-                    Some(*name),
-                    "{name} is listed but not refused under {dialect:?}"
-                );
-                assert!(
-                    description.contains(name),
-                    "{name} is refused but not named in the description"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn finds_a_denied_command_wherever_it_appears_in_a_posix_line() {
-        assert_eq!(
-            refused_command("rm x", Dialect::Posix).as_deref(),
-            Some("rm")
-        );
-        assert_eq!(
-            refused_command("/usr/bin/rm x", Dialect::Posix).as_deref(),
-            Some("rm")
-        );
-        assert_eq!(
-            refused_command("a | b ; rm", Dialect::Posix).as_deref(),
-            Some("rm")
-        );
-        assert_eq!(
-            refused_command("a && rm && b", Dialect::Posix).as_deref(),
-            Some("rm")
-        );
-        assert_eq!(
-            refused_command("(rm)", Dialect::Posix).as_deref(),
-            Some("rm")
-        );
-        assert_eq!(
-            refused_command("'/bin/rm' x", Dialect::Posix).as_deref(),
-            Some("rm")
-        );
-        assert_eq!(refused_command("echo rm", Dialect::Posix).as_deref(), None);
-        assert_eq!(
-            refused_command("echo 'a; rm'", Dialect::Posix).as_deref(),
-            None
-        );
-        assert_eq!(refused_command("", Dialect::Posix).as_deref(), None);
-    }
-
-    /// The Windows side of the same reading: a backslash is a path separator
-    /// rather than an escape, and a name is matched without its case, its
-    /// extension and its quotes.
-    #[test]
-    fn finds_a_denied_command_wherever_it_appears_in_a_windows_line() {
-        assert_eq!(
-            refused_command("Remove-Item x", Dialect::Windows).as_deref(),
-            Some("remove-item")
-        );
-        assert_eq!(
-            refused_command("Get-ChildItem . | Remove-Item -Force", Dialect::Windows).as_deref(),
-            Some("remove-item")
-        );
-        assert_eq!(
-            refused_command("Write-Host hi; DEL /F x", Dialect::Windows).as_deref(),
-            Some("del")
-        );
-        assert_eq!(
-            refused_command(r"C:\Windows\System32\del.exe x", Dialect::Windows).as_deref(),
-            Some("del")
-        );
-        assert_eq!(
-            refused_command(r#"& "C:\Windows\System32\DEL.EXE" x"#, Dialect::Windows).as_deref(),
-            Some("del")
-        );
-        assert_eq!(
-            refused_command("'Remove-Item' note.txt", Dialect::Windows).as_deref(),
-            Some("remove-item")
-        );
-        // The extension is one cmd resolves a program through, not only `.exe`.
-        assert_eq!(
-            refused_command("format.com C:", Dialect::Windows).as_deref(),
-            Some("format")
-        );
-        // A backslash is not an escape here, so the command after it is still a
-        // command rather than the tail of the one before.
-        assert_eq!(
-            refused_command(r"echo C:\temp; del x", Dialect::Windows).as_deref(),
-            Some("del")
-        );
-        assert_eq!(
-            refused_command("echo del", Dialect::Windows).as_deref(),
-            None
-        );
-        assert_eq!(
-            refused_command("echo 'del x'", Dialect::Windows).as_deref(),
-            None
-        );
-        assert_eq!(
-            refused_command("Write-Host \"Remove-Item is refused\"", Dialect::Windows).as_deref(),
-            None
-        );
-        assert_eq!(refused_command("", Dialect::Windows).as_deref(), None);
     }
 
     /// What the resolved interpreter actually does.
@@ -1181,58 +833,6 @@ mod tests {
                 out["exit_code"], 0,
                 "a command that did not finish does not report success: {out}"
             );
-        }
-
-        /// Every spelling PowerShell resolves to deletion is refused before
-        /// anything runs: the cmdlets, their aliases, and the same names through
-        /// a `.exe` or a path.
-        #[tokio::test]
-        async fn refuses_the_deletions_powershell_answers_to() {
-            for command in [
-                "Remove-Item note.txt",
-                "remove-item note.txt",
-                "Remove-Item -Path note.txt -Recurse -Force",
-                "ri note.txt",
-                "del note.txt",
-                "Erase note.txt",
-                "rd note.txt",
-                "del.exe note.txt",
-                r"C:\Windows\System32\del.exe note.txt",
-                r#"& 'C:\Windows\System32\del.exe' note.txt"#,
-                "Write-Host hi; Remove-Item note.txt",
-                "Get-ChildItem . | Remove-Item",
-            ] {
-                let dir = scratch("windows-refused");
-                std::fs::write(dir.join("note.txt"), "still here").expect("fixture file");
-                let message = refusal(&run(&dir, command).await);
-
-                assert!(
-                    message.contains("not available"),
-                    "the refusal is reported: {message} ({command})"
-                );
-                assert!(
-                    dir.join("note.txt").exists(),
-                    "the file is still there after {command}"
-                );
-            }
-        }
-
-        /// Text that merely contains a refused name is not a command.
-        #[tokio::test]
-        async fn leaves_text_that_only_looks_like_a_refused_command() {
-            for command in [
-                "Write-Host del",
-                "Write-Host 'Remove-Item note.txt'",
-                "Write-Output 'rd /s /q'",
-            ] {
-                let dir = scratch("windows-allowed");
-                let outcome = run(&dir, command).await;
-                assert!(
-                    !outcome.is_error,
-                    "{command} should have run: {}",
-                    outcome.output
-                );
-            }
         }
 
         /// What the model is given: the interpreter this tool will really start,

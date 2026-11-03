@@ -30,6 +30,9 @@ pub mod tools;
 pub mod turn;
 pub mod types;
 
+pub use srud_sandbox as sandbox;
+pub use srud_sandbox::{BoundedPolicy, SandboxLevel, SandboxPolicy, SandboxUnavailable};
+
 pub use session::{ActiveTurnGuard, OpenedTurn, Session, SessionState};
 pub use session_event::{MessageId, SessionEvent};
 pub use session_log::{RecordError, SessionLog, Volatile};

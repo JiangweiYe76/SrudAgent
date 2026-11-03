@@ -1,0 +1,9 @@
+[package]
+name = "srud-sandbox"
+version.workspace = true
+edition.workspace = true
+description = "Sandbox policy vocabulary and the argv boundary the runtime executes through."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }

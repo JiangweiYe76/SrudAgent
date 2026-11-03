@@ -56,6 +56,9 @@ impl Agent {
         if let Some(options) = self.config_options(&session_id) {
             response = response.config_options(options);
         }
+        if let Some(modes) = self.mode_state(&session_id) {
+            response = response.modes(modes);
+        }
         Ok(response)
     }
 

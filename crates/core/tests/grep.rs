@@ -28,6 +28,7 @@ fn ctx(dir: &Path) -> ToolContext {
     ToolContext {
         cwd: dir.to_path_buf(),
         cancel: tokio_util::sync::CancellationToken::new(),
+        sandbox: srud_core::sandbox::SandboxPolicy::Unrestricted,
     }
 }
 
