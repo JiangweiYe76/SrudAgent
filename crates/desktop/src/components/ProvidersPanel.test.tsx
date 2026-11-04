@@ -206,7 +206,7 @@ describe('ProvidersPanel', () => {
     // The mask is what the agent handed over, and all this ever sees.
     expect(document.body.textContent).toContain('sk-…1234');
     // The first provider is already being edited: no extra click to get there.
-    expect(inputByLabel('Id').value).toBe('openai');
+    expect(inputByLabel('ID').value).toBe('openai');
     expect(inputByLabel('Name').value).toBe('OpenAI');
     expect(inputByLabel('Base URL').value).toBe('https://api.example/v1');
   });
@@ -293,10 +293,10 @@ describe('ProvidersPanel', () => {
   it('adds a provider that has no model yet', async () => {
     await render();
     await click(button('Add provider'));
-    expect(inputByLabel('Id').value).toBe('');
+    expect(inputByLabel('ID').value).toBe('');
     expect(inputByLabel('Name').value).toBe('');
 
-    await type(inputByLabel('Id'), 'local');
+    await type(inputByLabel('ID'), 'local');
     await type(inputByLabel('Name'), 'Local');
     await type(inputByLabel('Base URL'), 'http://localhost:11434/v1');
     await type(inputByLabel('API key'), 'sk-local');
@@ -322,7 +322,7 @@ describe('ProvidersPanel', () => {
     expect(modelRows()).toEqual(['GPT-4o', 'GPT-4o mini']);
 
     await click(button('Add model'));
-    await type(inputByLabel('Model id'), 'o3');
+    await type(inputByLabel('Model ID'), 'o3');
     await type(inputByLabel('Label'), 'o3');
     await click(button('Save'));
     // The model joined the draft's list, and the pane is back to the provider.
@@ -353,7 +353,7 @@ describe('ProvidersPanel', () => {
     await click(modelRowButtons()[0]);
 
     expect(document.body.textContent).toContain('Editing gpt-4o');
-    await type(inputByLabel('Model id'), 'gpt-4.1');
+    await type(inputByLabel('Model ID'), 'gpt-4.1');
     await type(inputByLabel('Label'), 'GPT-4.1');
     await click(button('Save'));
     await click(button('Save'));
@@ -393,7 +393,7 @@ describe('ProvidersPanel', () => {
   it('takes a model back when the model form is cancelled', async () => {
     await render();
     await click(button('Add model'));
-    await type(inputByLabel('Model id'), 'o3');
+    await type(inputByLabel('Model ID'), 'o3');
     await click(button('Cancel'));
 
     expect(modelRows()).toEqual(['GPT-4o', 'GPT-4o mini']);
@@ -405,7 +405,7 @@ describe('ProvidersPanel', () => {
   it('takes the model form back from its header, discarding what was typed', async () => {
     await render();
     await click(button('Add model'));
-    await type(inputByLabel('Model id'), 'o3');
+    await type(inputByLabel('Model ID'), 'o3');
     // The arrow beside the title, visible wherever the scroll has got to.
     await click(button('Back'));
 
@@ -434,7 +434,7 @@ describe('ProvidersPanel', () => {
 
     // An "add" after an "edit" must not inherit so much as a field of it.
     await click(button('Add provider'));
-    expect(inputByLabel('Id').value).toBe('');
+    expect(inputByLabel('ID').value).toBe('');
     expect(inputByLabel('Name').value).toBe('');
 
     // And cancelling the add returns to the provider that was being shown.

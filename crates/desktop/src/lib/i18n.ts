@@ -134,7 +134,7 @@ const en = {
   'providers.form.save': 'Save',
   'providers.form.models.hint':
     'This provider offers {n} model(s). They are managed from its row in the list.',
-  'providers.field.id': 'Id',
+  'providers.field.id': 'ID',
   'providers.field.name': 'Name',
   'providers.field.baseUrl': 'Base URL',
   'providers.field.apiKey': 'API key',
@@ -152,10 +152,10 @@ const en = {
   'providers.model.remove': 'Remove model',
   'providers.model.form.add': 'Add a model',
   'providers.model.form.edit': 'Editing {id}',
-  'providers.model.field.id': 'Model id',
+  'providers.model.field.id': 'Model ID',
   'providers.model.field.name': 'Label',
   'providers.model.field.name.hint':
-    'What the picker shows. The id stands in when there is none.',
+    'What the picker shows. The ID stands in when there is none.',
   'providers.model.field.accepts': 'Accepts',
   'providers.model.field.accepts.hint':
     'Besides text. Nothing selected is a text-only model.',

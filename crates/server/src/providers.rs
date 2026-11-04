@@ -270,7 +270,7 @@ pub enum ProviderError {
     Invalid(String),
 
     /// No configured provider has that id.
-    #[error("no provider with id `{0}`")]
+    #[error("no provider with ID `{0}`")]
     UnknownProvider(String),
 
     /// That provider does not offer that model.
@@ -756,7 +756,7 @@ pub trait ModelFactory: Send + Sync {
 fn validate_provider(provider: &Provider) -> Result<(), ProviderError> {
     if !valid_id(&provider.id) {
         return Err(ProviderError::Invalid(format!(
-            "id `{}` must be lowercase letters, digits, `-` or `_`, and start with a letter or digit",
+            "ID `{}` must be lowercase letters, digits, `-` or `_`, and start with a letter or digit",
             provider.id
         )));
     }
@@ -778,12 +778,12 @@ fn validate_provider(provider: &Provider) -> Result<(), ProviderError> {
         let id = model.id.trim();
         if id.is_empty() {
             return Err(ProviderError::Invalid(
-                "a model id must not be blank".to_owned(),
+                "a model ID must not be blank".to_owned(),
             ));
         }
         if !seen.insert(id) {
             return Err(ProviderError::Invalid(format!(
-                "model id `{id}` is listed twice"
+                "model ID `{id}` is listed twice"
             )));
         }
         validate_thinking(id, model.thinking.as_ref())?;
@@ -836,7 +836,7 @@ fn validate_document(providers: &Providers) -> Result<(), ProviderError> {
         validate_provider(provider)?;
         if !seen.insert(provider.id.as_str()) {
             return Err(ProviderError::Invalid(format!(
-                "provider id `{}` is used twice",
+                "provider ID `{}` is used twice",
                 provider.id
             )));
         }

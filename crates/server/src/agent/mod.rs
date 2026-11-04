@@ -338,7 +338,7 @@ impl Agent {
 fn session_not_found(id: &SessionId) -> AcpError {
     AcpError::new(
         SESSION_NOT_FOUND,
-        format!("no session with id `{}`", id.0.as_ref()),
+        format!("no session with ID `{}`", id.0.as_ref()),
     )
 }
 
