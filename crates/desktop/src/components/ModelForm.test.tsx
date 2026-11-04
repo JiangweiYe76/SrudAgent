@@ -126,7 +126,7 @@ async function type(element: HTMLInputElement, value: string): Promise<void> {
 describe('ModelForm', () => {
   it('saves a bare model with nothing but an id', async () => {
     await renderForm(null);
-    await type(inputByLabel('Model id'), 'o3');
+    await type(inputByLabel('Model ID'), 'o3');
     await click(button('Save'));
 
     expect(onSave).toHaveBeenCalledWith({ id: 'o3', modalities: [] });
@@ -134,7 +134,7 @@ describe('ModelForm', () => {
 
   it('refuses a model id the provider already offers', async () => {
     await renderForm(null, ['gpt-4o']);
-    await type(inputByLabel('Model id'), 'gpt-4o');
+    await type(inputByLabel('Model ID'), 'gpt-4o');
 
     // The agent would refuse the whole provider over this, so it is caught here,
     // next to the field, while it is still one field's problem.
@@ -146,7 +146,7 @@ describe('ModelForm', () => {
     // Providers like SiliconFlow and OpenRouter name their models
     // `vendor/model`, and a reference splits on the first slash only.
     await renderForm(null);
-    await type(inputByLabel('Model id'), 'Qwen/Qwen3.5-4B');
+    await type(inputByLabel('Model ID'), 'Qwen/Qwen3.5-4B');
     await click(button('Save'));
 
     expect(onSave).toHaveBeenCalledWith({
@@ -157,7 +157,7 @@ describe('ModelForm', () => {
 
   it('records what a model accepts besides text', async () => {
     await renderForm(null);
-    await type(inputByLabel('Model id'), 'omni');
+    await type(inputByLabel('Model ID'), 'omni');
 
     // The three inputs are independent toggles, not a radio group: pressing
     // Video must not clear Image.
@@ -197,7 +197,7 @@ describe('ModelForm', () => {
 
   it('records the thinking levels a model was configured with', async () => {
     await renderForm(null);
-    await type(inputByLabel('Model id'), 'kimi');
+    await type(inputByLabel('Model ID'), 'kimi');
 
     // An empty list is an ordinary chat model: no thinking control, and a
     // model saved without a declaration. It is not a form error.
@@ -275,7 +275,7 @@ describe('ModelForm', () => {
 
   it('takes the fields back when cancelled', async () => {
     await renderForm({ id: 'kimi', modalities: [] });
-    await type(inputByLabel('Model id'), 'changed');
+    await type(inputByLabel('Model ID'), 'changed');
     await click(button('Cancel'));
 
     expect(onCancel).toHaveBeenCalled();
