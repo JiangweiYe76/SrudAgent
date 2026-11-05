@@ -5,6 +5,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Sparkles,
   Trash2,
 } from 'lucide-react';
 import type { Session } from '@/lib/types';
@@ -13,6 +14,7 @@ import { deleteWarning, displayTitle, isBusy } from '@/lib/sessionStore';
 import { toast } from 'sonner';
 import { DeleteSessionModal } from '@/components/DeleteSessionModal';
 import { RenameSessionModal } from '@/components/RenameSessionModal';
+import { SkillsModal } from '@/components/SkillsModal';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -114,6 +116,7 @@ export function Sidebar({
   // inline fields so the row layout never shifts.
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [skillsOpen, setSkillsOpen] = useState(false);
 
   // Read from `sessions` on every render, so a session closed while a dialog is
   // open resolves to undefined instead of acting on one that is gone.
@@ -124,6 +127,8 @@ export function Sidebar({
     ? sessions.find((s) => s.id === deletingId)
     : undefined;
   const deleteTurns = deleteWarning(deleteTarget);
+  // A draft has no workspace yet, so the modal falls back to user-wide skills.
+  const skillsCwd = sessions.find((s) => s.id === activeId)?.cwd ?? '';
 
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-muted">
@@ -141,6 +146,16 @@ export function Sidebar({
         >
           <Plus className="h-4 w-4" />
         </Button>
+      </div>
+      <div className="shrink-0 border-b border-border p-2">
+        <button
+          className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-item-hover hover:text-foreground"
+          onClick={() => setSkillsOpen(true)}
+          aria-haspopup="dialog"
+        >
+          <Sparkles className="h-4 w-4 shrink-0" />
+          {t('skills.open')}
+        </button>
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
         {sessions.map((s) => {
@@ -230,6 +245,11 @@ export function Sidebar({
           if (deleteTarget) onDelete(deleteTarget.id);
           setDeletingId(null);
         }}
+      />
+      <SkillsModal
+        open={skillsOpen}
+        cwd={skillsCwd}
+        onClose={() => setSkillsOpen(false)}
       />
     </aside>
   );

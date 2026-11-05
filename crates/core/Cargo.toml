@@ -8,6 +8,7 @@ description = "Transport-agnostic agent runtime: session/turn domain model and t
 srud-sandbox = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
