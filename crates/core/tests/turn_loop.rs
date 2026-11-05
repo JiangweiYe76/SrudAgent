@@ -770,6 +770,11 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
                 name: "record".into(),
                 arguments: "{}".into(),
             }),
+            Ok(ModelEvent::Usage(srud_core::client::TokenUsage {
+                input_tokens: 10,
+                output_tokens: 4,
+                ..Default::default()
+            })),
             done(),
         ],
         vec![text("done"), done()],
@@ -796,23 +801,63 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
 
     assert_eq!(*calls.lock().expect("calls lock"), 2);
 
-    // Each call must be immediately followed by its own output.
+    // A step records its calls together before its usage and results, so the
+    // log reads model output, billing, then execution. The results still pair
+    // with their calls by id.
+    let records = log.records();
+    let positions = |pick: fn(&srud_core::SessionEvent) -> bool| -> Vec<usize> {
+        records
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| pick(&line.event).then_some(index))
+            .collect()
+    };
+    let calls_at = positions(|event| {
+        matches!(
+            event,
+            srud_core::SessionEvent::Item {
+                item: ResponseItem::FunctionCall { .. },
+                ..
+            }
+        )
+    });
+    let usage_at =
+        positions(|event| matches!(event, srud_core::SessionEvent::UsageRecorded { .. }));
+    let outputs_at = positions(|event| {
+        matches!(
+            event,
+            srud_core::SessionEvent::Item {
+                item: ResponseItem::FunctionCallOutput { .. },
+                ..
+            }
+        )
+    });
+    assert_eq!(calls_at.len(), 2, "both calls are recorded");
+    assert_eq!(usage_at.len(), 1, "the step bills once");
+    assert_eq!(outputs_at.len(), 2, "both outputs are recorded");
+    assert!(
+        calls_at[1] < usage_at[0] && usage_at[0] < outputs_at[0],
+        "calls, then usage, then results: {calls_at:?} {usage_at:?} {outputs_at:?}"
+    );
+
     let state = session.state();
     let history = state.history();
-    let mut index = 0;
-    while index + 1 < history.len() {
-        if let ResponseItem::FunctionCall { call_id, .. } = &history[index] {
-            match &history[index + 1] {
-                ResponseItem::FunctionCallOutput {
-                    call_id: output_id, ..
-                } => assert_eq!(call_id, output_id, "call/output must be adjacent"),
-                other => panic!("expected output after call, found {other:?}"),
-            }
-            index += 2;
-        } else {
-            index += 1;
-        }
-    }
+    let call_ids: Vec<&str> = history
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCall { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let output_ids: Vec<&str> = history
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCallOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(call_ids, vec!["c1", "c2"]);
+    assert_eq!(output_ids, vec!["c1", "c2"]);
 }
 
 #[tokio::test]

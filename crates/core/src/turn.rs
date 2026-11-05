@@ -741,17 +741,31 @@ async fn run_step(
     flush_assistant(journal, &message_id, &thought_id, &message, &reasoning)
         .await
         .map_err(|_| TurnEndReason::Error)?;
-    flush_usage(journal, usage).await;
 
     if tool_calls.is_empty() {
+        flush_usage(journal, usage).await;
         return Ok(StepOutcome::Finished);
     }
 
+    // Record every call this response produced before its cost, so the log
+    // reads in the order the step happened: model output, then billing, then
+    // execution.
+    let mut recorded = Vec::with_capacity(tool_calls.len());
     for call in tool_calls {
+        let arguments: serde_json::Value =
+            serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+        record_tool_call(journal, &call, &arguments)
+            .await
+            .map_err(|_| TurnEndReason::Error)?;
+        recorded.push((call, arguments));
+    }
+    flush_usage(journal, usage).await;
+
+    for (call, arguments) in recorded {
         if cancel.is_cancelled() {
             return Err(TurnEndReason::Interrupted);
         }
-        if run_tool_call(journal, tools, call, cancel.clone(), sandbox)
+        if run_recorded_tool_call(journal, tools, call, arguments, cancel.clone(), sandbox)
             .await
             .is_err()
         {
@@ -832,27 +846,20 @@ async fn flush_assistant(
     Ok(())
 }
 
-/// Executes one tool call and records its output.
+/// Records one tool call this step will run.
+///
+/// Recorded before the step's usage and before the tool runs: a log cut short
+/// by a crash still says what the model asked for, and an unanswered call is
+/// the one shape a model API will reject on resume.
 ///
 /// # Errors
 ///
-/// Fails if the call or its result could not be recorded. The tool itself does not
-/// fail this way: a tool that ran and failed returns an outcome, and that outcome
-/// is recorded like any other.
-async fn run_tool_call(
+/// Fails if the call could not be recorded.
+async fn record_tool_call(
     journal: &Journal<'_>,
-    tools: &ToolRegistry,
-    call: PendingToolCall,
-    cancel: tokio_util::sync::CancellationToken,
-    sandbox: &srud_sandbox::SandboxPolicy,
+    call: &PendingToolCall,
+    arguments: &serde_json::Value,
 ) -> Result<(), RecordError> {
-    let arguments: serde_json::Value =
-        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
-
-    // The request is recorded before the result, so the pair stays adjacent.
-    // Recorded before the tool runs too, so a log cut short by a crash still says
-    // what was attempted — an unanswered call is the one shape a model API will
-    // reject on resume.
     journal
         .record(
             None,
@@ -867,8 +874,24 @@ async fn run_tool_call(
                 arguments: arguments.clone(),
             }),
         )
-        .await?;
+        .await
+}
 
+/// Executes one tool call whose request is already recorded.
+///
+/// # Errors
+///
+/// Fails if the result could not be recorded. The tool itself does not fail
+/// this way: a tool that ran and failed returns an outcome, and that outcome
+/// is recorded like any other.
+async fn run_recorded_tool_call(
+    journal: &Journal<'_>,
+    tools: &ToolRegistry,
+    call: PendingToolCall,
+    arguments: serde_json::Value,
+    cancel: tokio_util::sync::CancellationToken,
+    sandbox: &srud_sandbox::SandboxPolicy,
+) -> Result<(), RecordError> {
     let ctx = ToolContext {
         cwd: journal.session().cwd().to_path_buf(),
         cancel: cancel.clone(),
