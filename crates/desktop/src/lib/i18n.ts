@@ -143,7 +143,6 @@ const en = {
   'providers.field.apiKey.new': 'Stored on this machine, readable only by you.',
   'providers.models.manage': 'Manage models',
   'providers.models.title': 'Models of {name}',
-  'providers.models.hint': 'What this endpoint can be asked for.',
   'providers.models.of': '{id}',
   'providers.model.add': 'Add model',
   'providers.model.empty':
