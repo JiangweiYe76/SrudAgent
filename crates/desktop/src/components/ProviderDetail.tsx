@@ -217,10 +217,7 @@ export function ProviderDetail({
             before it has any, and the list below is where they gather. */}
         {editing && (
           <div className="flex flex-col gap-2 border-t border-border pt-3">
-            <div className="flex items-start justify-between gap-3">
-              <span className="text-xs text-muted-foreground">
-                {t('providers.models.hint')}
-              </span>
+            <div className="flex justify-end">
               <Button
                 variant="outline"
                 className="shrink-0"
