@@ -111,6 +111,13 @@ pub enum TurnEndReason {
 pub enum Event {
     /// A turn began.
     TurnStarted { turn_id: TurnId },
+    /// A step began: one model request and the tool batch it issues.
+    ///
+    /// A turn holds one or more steps; `step` is the one-based index within it.
+    StepStarted { turn_id: TurnId, step: u32 },
+    /// A step ended, so every event between this and the next `StepStarted`
+    /// belongs to it.
+    StepEnded { turn_id: TurnId, step: u32 },
     /// The user's input, echoed back so a consumer can render it in order.
     UserMessage { content: String },
     /// A chunk of assistant-visible text.
@@ -164,7 +171,11 @@ pub enum Event {
     /// Emitted once per step that got a report, after that step's assistant
     /// message is recorded. Not conversation: a consumer renders it as
     /// diagnostics, and history rebuilds ignore it.
-    UsageRecorded { usage: crate::client::TokenUsage },
+    UsageRecorded {
+        /// The step whose request reported these counts.
+        step: u32,
+        usage: crate::client::TokenUsage,
+    },
     /// A turn's output was discarded so it can be asked again.
     ///
     /// Emitted before any event of the turn that replaces it, because a consumer

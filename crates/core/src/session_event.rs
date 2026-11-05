@@ -202,6 +202,27 @@ pub enum SessionEvent {
         turn_id: TurnId,
     },
 
+    /// A step began: one model request and the tool batch it issues.
+    ///
+    /// A turn holds one or more steps. `step` is the one-based index within the
+    /// turn, so [`Item`](Self::Item) and [`UsageRecorded`](Self::UsageRecorded)
+    /// records can name the step they belong to instead of relying on their
+    /// position in the log.
+    StepStarted {
+        /// Which turn.
+        turn_id: TurnId,
+        /// One-based step index within the turn.
+        step: u32,
+    },
+
+    /// A step ended. Every record between its start and this one belongs to it.
+    StepEnded {
+        /// Which turn.
+        turn_id: TurnId,
+        /// The step this closes.
+        step: u32,
+    },
+
     /// One entry of the recorded history.
     ///
     /// Recorded before the event that announces it, so anything a consumer has
@@ -209,6 +230,10 @@ pub enum SessionEvent {
     Item {
         /// The turn this belongs to.
         turn_id: TurnId,
+        /// The step that produced it, when it belongs to one. User input and
+        /// steered messages sit between steps and carry none.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<u32>,
         /// Which message, for the entries that are one. `None` for a tool call,
         /// which is identified by the call id in the item itself.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -237,6 +262,9 @@ pub enum SessionEvent {
     UsageRecorded {
         /// Which turn.
         turn_id: TurnId,
+        /// The step whose request reported these counts.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<u32>,
         /// The counts themselves.
         usage: crate::client::TokenUsage,
     },
@@ -349,10 +377,30 @@ impl SessionEvent {
     }
 
     /// Builds a history-entry record.
+    ///
+    /// The entry belongs to no step: a user message or a steer sits between
+    /// steps rather than inside one.
     #[must_use]
     pub fn item(turn_id: TurnId, message_id: Option<MessageId>, item: ResponseItem) -> Self {
         Self::Item {
             turn_id,
+            step: None,
+            message_id,
+            item,
+        }
+    }
+
+    /// Builds a history-entry record that names the step that produced it.
+    #[must_use]
+    pub fn item_in_step(
+        turn_id: TurnId,
+        step: u32,
+        message_id: Option<MessageId>,
+        item: ResponseItem,
+    ) -> Self {
+        Self::Item {
+            turn_id,
+            step: Some(step),
             message_id,
             item,
         }
@@ -379,6 +427,8 @@ impl SessionEvent {
             | Self::Thinking { .. }
             | Self::Sandbox { .. } => None,
             Self::TurnStarted { turn_id }
+            | Self::StepStarted { turn_id, .. }
+            | Self::StepEnded { turn_id, .. }
             | Self::Item { turn_id, .. }
             | Self::TurnEnded { turn_id, .. }
             | Self::UsageRecorded { turn_id, .. }

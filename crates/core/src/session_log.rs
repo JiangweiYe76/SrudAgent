@@ -139,6 +139,12 @@ pub fn describe(entry: &SessionEvent) -> String {
         SessionEvent::Thinking { .. } => "the thinking level".into(),
         SessionEvent::Sandbox { .. } => "the sandbox level".into(),
         SessionEvent::TurnStarted { turn_id } => format!("the start of turn {turn_id}"),
+        SessionEvent::StepStarted { turn_id, step } => {
+            format!("the start of step {step} in turn {turn_id}")
+        }
+        SessionEvent::StepEnded { turn_id, step } => {
+            format!("the end of step {step} in turn {turn_id}")
+        }
         SessionEvent::TurnEnded { turn_id, .. } => format!("the end of turn {turn_id}"),
         SessionEvent::UsageRecorded { turn_id, .. } => {
             format!("the token usage of turn {turn_id}")
@@ -171,6 +177,22 @@ pub fn entry_for(
 ) -> SessionEvent {
     SessionEvent::Item {
         turn_id,
+        step: None,
+        message_id,
+        item,
+    }
+}
+
+/// Records one history entry that belongs to a step.
+pub fn entry_in_step(
+    turn_id: TurnId,
+    step: u32,
+    message_id: Option<MessageId>,
+    item: ResponseItem,
+) -> SessionEvent {
+    SessionEvent::Item {
+        turn_id,
+        step: Some(step),
         message_id,
         item,
     }

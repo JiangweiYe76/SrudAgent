@@ -40,6 +40,8 @@ impl EventSink for Recorder {
 fn kind_of(event: &Event) -> &'static str {
     match event {
         Event::TurnStarted { .. } => "TurnStarted",
+        Event::StepStarted { .. } => "StepStarted",
+        Event::StepEnded { .. } => "StepEnded",
         Event::UserMessage { .. } => "UserMessage",
         Event::AgentMessageDelta { .. } => "AgentMessageDelta",
         Event::AgentThoughtDelta { .. } => "AgentThoughtDelta",
@@ -173,8 +175,10 @@ async fn a_plain_exchange_records_history_and_emits_in_order() {
         vec![
             "TurnStarted",
             "UserMessage",
+            "StepStarted",
             "AgentMessageDelta",
             "AgentMessageDelta",
+            "StepEnded",
             "TurnComplete",
         ]
     );
@@ -249,6 +253,7 @@ async fn a_reported_usage_is_recorded_and_announced() {
     assert!(
         recorded.contains(&srud_core::SessionEvent::UsageRecorded {
             turn_id: result.turn_id,
+            step: Some(1),
             usage,
         }),
         "the usage record is durable: {recorded:?}"
@@ -337,7 +342,13 @@ async fn env_context_leads_the_turn_without_being_announced() {
     // It is context, not something the user said, so nothing announces it.
     assert_eq!(
         sink.kinds(),
-        vec!["TurnStarted", "UserMessage", "TurnComplete"]
+        vec![
+            "TurnStarted",
+            "UserMessage",
+            "StepStarted",
+            "StepEnded",
+            "TurnComplete"
+        ]
     );
 }
 
@@ -385,12 +396,53 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
         vec![
             "TurnStarted",
             "UserMessage",
+            "StepStarted",
             "ToolCallBegin",
             "ToolCallEnd",
+            "StepEnded",
+            "StepStarted",
             "AgentMessageDelta",
+            "StepEnded",
             "TurnComplete",
         ]
     );
+
+    // Both requests are steps of the same turn, and each item names the step it
+    // came from rather than leaving a reader to infer it from item order.
+    let records = log.records();
+    let started: Vec<u32> = records
+        .iter()
+        .filter_map(|line| match &line.event {
+            srud_core::SessionEvent::StepStarted { step, .. } => Some(*step),
+            _ => None,
+        })
+        .collect();
+    let ended: Vec<u32> = records
+        .iter()
+        .filter_map(|line| match &line.event {
+            srud_core::SessionEvent::StepEnded { step, .. } => Some(*step),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started, vec![1, 2]);
+    assert_eq!(ended, vec![1, 2]);
+    let item_steps: Vec<Option<u32>> = records
+        .iter()
+        .filter_map(|line| match &line.event {
+            srud_core::SessionEvent::Item {
+                step,
+                item:
+                    ResponseItem::FunctionCall { .. }
+                    | ResponseItem::Message {
+                        role: Role::Assistant,
+                        ..
+                    },
+                ..
+            } => Some(*step),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(item_steps, vec![Some(1), Some(2)]);
 
     // The second request must carry the env-context block, the user's input,
     // and then the tool call and its output, in order.
@@ -883,7 +935,13 @@ async fn a_turn_that_opens_on_an_answered_message_keeps_what_the_last_one_wrote_
     );
     assert_eq!(
         second_sink.kinds(),
-        vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
+        vec![
+            "TurnStarted",
+            "StepStarted",
+            "AgentMessageDelta",
+            "StepEnded",
+            "TurnComplete"
+        ],
         "nothing is said again: the user's message is already in the conversation"
     );
 
@@ -998,7 +1056,13 @@ async fn a_re_answer_from_the_recorded_mark_asks_the_question_once() {
     );
     assert_eq!(
         sink.kinds(),
-        vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
+        vec![
+            "TurnStarted",
+            "StepStarted",
+            "AgentMessageDelta",
+            "StepEnded",
+            "TurnComplete"
+        ],
         "nothing is said again: the question was already there"
     );
 
@@ -1290,7 +1354,13 @@ async fn a_re_answer_stopped_mid_answer_keeps_the_question() {
     );
     assert_eq!(
         sink.kinds(),
-        vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
+        vec![
+            "TurnStarted",
+            "StepStarted",
+            "AgentMessageDelta",
+            "StepEnded",
+            "TurnComplete"
+        ],
         "the late delta is the wake-up, and the turn still closes once"
     );
 }
