@@ -2,7 +2,7 @@
 //
 // The modal only reads: it asks the agent for the skills visible from the
 // active workspace, then reads the selected one. The tests cover a populated
-// list with its detail pane, and an empty workspace.
+// list with its detail pane and conflict banner, and an empty workspace.
 import {
   describe,
   it,
@@ -79,6 +79,13 @@ describe('SkillsModal', () => {
               userInvocable: true,
             },
           ],
+          conflicts: [
+            {
+              name: 'pdf-tools',
+              winnerPath: '/workspace/.srud/skills/pdf-tools/SKILL.md',
+              loserPath: '/user/.agents/skills/pdf-tools/SKILL.md',
+            },
+          ],
         },
       })
       .mockResolvedValueOnce({
@@ -110,6 +117,10 @@ describe('SkillsModal', () => {
     expect(document.body.textContent).toContain('Bash · Read');
     expect(document.body.textContent).toContain('scripts/extract.sh');
     expect(document.body.textContent).toContain('references/formats.md');
+    expect(document.body.textContent).toContain('1 name conflict(s)');
+    expect(document.body.textContent).toContain(
+      '/user/.agents/skills/pdf-tools/SKILL.md',
+    );
   });
 
   it('says so when the workspace has no skills', async () => {

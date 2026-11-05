@@ -1,10 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { File, Loader2, Sparkles } from 'lucide-react';
+import { File, Loader2, Sparkles, TriangleAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { t } from '@/lib/i18n';
 import {
   listSkills,
   readSkill,
+  type SkillConflict,
   type SkillDetail,
   type SkillInfo,
 } from '@/lib/skills';
@@ -21,12 +22,13 @@ interface SkillsModalProps {
 /**
  * A read-only view of the skills the agent currently discovers.
  *
- * The list is loaded each time the modal opens, and the selected skill is read
- * on demand: a body and its bundled files cost more than the catalog line that
- * brought the user here.
+ * The list is loaded each time the modal opens, with any name conflicts the
+ * discovery pass reported, and the selected skill is read on demand: a body and
+ * its bundled files cost more than the catalog line that brought the user here.
  */
 export function SkillsModal({ open, cwd, onClose }: SkillsModalProps) {
   const [skills, setSkills] = useState<SkillInfo[] | null>(null);
+  const [conflicts, setConflicts] = useState<SkillConflict[]>([]);
   const [listFailed, setListFailed] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<SkillDetail | null>(null);
@@ -36,6 +38,7 @@ export function SkillsModal({ open, cwd, onClose }: SkillsModalProps) {
     if (!open) return;
     let cancelled = false;
     setSkills(null);
+    setConflicts([]);
     setListFailed(false);
     setSelected(null);
     setDetail(null);
@@ -43,8 +46,9 @@ export function SkillsModal({ open, cwd, onClose }: SkillsModalProps) {
     void listSkills(cwd)
       .then((next) => {
         if (cancelled) return;
-        setSkills(next);
-        setSelected(next[0]?.name ?? null);
+        setSkills(next.skills);
+        setConflicts(next.conflicts);
+        setSelected(next.skills[0]?.name ?? null);
       })
       .catch(() => {
         if (!cancelled) setListFailed(true);
@@ -93,49 +97,80 @@ export function SkillsModal({ open, cwd, onClose }: SkillsModalProps) {
         )}
 
         {skills && skills.length > 0 && (
-          <div className="flex min-h-0 flex-1">
-            <div className="w-[300px] shrink-0 overflow-y-auto border-r border-border bg-muted/40 p-2">
-              {skills.map((skill) => (
-                <button
-                  key={skill.path}
-                  className={cn(
-                    'flex w-full cursor-pointer flex-col gap-0.5 rounded-lg px-3 py-2 text-left transition-colors',
-                    selected === skill.name
-                      ? 'bg-item-hover'
-                      : 'hover:bg-item-hover',
-                  )}
-                  onClick={() => setSelected(skill.name)}
-                  aria-current={selected === skill.name}
-                >
-                  <span className="w-full truncate text-[13px] font-medium">
-                    {skill.name}
-                  </span>
-                  <span className="w-full truncate text-[11px] text-muted-foreground">
-                    {skill.description}
-                  </span>
-                </button>
-              ))}
-            </div>
+          <div className="flex min-h-0 flex-1 flex-col">
+            {conflicts.length > 0 && <ConflictBanner conflicts={conflicts} />}
+            <div className="flex min-h-0 flex-1">
+              <div className="w-[300px] shrink-0 overflow-y-auto border-r border-border bg-muted/40 p-2">
+                {skills.map((skill) => (
+                  <button
+                    key={skill.path}
+                    className={cn(
+                      'flex w-full cursor-pointer flex-col gap-0.5 rounded-lg px-3 py-2 text-left transition-colors',
+                      selected === skill.name
+                        ? 'bg-item-hover'
+                        : 'hover:bg-item-hover',
+                    )}
+                    onClick={() => setSelected(skill.name)}
+                    aria-current={selected === skill.name}
+                  >
+                    <span className="w-full truncate text-[13px] font-medium">
+                      {skill.name}
+                    </span>
+                    <span className="w-full truncate text-[11px] text-muted-foreground">
+                      {skill.description}
+                    </span>
+                  </button>
+                ))}
+              </div>
 
-            <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-              {selected === null && (
-                <CenteredStatus icon="empty" text={t('skills.select')} />
-              )}
-              {selected !== null && detail === null && !detailFailed && (
-                <CenteredStatus
-                  icon="loading"
-                  text={t('skills.detailLoading')}
-                />
-              )}
-              {detailFailed && (
-                <CenteredStatus icon="empty" text={t('skills.detailFailed')} />
-              )}
-              {detail !== null && <SkillDetailPane skill={detail} />}
+              <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+                {selected === null && (
+                  <CenteredStatus icon="empty" text={t('skills.select')} />
+                )}
+                {selected !== null && detail === null && !detailFailed && (
+                  <CenteredStatus
+                    icon="loading"
+                    text={t('skills.detailLoading')}
+                  />
+                )}
+                {detailFailed && (
+                  <CenteredStatus
+                    icon="empty"
+                    text={t('skills.detailFailed')}
+                  />
+                )}
+                {detail !== null && <SkillDetailPane skill={detail} />}
+              </div>
             </div>
           </div>
         )}
       </ModalContent>
     </Modal>
+  );
+}
+
+function ConflictBanner({ conflicts }: { conflicts: SkillConflict[] }) {
+  return (
+    <div className="shrink-0 border-b border-border bg-muted px-4 py-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-1.5">
+        <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+        <span className="font-medium text-foreground">
+          {t('skills.conflicts', { n: conflicts.length })}
+        </span>
+        <span>{t('skills.conflictsHint')}</span>
+      </div>
+      <ul className="m-0 mt-1 flex list-none flex-col gap-0.5 p-0">
+        {conflicts.map((conflict) => (
+          <li
+            key={`${conflict.name}:${conflict.loserPath}`}
+            className="truncate font-mono"
+            title={`${conflict.loserPath} → ${conflict.winnerPath}`}
+          >
+            {conflict.name}: {conflict.loserPath} → {conflict.winnerPath}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

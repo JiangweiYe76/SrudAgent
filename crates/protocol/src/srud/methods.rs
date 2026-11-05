@@ -215,12 +215,28 @@ pub struct SkillInfo {
     pub user_invocable: bool,
 }
 
+/// A name claimed by two skills, with the file discovery kept and the one it
+/// shadowed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillConflictInfo {
+    /// The name both skills use.
+    pub name: String,
+    /// The `SKILL.md` of the skill that won.
+    pub winner_path: String,
+    /// The `SKILL.md` of the skill that was shadowed.
+    pub loser_path: String,
+}
+
 /// Response to [`ListSkillsRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListSkillsResponse {
     /// Every discovered skill, including ones hidden from the model.
     pub skills: Vec<SkillInfo>,
+    /// Names whose lower-priority definitions were shadowed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<SkillConflictInfo>,
     /// The `_meta` property reserved by ACP for extensibility.
     #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<Meta>,
@@ -598,11 +614,20 @@ mod tests {
                 model_invocable: true,
                 user_invocable: false,
             }],
+            conflicts: vec![SkillConflictInfo {
+                name: "pdf-tools".to_string(),
+                winner_path: "/workspace/pdf-tools/SKILL.md".to_string(),
+                loser_path: "/user/pdf-tools/SKILL.md".to_string(),
+            }],
             meta: None,
         };
         let value = serde_json::to_value(response).expect("serializable");
         assert_eq!(value["skills"][0]["modelInvocable"], true);
         assert_eq!(value["skills"][0]["userInvocable"], false);
+        assert_eq!(
+            value["conflicts"][0]["winnerPath"],
+            "/workspace/pdf-tools/SKILL.md"
+        );
     }
 
     #[test]

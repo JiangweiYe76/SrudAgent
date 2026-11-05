@@ -19,15 +19,33 @@ export interface SkillDetail extends SkillInfo {
   supportingFiles: string[];
 }
 
+/** A name two skills claim, and which file discovery kept. */
+export interface SkillConflict {
+  name: string;
+  winnerPath: string;
+  loserPath: string;
+}
+
+/** The list a workspace's discovery produced. */
+export interface SkillList {
+  skills: SkillInfo[];
+  conflicts: SkillConflict[];
+}
+
 /**
- * Lists the skills visible from a working directory.
+ * Lists the skills and name conflicts for a working directory.
  *
  * An empty `cwd` asks for the user-wide library only, which is what the
  * sidebar shows before a session has a workspace.
  */
-export async function listSkills(cwd: string): Promise<SkillInfo[]> {
+export async function listSkills(cwd: string): Promise<SkillList> {
   const result = await rpcRequest('_srud/unstable/skills/list', { cwd });
-  return Array.isArray(result.skills) ? (result.skills as SkillInfo[]) : [];
+  return {
+    skills: Array.isArray(result.skills) ? (result.skills as SkillInfo[]) : [],
+    conflicts: Array.isArray(result.conflicts)
+      ? (result.conflicts as SkillConflict[])
+      : [],
+  };
 }
 
 /** Reads one skill, including its instructions and bundled files. */

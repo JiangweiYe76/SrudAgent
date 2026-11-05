@@ -29,6 +29,8 @@ const en = {
   'skills.select': 'Select a skill to see its details.',
   'skills.detailLoading': 'Loading skill…',
   'skills.detailFailed': 'Could not load this skill.',
+  'skills.conflicts': '{n} name conflict(s)',
+  'skills.conflictsHint': 'The higher-priority skill wins.',
   'skills.hidden': 'Hidden from model',
   'skills.modelOnly': 'Model only',
   'skills.fields': 'Details',

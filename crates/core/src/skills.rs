@@ -54,21 +54,28 @@ pub struct Skill {
 
 /// The roots skills are collected from, nearest first.
 ///
-/// Project skills live under `<cwd>/.srud/skills`; user-wide ones under
-/// `$SRUD_HOME/skills`, falling back to `~/.srudagent/skills`. A project skill
-/// shadows a user skill of the same name: the workspace is the more specific
-/// statement of intent. An empty `cwd` has no project root, so callers that ask
-/// before a workspace exists still see the user-wide library.
+/// Project skills live under `<cwd>/.srud/skills` and `<cwd>/.agents/skills`;
+/// user-wide ones under `$SRUD_HOME/skills` (or `~/.srudagent/skills`) and
+/// `~/.agents/skills`. A project skill shadows a user skill of the same name:
+/// the workspace is the more specific statement of intent. An empty `cwd` has
+/// no project root, so callers that ask before a workspace exists still see the
+/// user-wide library.
 #[must_use]
 pub fn roots(cwd: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if !cwd.as_os_str().is_empty() {
         roots.push(cwd.join(".srud").join("skills"));
+        roots.push(cwd.join(".agents").join("skills"));
     }
+
+    let home = std::env::var_os("HOME").filter(|value| !value.is_empty());
     if let Some(home) = srud_home() {
         roots.push(home.join("skills"));
-    } else if let Some(user) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+    } else if let Some(user) = home.as_deref() {
         roots.push(PathBuf::from(user).join(".srudagent").join("skills"));
+    }
+    if let Some(user) = home {
+        roots.push(PathBuf::from(user).join(".agents").join("skills"));
     }
     roots
 }
@@ -83,15 +90,44 @@ fn srud_home() -> Option<PathBuf> {
         .filter(|path| !path.as_os_str().is_empty() && path.is_absolute())
 }
 
+/// A name two skills both claim, and the files each came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillConflict {
+    /// The name both skills use.
+    pub name: String,
+    /// The skill discovery kept.
+    pub winner: PathBuf,
+    /// The skill it shadowed.
+    pub loser: PathBuf,
+}
+
+/// What one discovery pass found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Discovery {
+    /// The winning skill for each name, sorted by name.
+    pub skills: Vec<Skill>,
+    /// Names claimed more than once, in the order the losers were found.
+    pub conflicts: Vec<SkillConflict>,
+}
+
 /// Lists the skills under each root, nearest root winning name clashes.
 ///
 /// Roots that do not exist are simply empty: a machine with no skills is the
 /// common case, not an error. Entries that are not readable or do not pass
 /// validation are skipped the same way — one broken skill must not hide the rest
-/// of the library.
+/// of the library. Call [`discover_with_conflicts`] when the shadowed names
+/// matter.
 #[must_use]
 pub fn discover(roots: &[PathBuf]) -> Vec<Skill> {
+    discover_with_conflicts(roots).skills
+}
+
+/// Lists the skills under each root and reports the names that were shadowed.
+#[must_use]
+pub fn discover_with_conflicts(roots: &[PathBuf]) -> Discovery {
     let mut found: Vec<Skill> = Vec::new();
+    let mut conflicts = Vec::new();
+
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else {
             continue;
@@ -102,15 +138,27 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Skill> {
             if !dir.is_dir() || !skill_file.is_file() {
                 continue;
             }
-            if let Some(skill) = read_skill(&skill_file) {
-                if !found.iter().any(|other| other.name == skill.name) {
-                    found.push(skill);
-                }
+            let Some(skill) = read_skill(&skill_file) else {
+                continue;
+            };
+
+            if let Some(existing) = found.iter().find(|other| other.name == skill.name) {
+                conflicts.push(SkillConflict {
+                    name: skill.name.clone(),
+                    winner: existing.path.clone(),
+                    loser: skill.path,
+                });
+            } else {
+                found.push(skill);
             }
         }
     }
+
     found.sort_by(|a, b| a.name.cmp(&b.name));
-    found
+    Discovery {
+        skills: found,
+        conflicts,
+    }
 }
 
 /// Reads one skill from its `SKILL.md`, or `None` when it cannot be read or is
@@ -486,8 +534,27 @@ mod tests {
     #[test]
     fn roots_without_a_workspace_are_user_only() {
         let found = roots(Path::new(""));
-        assert!(found.len() <= 1);
-        assert!(!found.iter().any(|root| root.starts_with(".srud")));
+        assert!(found.iter().all(|root| root.is_absolute()));
+        assert!(!found
+            .iter()
+            .any(|root| root == &PathBuf::from(".srud").join("skills")));
+    }
+
+    #[test]
+    fn project_roots_are_nearest_first() {
+        let found = roots(Path::new("/workspace"));
+        assert_eq!(
+            found[0],
+            PathBuf::from("/workspace").join(".srud").join("skills")
+        );
+        assert_eq!(
+            found[1],
+            PathBuf::from("/workspace").join(".agents").join("skills")
+        );
+
+        if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+            assert!(found.contains(&PathBuf::from(home).join(".agents").join("skills")));
+        }
     }
 
     #[test]
@@ -498,9 +565,19 @@ mod tests {
         write_skill(&near, "dup", "name: dup\ndescription: near.\n", "near");
         write_skill(&far, "dup", "name: dup\ndescription: far.\n", "far");
 
-        let found = discover(&[near, far]);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].description, "near.");
+        let discovery = discover_with_conflicts(&[near, far]);
+        assert_eq!(discovery.skills.len(), 1);
+        assert_eq!(discovery.skills[0].description, "near.");
+        assert_eq!(discovery.conflicts.len(), 1);
+        assert_eq!(discovery.conflicts[0].name, "dup");
+        assert_eq!(
+            discovery.conflicts[0].winner,
+            base.join("near").join("dup").join(SKILL_FILE)
+        );
+        assert_eq!(
+            discovery.conflicts[0].loser,
+            base.join("far").join("dup").join(SKILL_FILE)
+        );
 
         std::fs::remove_dir_all(&base).ok();
     }
