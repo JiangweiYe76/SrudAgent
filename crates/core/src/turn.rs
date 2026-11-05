@@ -332,9 +332,10 @@ pub async fn run_turn_after(
     // was changed, and a log holding a different prefix from the one sent is worse
     // than no log at all.
     //
-    // Skills join the instruction the same way the other blocks do: a pointer
-    // to each, never the body. Discovered where the session works, so a
-    // workspace's `.srud/skills` takes part from its first turn.
+    // Skills join the instruction the same way the other blocks do: each
+    // model-visible skill is advertised by name and description, never its body.
+    // Discovered where the session works, so a workspace's `.srud/skills` takes
+    // part from its first turn.
     let mut sections = prompt::default_sections();
     let catalog = crate::skills::render_catalog(&crate::skills::discover(&crate::skills::roots(
         journal.session().cwd(),
