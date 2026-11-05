@@ -380,6 +380,8 @@ fn summarize_log(log: &ReadLog) -> Result<Summary, LoadError> {
             | SessionEvent::Sandbox { .. }
             | SessionEvent::System { .. }
             | SessionEvent::TurnStarted { .. }
+            | SessionEvent::StepStarted { .. }
+            | SessionEvent::StepEnded { .. }
             | SessionEvent::Item { .. }
             | SessionEvent::TurnEnded { .. }
             | SessionEvent::UsageRecorded { .. }
@@ -507,10 +509,14 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
                 }
             }
             SessionEvent::TurnDiscarded { turn_id } => discarded.push(*turn_id),
-            // Usage is not history — `history_item` keeps it out of what the
-            // model is re-sent — but it belongs to the conversation: a client
-            // replaying the session wants each step's cost where it happened.
-            SessionEvent::Item { turn_id, .. } | SessionEvent::UsageRecorded { turn_id, .. } => {
+            // Usage and step boundaries are not history — `history_item` keeps
+            // them out of what the model is re-sent — but they belong to the
+            // conversation: a client replaying the session wants each step's
+            // cost and boundaries where they happened.
+            SessionEvent::Item { turn_id, .. }
+            | SessionEvent::UsageRecorded { turn_id, .. }
+            | SessionEvent::StepStarted { turn_id, .. }
+            | SessionEvent::StepEnded { turn_id, .. } => {
                 items.push((*turn_id, &entry.event));
             }
             SessionEvent::Session { .. }
@@ -535,7 +541,10 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         // answered nothing gives nothing back: what it was asked stays, and there
         // is nothing after it to cut.
         let mine = discarded.contains(turn_id);
-        let asked = matches!(
+        let asked = !matches!(
+            event,
+            SessionEvent::StepStarted { .. } | SessionEvent::StepEnded { .. }
+        ) && matches!(
             event.history_item(),
             None | Some(ResponseItem::Message {
                 role: Role::User,
@@ -1482,6 +1491,7 @@ mod tests {
             said(turn_id, "hello"),
             SessionEvent::UsageRecorded {
                 turn_id,
+                step: None,
                 usage: crate::client::TokenUsage {
                     input_tokens: 10,
                     output_tokens: 4,

@@ -20,6 +20,8 @@
 //! ends with [`TurnEndReason::Error`] instead, which costs the user the messages
 //! of one turn rather than the guarantee that what they saw can be recovered.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use futures::StreamExt;
 
 use crate::client::{ModelClient, ModelEvent, ModelRequest, TokenUsage};
@@ -27,7 +29,7 @@ use crate::context;
 use crate::prompt;
 use crate::session::Session;
 use crate::session_event::MessageId;
-use crate::session_log::{entry_for, RecordError, SessionLog};
+use crate::session_log::{entry_for, entry_in_step, RecordError, SessionLog};
 use crate::tools::{failure_text, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use crate::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnId, TurnInput};
 
@@ -55,6 +57,11 @@ pub struct Journal<'a> {
     log: &'a dyn SessionLog,
     sink: &'a dyn EventSink,
     turn_id: TurnId,
+    /// The step currently being recorded, or zero when none is open.
+    ///
+    /// Stored as an atomic because the journal is shared by reference across
+    /// await points and therefore has to be `Sync`.
+    step: AtomicU32,
 }
 
 impl<'a> Journal<'a> {
@@ -70,7 +77,64 @@ impl<'a> Journal<'a> {
             log,
             sink,
             turn_id,
+            step: AtomicU32::new(0),
         }
+    }
+
+    fn current_step(&self) -> Option<u32> {
+        match self.step.load(Ordering::Relaxed) {
+            0 => None,
+            step => Some(step),
+        }
+    }
+
+    /// Records and announces the start of one step.
+    ///
+    /// Every record written until [`Journal::end_step`] belongs to it: the
+    /// step's items and its usage report are tagged with this index, so a
+    /// reader reads boundaries directly rather than inferring them from item
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// If the log refuses the record. Nothing is announced in that case.
+    pub async fn begin_step(&self, step: u32) -> Result<(), RecordError> {
+        self.log
+            .record(&crate::session_event::SessionEvent::StepStarted {
+                turn_id: self.turn_id,
+                step,
+            })
+            .await?;
+        self.step.store(step, Ordering::Relaxed);
+        self.sink.emit(Event::StepStarted {
+            turn_id: self.turn_id,
+            step,
+        });
+        Ok(())
+    }
+
+    /// Records and announces the end of one step.
+    ///
+    /// Written even when the step failed or was interrupted: a reader needs to
+    /// know where the step stopped, and a log that stops in the middle of one
+    /// would otherwise look like a step still running.
+    ///
+    /// # Errors
+    ///
+    /// If the log refuses the record.
+    pub async fn end_step(&self, step: u32) -> Result<(), RecordError> {
+        self.log
+            .record(&crate::session_event::SessionEvent::StepEnded {
+                turn_id: self.turn_id,
+                step,
+            })
+            .await?;
+        self.step.store(0, Ordering::Relaxed);
+        self.sink.emit(Event::StepEnded {
+            turn_id: self.turn_id,
+            step,
+        });
+        Ok(())
     }
 
     /// Records a history entry, then announces whatever the entry produced.
@@ -91,9 +155,11 @@ impl<'a> Journal<'a> {
         item: ResponseItem,
         event: Option<Event>,
     ) -> Result<(), RecordError> {
-        self.log
-            .record(&entry_for(self.turn_id, message_id, item.clone()))
-            .await?;
+        let record = match self.current_step() {
+            Some(step) => entry_in_step(self.turn_id, step, message_id, item.clone()),
+            None => entry_for(self.turn_id, message_id, item.clone()),
+        };
+        self.log.record(&record).await?;
 
         self.session.state().push(item);
         if let Some(event) = event {
@@ -193,13 +259,18 @@ impl<'a> Journal<'a> {
     /// diagnostics, not of the turn: the counts are the provider's statement
     /// about a request that already happened.
     pub async fn record_usage(&self, usage: TokenUsage) -> Result<(), RecordError> {
+        let step = self.current_step();
         self.log
             .record(&crate::session_event::SessionEvent::UsageRecorded {
                 turn_id: self.turn_id,
+                step,
                 usage,
             })
             .await?;
-        self.sink.emit(Event::UsageRecorded { usage });
+        self.sink.emit(Event::UsageRecorded {
+            step: step.unwrap_or_default(),
+            usage,
+        });
         Ok(())
     }
 
@@ -509,6 +580,7 @@ async fn drive(
     sections: &[prompt::Section],
     sandbox: &srud_sandbox::SandboxPolicy,
 ) -> TurnEndReason {
+    let mut step: u32 = 0;
     loop {
         if cancel.is_cancelled() {
             return TurnEndReason::Interrupted;
@@ -521,12 +593,25 @@ async fn drive(
             return TurnEndReason::Error;
         }
 
+        step += 1;
+        if journal.begin_step(step).await.is_err() {
+            return TurnEndReason::Error;
+        }
+
         let request = {
             let state = journal.session.state();
             prompt::build_prompt(&state, tools.definitions(), Some(sections))
         };
 
-        match run_step(journal, client, tools, cancel, request, sandbox).await {
+        let outcome = run_step(journal, client, tools, cancel, request, sandbox).await;
+
+        // The step closes however it went, so a log that stops here still says
+        // which step it stopped in rather than leaving one open forever.
+        if journal.end_step(step).await.is_err() {
+            return TurnEndReason::Error;
+        }
+
+        match outcome {
             Ok(StepOutcome::Finished) => {
                 // The model is only done if nothing is waiting for it: a steer
                 // that arrived during this step is answered by another request
@@ -656,17 +741,31 @@ async fn run_step(
     flush_assistant(journal, &message_id, &thought_id, &message, &reasoning)
         .await
         .map_err(|_| TurnEndReason::Error)?;
-    flush_usage(journal, usage).await;
 
     if tool_calls.is_empty() {
+        flush_usage(journal, usage).await;
         return Ok(StepOutcome::Finished);
     }
 
+    // Record every call this response produced before its cost, so the log
+    // reads in the order the step happened: model output, then billing, then
+    // execution.
+    let mut recorded = Vec::with_capacity(tool_calls.len());
     for call in tool_calls {
+        let arguments: serde_json::Value =
+            serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+        record_tool_call(journal, &call, &arguments)
+            .await
+            .map_err(|_| TurnEndReason::Error)?;
+        recorded.push((call, arguments));
+    }
+    flush_usage(journal, usage).await;
+
+    for (call, arguments) in recorded {
         if cancel.is_cancelled() {
             return Err(TurnEndReason::Interrupted);
         }
-        if run_tool_call(journal, tools, call, cancel.clone(), sandbox)
+        if run_recorded_tool_call(journal, tools, call, arguments, cancel.clone(), sandbox)
             .await
             .is_err()
         {
@@ -747,27 +846,20 @@ async fn flush_assistant(
     Ok(())
 }
 
-/// Executes one tool call and records its output.
+/// Records one tool call this step will run.
+///
+/// Recorded before the step's usage and before the tool runs: a log cut short
+/// by a crash still says what the model asked for, and an unanswered call is
+/// the one shape a model API will reject on resume.
 ///
 /// # Errors
 ///
-/// Fails if the call or its result could not be recorded. The tool itself does not
-/// fail this way: a tool that ran and failed returns an outcome, and that outcome
-/// is recorded like any other.
-async fn run_tool_call(
+/// Fails if the call could not be recorded.
+async fn record_tool_call(
     journal: &Journal<'_>,
-    tools: &ToolRegistry,
-    call: PendingToolCall,
-    cancel: tokio_util::sync::CancellationToken,
-    sandbox: &srud_sandbox::SandboxPolicy,
+    call: &PendingToolCall,
+    arguments: &serde_json::Value,
 ) -> Result<(), RecordError> {
-    let arguments: serde_json::Value =
-        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
-
-    // The request is recorded before the result, so the pair stays adjacent.
-    // Recorded before the tool runs too, so a log cut short by a crash still says
-    // what was attempted — an unanswered call is the one shape a model API will
-    // reject on resume.
     journal
         .record(
             None,
@@ -782,8 +874,24 @@ async fn run_tool_call(
                 arguments: arguments.clone(),
             }),
         )
-        .await?;
+        .await
+}
 
+/// Executes one tool call whose request is already recorded.
+///
+/// # Errors
+///
+/// Fails if the result could not be recorded. The tool itself does not fail
+/// this way: a tool that ran and failed returns an outcome, and that outcome
+/// is recorded like any other.
+async fn run_recorded_tool_call(
+    journal: &Journal<'_>,
+    tools: &ToolRegistry,
+    call: PendingToolCall,
+    arguments: serde_json::Value,
+    cancel: tokio_util::sync::CancellationToken,
+    sandbox: &srud_sandbox::SandboxPolicy,
+) -> Result<(), RecordError> {
     let ctx = ToolContext {
         cwd: journal.session().cwd().to_path_buf(),
         cancel: cancel.clone(),

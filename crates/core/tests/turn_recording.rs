@@ -66,6 +66,8 @@ impl Timeline {
 fn kind_of(event: &Event) -> String {
     match event {
         Event::TurnStarted { .. } => "TurnStarted".into(),
+        Event::StepStarted { .. } => "StepStarted".into(),
+        Event::StepEnded { .. } => "StepEnded".into(),
         Event::UserMessage { .. } => "UserMessage".into(),
         Event::AgentMessageDelta { .. } => "AgentMessageDelta".into(),
         Event::AgentThoughtDelta { .. } => "AgentThoughtDelta".into(),
@@ -139,6 +141,8 @@ fn describe(entry: &SessionEvent) -> String {
         SessionEvent::Thinking { .. } => "thinking".into(),
         SessionEvent::Sandbox { .. } => "sandbox".into(),
         SessionEvent::TurnStarted { .. } => "turn_started".into(),
+        SessionEvent::StepStarted { .. } => "step_started".into(),
+        SessionEvent::StepEnded { .. } => "step_ended".into(),
         SessionEvent::TurnEnded { .. } => "turn_ended".into(),
         SessionEvent::TurnDiscarded { .. } => "turn_discarded".into(),
         SessionEvent::UsageRecorded { .. } => "usage".into(),
@@ -416,17 +420,19 @@ async fn every_announcement_has_a_record_written_first() {
     .await
     .expect("the turn runs");
 
-    // TurnStarted, then the user's message, then a chunk per delta, then the
-    // close. The chunks are announced as they stream — a chunk is a fragment of a
-    // record, not a record of its own, so there is nothing to write until the
-    // message closes. That is why five announcements produce four records.
+    // TurnStarted, then the user's message, then the step it opens, a chunk per
+    // delta, the step's close, then the turn's close. The chunks are announced
+    // as they stream — a chunk is a fragment of a record, not a record of its
+    // own, so there is nothing to write until the message closes.
     assert_eq!(
         timeline.kinds(),
         vec![
             "TurnStarted",
             "UserMessage",
+            "StepStarted",
             "AgentMessageDelta",
             "AgentMessageDelta",
+            "StepEnded",
             "TurnComplete",
         ]
     );
@@ -443,7 +449,9 @@ async fn every_announcement_has_a_record_written_first() {
             "turn_started".to_string(),
             "env_context".to_string(),
             "user_message".to_string(),
+            "step_started".to_string(),
             "assistant_message".to_string(),
+            "step_ended".to_string(),
             "turn_ended".to_string(),
         ]
     );

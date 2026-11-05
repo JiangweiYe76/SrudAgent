@@ -896,6 +896,36 @@ describe('sessionStore live path', () => {
     });
   });
 
+  it('groups numbered updates into the step the agent named', async () => {
+    const { useSessionStore, active, fire, prompt, waitForBackend } =
+      await boot();
+    useSessionStore.getState().sendTurn('go');
+    await waitForBackend();
+
+    // Step 1 answered with a tool call, step 2 with the text after it.
+    fire(
+      { sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Run' },
+      { stepIndex: 1 },
+    );
+    fire(
+      {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Done.' },
+      },
+      { stepIndex: 2 },
+    );
+
+    const steps = active().turns[0].steps;
+    expect(steps.map((s) => s.backendStep)).toEqual([1, 2]);
+    expect(steps[0].toolCalls).toHaveLength(1);
+    expect(steps[1].assistantText).toBe('Done.');
+
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+  });
+
   it('folds reasoning into the step whose answer it precedes', async () => {
     const { useSessionStore, active, fire, prompt, waitForBackend } =
       await boot();

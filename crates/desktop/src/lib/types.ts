@@ -146,6 +146,13 @@ export interface ToolCall {
 // One model sampling request-response pair, plus the tool calls it issued.
 export interface Step {
   id: string;
+  /**
+   * The agent's one-based index of this step within its turn.
+   *
+   * Absent when an update carries no step identity; such content is grouped by
+   * the order its chunks arrived instead.
+   */
+  backendStep?: number;
   // Reasoning streamed before the answer, when the model exposes it.
   thought?: string;
   assistantText: string;

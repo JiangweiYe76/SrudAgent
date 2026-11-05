@@ -31,6 +31,9 @@ use srud_protocol::srud::turn_end::{map_turn_end_reason, TurnEndWire};
 pub enum Skipped {
     /// The turn began; there is nothing to render yet.
     TurnStarted,
+    /// A step boundary: ACP has no step update, so the index rides on the
+    /// `_meta.srud.stepIndex` of the events inside the step instead.
+    Step,
     /// The turn ended; the outcome flows through the prompt response.
     TurnComplete,
     /// The turn's answer was taken back; it is carried by `turnDiscarded` on the
@@ -60,6 +63,7 @@ pub fn to_session_update(
 ) -> Option<Result<SessionUpdate, Skipped>> {
     let update = match event {
         Event::TurnStarted { .. } => return Some(Err(Skipped::TurnStarted)),
+        Event::StepStarted { .. } | Event::StepEnded { .. } => return Some(Err(Skipped::Step)),
         Event::UserMessage { content } => SessionUpdate::UserMessageChunk(ContentChunk::new(
             ContentBlock::Text(TextContent::new(content)),
         )),
@@ -88,7 +92,7 @@ pub fn to_session_update(
             let content = diffs.take(&call_id);
             tool_result(call_id, result.output, result.is_error, content)
         }
-        Event::UsageRecorded { usage } => {
+        Event::UsageRecorded { usage, .. } => {
             let Some(size) = context_size else {
                 return Some(Err(Skipped::NoContextWindow));
             };
@@ -361,13 +365,14 @@ fn with_message_id(
 pub fn to_notification(
     session_id: &SessionId,
     turn_id: &str,
+    step: Option<u32>,
     event: Event,
     context_size: Option<u64>,
     diffs: &mut ToolDiffIndex,
 ) -> Option<Notification<SessionNotification>> {
     // The breakdown is read before the event is consumed by the mapping.
     let usage = match &event {
-        Event::UsageRecorded { usage } => Some(srud_usage(usage)),
+        Event::UsageRecorded { usage, .. } => Some(srud_usage(usage)),
         _ => None,
     };
     // A discard names the turn it takes back, which is not the turn the sink is
@@ -382,7 +387,7 @@ pub fn to_notification(
         Err(Skipped::TurnDiscarded) => return Some(discard_notification(session_id, turn_id)),
         Err(_) => return None,
     };
-    let (update, outer_meta) = attach_turn_meta(update, turn_id, usage);
+    let (update, outer_meta) = attach_turn_meta(update, turn_id, usage, step);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -427,9 +432,11 @@ fn attach_turn_meta(
     update: SessionUpdate,
     turn_id: &str,
     usage: Option<SrudUsage>,
+    step: Option<u32>,
 ) -> (SessionUpdate, Meta) {
     let srud = SrudMeta {
         turn_id: Some(turn_id.to_string()),
+        step_index: step,
         usage,
         ..Default::default()
     };
@@ -489,14 +496,19 @@ pub fn replay_notification(
     // A recorded usage report goes out exactly as the live one did, so a client
     // sees one shape for it. Without a configured window it stays unshown, as
     // live it would have been.
-    if let SessionEvent::UsageRecorded { turn_id, usage } = event {
+    if let SessionEvent::UsageRecorded {
+        turn_id,
+        step,
+        usage,
+    } = event
+    {
         let size = context_size?;
         let update = SessionUpdate::UsageUpdate(UsageUpdate::new(
             usage.input_tokens + usage.output_tokens,
             size,
         ));
         let (update, outer_meta) =
-            attach_turn_meta(update, &turn_id.to_string(), Some(srud_usage(usage)));
+            attach_turn_meta(update, &turn_id.to_string(), Some(srud_usage(usage)), *step);
         let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
         return Some(Notification {
             method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -506,6 +518,7 @@ pub fn replay_notification(
 
     let SessionEvent::Item {
         turn_id,
+        step,
         message_id,
         item,
     } = event
@@ -559,7 +572,7 @@ pub fn replay_notification(
         ),
     };
 
-    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), None);
+    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), None, *step);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -657,6 +670,7 @@ mod tests {
         to_notification(
             &session_id(),
             "turn-1",
+            None,
             event,
             Some(128_000),
             &mut ToolDiffIndex::default(),
@@ -690,11 +704,67 @@ mod tests {
         assert!(to_notification(
             &session_id(),
             "t",
+            None,
             Event::TurnStarted { turn_id },
             None,
             &mut ToolDiffIndex::default()
         )
         .is_none());
+    }
+
+    #[test]
+    fn a_step_boundary_is_not_an_update_but_its_index_rides_on_the_events_inside() {
+        use srud_core::types::TurnId;
+        let turn_id = TurnId::new();
+        assert!(
+            to_notification(
+                &session_id(),
+                "t",
+                Some(1),
+                Event::StepStarted { turn_id, step: 1 },
+                None,
+                &mut ToolDiffIndex::default()
+            )
+            .is_none(),
+            "a step boundary has no update of its own"
+        );
+
+        let n = to_notification(
+            &session_id(),
+            "t",
+            Some(1),
+            Event::AgentMessageDelta {
+                message_id: None,
+                delta: "hi".into(),
+            },
+            None,
+            &mut ToolDiffIndex::default(),
+        )
+        .expect("a delta maps to a notification");
+        let value = serde_json::to_value(&n).unwrap();
+        assert_eq!(value["params"]["_meta"]["srud"]["stepIndex"], json!(1));
+    }
+
+    #[test]
+    fn a_replayed_item_carries_the_step_it_belongs_to() {
+        use srud_core::session_event::MessageId;
+        use srud_core::types::TurnId;
+        let turn_id = TurnId::new();
+        let event = SessionEvent::item_in_step(
+            turn_id,
+            2,
+            Some(MessageId::new()),
+            ResponseItem::assistant("second step"),
+        );
+        let n = replay_notification(
+            &session_id(),
+            &event,
+            Some(128_000),
+            &mut ToolDiffIndex::default(),
+        )
+        .expect("a replayed item is shown");
+        let value = serde_json::to_value(&n).unwrap();
+        assert_eq!(value["params"]["_meta"]["srud"]["stepIndex"], json!(2));
     }
 
     #[test]
@@ -706,7 +776,7 @@ mod tests {
             cache_write_input_tokens: 0,
             reasoning_output_tokens: 40,
         };
-        let n = notify(Event::UsageRecorded { usage });
+        let n = notify(Event::UsageRecorded { step: 1, usage });
         let SessionUpdate::UsageUpdate(update) = &n.params.as_ref().unwrap().update else {
             panic!("expected a usage_update");
         };
@@ -728,6 +798,7 @@ mod tests {
         let turn_id = srud_core::types::TurnId::new();
         let event = SessionEvent::UsageRecorded {
             turn_id,
+            step: Some(1),
             usage: TokenUsage {
                 input_tokens: 500,
                 output_tokens: 100,
@@ -797,6 +868,7 @@ mod tests {
         assert_eq!(
             to_session_update(
                 Event::UsageRecorded {
+                    step: 1,
                     usage: TokenUsage::default(),
                 },
                 None,
@@ -807,7 +879,9 @@ mod tests {
         assert!(to_notification(
             &session_id(),
             "t",
+            None,
             Event::UsageRecorded {
+                step: 1,
                 usage: TokenUsage::default(),
             },
             None,

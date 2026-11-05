@@ -155,10 +155,36 @@ function findCall(steps: Step[], id: string): ToolCall | undefined {
   return undefined;
 }
 
+/**
+ * The step the agent numbered, creating it when this update is its first.
+ */
+function stepFor(steps: Step[], index: number): Step {
+  const found = steps.find((step) => step.backendStep === index);
+  if (found) return found;
+  const created: Step = {
+    id: uid('st'),
+    backendStep: index,
+    assistantText: '',
+    toolCalls: [],
+  };
+  steps.push(created);
+  return created;
+}
+
 // The `_meta.srud` an update carries, if any.
 function srudMeta(params: Json): Json {
   const meta = params._meta as Json | undefined;
   return (meta?.srud as Json | undefined) ?? meta ?? {};
+}
+
+/**
+ * The step an update belongs to, when the agent numbers its steps.
+ */
+function stepIndexOf(params: Json): number | null {
+  const step = srudMeta(params).stepIndex;
+  return typeof step === 'number' && Number.isInteger(step) && step > 0
+    ? step
+    : null;
 }
 
 // The turn an update belongs to, when it says.
@@ -439,14 +465,20 @@ function applyUpdate(
       toolCalls: [...st.toolCalls],
     }));
     const last = steps[steps.length - 1];
+    // A numbered step is grouped by the index the agent gave it; an update
+    // carrying no index falls back to grouping by arrival order.
+    const stepIndex = stepIndexOf(params);
 
     if (kind === 'agent_thought_chunk') {
       const text = textOf(update.content);
       if (text === null) return null;
-      // Reasoning opens a step the way message text does — a step is one
-      // sampling, and thinking is what that sampling produced first. Reasoning
-      // seen after the step's tool calls belongs to the next sampling.
-      if (!last || last.toolCalls.length > 0) {
+      if (stepIndex !== null) {
+        const step = stepFor(steps, stepIndex);
+        step.thought = (step.thought ?? '') + text;
+      } else if (!last || last.toolCalls.length > 0) {
+        // Reasoning opens a step the way message text does — a step is one
+        // sampling, and thinking is what that sampling produced first. Reasoning
+        // seen after the step's tool calls belongs to the next sampling.
         steps.push({
           id: uid('st'),
           thought: text,
@@ -459,8 +491,10 @@ function applyUpdate(
     } else if (kind === 'agent_message_chunk') {
       const text = textOf(update.content);
       if (text === null) return null;
-      // A step ends at its tool calls; text after them opens a new step.
-      if (!last || last.toolCalls.length > 0) {
+      if (stepIndex !== null) {
+        stepFor(steps, stepIndex).assistantText += text;
+      } else if (!last || last.toolCalls.length > 0) {
+        // A step ends at its tool calls; text after them opens a new step.
         steps.push({ id: uid('st'), assistantText: text, toolCalls: [] });
       } else {
         last.assistantText += text;
@@ -476,9 +510,11 @@ function applyUpdate(
         return null;
       }
       const call = toolCallFields(update, id);
-      // The call belongs to the current step — one sampling streams its text
-      // then issues its calls. Only a fresh turn (no step yet) opens a new one.
-      if (last) {
+      if (stepIndex !== null) {
+        stepFor(steps, stepIndex).toolCalls.push(call);
+      } else if (last) {
+        // The call belongs to the current step — one sampling streams its text
+        // then issues its calls. Only a fresh turn (no step yet) opens a new one.
         last.toolCalls.push(call);
       } else {
         steps.push({ id: uid('st'), assistantText: '', toolCalls: [call] });

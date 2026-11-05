@@ -26,6 +26,7 @@
 //! complete.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -153,6 +154,7 @@ impl EventHub {
             context_size,
             pending: Arc::new(Mutex::new(Vec::new())),
             diffs: Arc::new(Mutex::new(ToolDiffIndex::default())),
+            step: Arc::new(AtomicU32::new(0)),
         }
     }
 }
@@ -187,6 +189,11 @@ pub struct TurnSink {
     /// the turn runs on the original: cloning must not fork the map a call
     /// stores its diffs into and later takes them back from.
     diffs: Arc<Mutex<ToolDiffIndex>>,
+    /// The step currently being streamed, or zero outside one.
+    ///
+    /// A step boundary has no update of its own, so the sink remembers it here
+    /// and stamps `_meta.srud.stepIndex` onto every notification inside it.
+    step: Arc<AtomicU32>,
 }
 
 impl TurnSink {
@@ -196,16 +203,40 @@ impl TurnSink {
     /// the turn the event is about: a discard names the turn it takes back, and
     /// is sent before that turn's replacement starts.
     pub(crate) fn broadcast(&self, turn_id: TurnId, event: Event) {
+        // Step boundaries have no update of their own, so they only move the
+        // index every notification inside the step carries.
+        let (step, closing) = match &event {
+            Event::TurnStarted { .. } => {
+                self.step.store(0, Ordering::Relaxed);
+                (None, false)
+            }
+            Event::StepStarted { step, .. } => {
+                self.step.store(*step, Ordering::Relaxed);
+                (Some(*step), false)
+            }
+            Event::StepEnded { step, .. } => (Some(*step), true),
+            _ => match self.step.load(Ordering::Relaxed) {
+                0 => (None, false),
+                step => (Some(step), false),
+            },
+        };
         let mut diffs = self.diffs.lock().expect("tool diff index lock poisoned");
         let Some(mut notification) = to_notification(
             &self.session_id,
             &turn_id.to_string(),
+            step,
             event,
             self.context_size,
             &mut diffs,
         ) else {
+            if closing {
+                self.step.store(0, Ordering::Relaxed);
+            }
             return;
         };
+        if closing {
+            self.step.store(0, Ordering::Relaxed);
+        }
         self.seq.stamp(&mut notification);
         // A send error only means there are no subscribers right now; the
         // turn must never block or fail because nobody is listening.

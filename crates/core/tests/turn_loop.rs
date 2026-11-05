@@ -40,6 +40,8 @@ impl EventSink for Recorder {
 fn kind_of(event: &Event) -> &'static str {
     match event {
         Event::TurnStarted { .. } => "TurnStarted",
+        Event::StepStarted { .. } => "StepStarted",
+        Event::StepEnded { .. } => "StepEnded",
         Event::UserMessage { .. } => "UserMessage",
         Event::AgentMessageDelta { .. } => "AgentMessageDelta",
         Event::AgentThoughtDelta { .. } => "AgentThoughtDelta",
@@ -173,8 +175,10 @@ async fn a_plain_exchange_records_history_and_emits_in_order() {
         vec![
             "TurnStarted",
             "UserMessage",
+            "StepStarted",
             "AgentMessageDelta",
             "AgentMessageDelta",
+            "StepEnded",
             "TurnComplete",
         ]
     );
@@ -249,6 +253,7 @@ async fn a_reported_usage_is_recorded_and_announced() {
     assert!(
         recorded.contains(&srud_core::SessionEvent::UsageRecorded {
             turn_id: result.turn_id,
+            step: Some(1),
             usage,
         }),
         "the usage record is durable: {recorded:?}"
@@ -337,7 +342,13 @@ async fn env_context_leads_the_turn_without_being_announced() {
     // It is context, not something the user said, so nothing announces it.
     assert_eq!(
         sink.kinds(),
-        vec!["TurnStarted", "UserMessage", "TurnComplete"]
+        vec![
+            "TurnStarted",
+            "UserMessage",
+            "StepStarted",
+            "StepEnded",
+            "TurnComplete"
+        ]
     );
 }
 
@@ -385,12 +396,53 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
         vec![
             "TurnStarted",
             "UserMessage",
+            "StepStarted",
             "ToolCallBegin",
             "ToolCallEnd",
+            "StepEnded",
+            "StepStarted",
             "AgentMessageDelta",
+            "StepEnded",
             "TurnComplete",
         ]
     );
+
+    // Both requests are steps of the same turn, and each item names the step it
+    // came from rather than leaving a reader to infer it from item order.
+    let records = log.records();
+    let started: Vec<u32> = records
+        .iter()
+        .filter_map(|line| match &line.event {
+            srud_core::SessionEvent::StepStarted { step, .. } => Some(*step),
+            _ => None,
+        })
+        .collect();
+    let ended: Vec<u32> = records
+        .iter()
+        .filter_map(|line| match &line.event {
+            srud_core::SessionEvent::StepEnded { step, .. } => Some(*step),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started, vec![1, 2]);
+    assert_eq!(ended, vec![1, 2]);
+    let item_steps: Vec<Option<u32>> = records
+        .iter()
+        .filter_map(|line| match &line.event {
+            srud_core::SessionEvent::Item {
+                step,
+                item:
+                    ResponseItem::FunctionCall { .. }
+                    | ResponseItem::Message {
+                        role: Role::Assistant,
+                        ..
+                    },
+                ..
+            } => Some(*step),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(item_steps, vec![Some(1), Some(2)]);
 
     // The second request must carry the env-context block, the user's input,
     // and then the tool call and its output, in order.
@@ -718,6 +770,11 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
                 name: "record".into(),
                 arguments: "{}".into(),
             }),
+            Ok(ModelEvent::Usage(srud_core::client::TokenUsage {
+                input_tokens: 10,
+                output_tokens: 4,
+                ..Default::default()
+            })),
             done(),
         ],
         vec![text("done"), done()],
@@ -744,23 +801,63 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
 
     assert_eq!(*calls.lock().expect("calls lock"), 2);
 
-    // Each call must be immediately followed by its own output.
+    // A step records its calls together before its usage and results, so the
+    // log reads model output, billing, then execution. The results still pair
+    // with their calls by id.
+    let records = log.records();
+    let positions = |pick: fn(&srud_core::SessionEvent) -> bool| -> Vec<usize> {
+        records
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| pick(&line.event).then_some(index))
+            .collect()
+    };
+    let calls_at = positions(|event| {
+        matches!(
+            event,
+            srud_core::SessionEvent::Item {
+                item: ResponseItem::FunctionCall { .. },
+                ..
+            }
+        )
+    });
+    let usage_at =
+        positions(|event| matches!(event, srud_core::SessionEvent::UsageRecorded { .. }));
+    let outputs_at = positions(|event| {
+        matches!(
+            event,
+            srud_core::SessionEvent::Item {
+                item: ResponseItem::FunctionCallOutput { .. },
+                ..
+            }
+        )
+    });
+    assert_eq!(calls_at.len(), 2, "both calls are recorded");
+    assert_eq!(usage_at.len(), 1, "the step bills once");
+    assert_eq!(outputs_at.len(), 2, "both outputs are recorded");
+    assert!(
+        calls_at[1] < usage_at[0] && usage_at[0] < outputs_at[0],
+        "calls, then usage, then results: {calls_at:?} {usage_at:?} {outputs_at:?}"
+    );
+
     let state = session.state();
     let history = state.history();
-    let mut index = 0;
-    while index + 1 < history.len() {
-        if let ResponseItem::FunctionCall { call_id, .. } = &history[index] {
-            match &history[index + 1] {
-                ResponseItem::FunctionCallOutput {
-                    call_id: output_id, ..
-                } => assert_eq!(call_id, output_id, "call/output must be adjacent"),
-                other => panic!("expected output after call, found {other:?}"),
-            }
-            index += 2;
-        } else {
-            index += 1;
-        }
-    }
+    let call_ids: Vec<&str> = history
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCall { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let output_ids: Vec<&str> = history
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCallOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(call_ids, vec!["c1", "c2"]);
+    assert_eq!(output_ids, vec!["c1", "c2"]);
 }
 
 #[tokio::test]
@@ -883,7 +980,13 @@ async fn a_turn_that_opens_on_an_answered_message_keeps_what_the_last_one_wrote_
     );
     assert_eq!(
         second_sink.kinds(),
-        vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
+        vec![
+            "TurnStarted",
+            "StepStarted",
+            "AgentMessageDelta",
+            "StepEnded",
+            "TurnComplete"
+        ],
         "nothing is said again: the user's message is already in the conversation"
     );
 
@@ -998,7 +1101,13 @@ async fn a_re_answer_from_the_recorded_mark_asks_the_question_once() {
     );
     assert_eq!(
         sink.kinds(),
-        vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
+        vec![
+            "TurnStarted",
+            "StepStarted",
+            "AgentMessageDelta",
+            "StepEnded",
+            "TurnComplete"
+        ],
         "nothing is said again: the question was already there"
     );
 
@@ -1290,7 +1399,13 @@ async fn a_re_answer_stopped_mid_answer_keeps_the_question() {
     );
     assert_eq!(
         sink.kinds(),
-        vec!["TurnStarted", "AgentMessageDelta", "TurnComplete"],
+        vec![
+            "TurnStarted",
+            "StepStarted",
+            "AgentMessageDelta",
+            "StepEnded",
+            "TurnComplete"
+        ],
         "the late delta is the wake-up, and the turn still closes once"
     );
 }
