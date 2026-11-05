@@ -185,6 +185,107 @@ pub struct ReadRolloutResponse {
     pub meta: Option<Meta>,
 }
 
+/// Client -> agent: `_srud/unstable/skills/list`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListSkillsRequest {
+    /// Workspace whose project skills to include. Empty or relative asks for
+    /// the user-wide library only, which is what a client without a session can
+    /// show.
+    #[serde(default)]
+    pub cwd: String,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// One skill as a client sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInfo {
+    /// The name the model uses to load the skill.
+    pub name: String,
+    /// The one-line routing description.
+    pub description: String,
+    /// The `SKILL.md` the body lives in.
+    pub path: String,
+    /// Whether the model catalog includes it and the tool may load it.
+    pub model_invocable: bool,
+    /// Whether a user-facing command may invoke it.
+    pub user_invocable: bool,
+}
+
+/// Response to [`ListSkillsRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListSkillsResponse {
+    /// Every discovered skill, including ones hidden from the model.
+    pub skills: Vec<SkillInfo>,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Client -> agent: `_srud/unstable/skills/read`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadSkillRequest {
+    /// Workspace whose project skills to search. Empty or relative looks at
+    /// the user-wide library only.
+    #[serde(default)]
+    pub cwd: String,
+    /// The skill name the catalog lists.
+    pub name: String,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// One skill's full metadata and instructions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDetail {
+    /// The name the model uses to load the skill.
+    pub name: String,
+    /// The one-line routing description.
+    pub description: String,
+    /// The `SKILL.md` the body lives in.
+    pub path: String,
+    /// Whether the model catalog includes it and the tool may load it.
+    pub model_invocable: bool,
+    /// Whether a user-facing command may invoke it.
+    pub user_invocable: bool,
+    /// License name or bundled license file, when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    /// Environment requirements, when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    /// Tool names the skill declares as pre-approved; informational for
+    /// clients.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+    /// Free-form frontmatter metadata.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    /// The instructions after the frontmatter.
+    pub body: String,
+    /// Files bundled beside `SKILL.md`, relative to the skill directory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supporting_files: Vec<String>,
+}
+
+/// Response to [`ReadSkillRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadSkillResponse {
+    /// The requested skill.
+    pub skill: SkillDetail,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
 /// One model a provider offers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -483,6 +584,27 @@ pub struct SetDefaultProviderResponse {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn skill_list_uses_camel_case_keys() {
+        let request: ListSkillsRequest = serde_json::from_value(json!({})).expect("defaults");
+        assert!(request.cwd.is_empty());
+
+        let response = ListSkillsResponse {
+            skills: vec![SkillInfo {
+                name: "pdf-tools".to_string(),
+                description: "Read PDFs.".to_string(),
+                path: "/workspace/pdf-tools/SKILL.md".to_string(),
+                model_invocable: true,
+                user_invocable: false,
+            }],
+            meta: None,
+        };
+        let value = serde_json::to_value(response).expect("serializable");
+        assert_eq!(value["skills"][0]["modelInvocable"], true);
+        assert_eq!(value["skills"][0]["userInvocable"], false);
+    }
+
     #[test]
     fn fork_request_uses_camel_case_keys() {
         let request = ForkSessionRequest {

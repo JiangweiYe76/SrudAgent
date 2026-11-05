@@ -74,6 +74,19 @@ afterEach(() => {
   container.remove();
 });
 
+describe('Sidebar skills entry', () => {
+  it('shows a Skills entry above the session list', () => {
+    mount();
+    render([session('s1')]);
+    const skills = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => button.textContent === 'Skills');
+
+    expect(skills).toBeDefined();
+    expect(skills?.getAttribute('aria-haspopup')).toBe('dialog');
+  });
+});
+
 describe('Sidebar deleting rows', () => {
   it('marks the row a delete is in flight for', () => {
     mount();

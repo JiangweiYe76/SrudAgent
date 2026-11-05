@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// The file every skill is recognised by.
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -42,6 +42,14 @@ pub struct Skill {
     pub model_invocable: bool,
     /// Whether a user-facing command may invoke the skill.
     pub user_invocable: bool,
+    /// License name or bundled license file, when declared.
+    pub license: Option<String>,
+    /// Environment requirements, when declared.
+    pub compatibility: Option<String>,
+    /// Tools the skill declares as pre-approved; recorded, not enforced.
+    pub allowed_tools: Vec<String>,
+    /// Free-form metadata declared under the frontmatter `metadata` key.
+    pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
 /// The roots skills are collected from, nearest first.
@@ -49,10 +57,14 @@ pub struct Skill {
 /// Project skills live under `<cwd>/.srud/skills`; user-wide ones under
 /// `$SRUD_HOME/skills`, falling back to `~/.srudagent/skills`. A project skill
 /// shadows a user skill of the same name: the workspace is the more specific
-/// statement of intent.
+/// statement of intent. An empty `cwd` has no project root, so callers that ask
+/// before a workspace exists still see the user-wide library.
 #[must_use]
 pub fn roots(cwd: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![cwd.join(".srud").join("skills")];
+    let mut roots = Vec::new();
+    if !cwd.as_os_str().is_empty() {
+        roots.push(cwd.join(".srud").join("skills"));
+    }
     if let Some(home) = srud_home() {
         roots.push(home.join("skills"));
     } else if let Some(user) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
@@ -127,14 +139,29 @@ fn parse_skill(text: &str, path: &Path) -> Option<Skill> {
         path: path.to_path_buf(),
         model_invocable: !parsed.disable_model_invocation.unwrap_or(false),
         user_invocable: parsed.user_invocable.unwrap_or(true),
+        license: optional_text(parsed.license),
+        compatibility: optional_text(parsed.compatibility),
+        allowed_tools: parsed
+            .allowed_tools
+            .into_iter()
+            .map(|tool| tool.trim().to_owned())
+            .filter(|tool| !tool.is_empty())
+            .collect(),
+        metadata: parsed.metadata,
     })
+}
+
+/// Trims an optional text field and drops the ones that say nothing.
+fn optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 /// The frontmatter fields the runtime reads.
 ///
 /// Unknown keys are ignored so other tools can keep their own frontmatter fields
-/// in the same block. `metadata` is parsed only to reject a malformed value; its
-/// contents are not exposed.
+/// in the same block.
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
     #[serde(default)]
@@ -145,8 +172,38 @@ struct Frontmatter {
     disable_model_invocation: Option<bool>,
     #[serde(default, rename = "user-invocable")]
     user_invocable: Option<bool>,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    compatibility: Option<String>,
+    #[serde(
+        default,
+        rename = "allowed-tools",
+        deserialize_with = "deserialize_string_or_list"
+    )]
+    allowed_tools: Vec<String>,
     #[serde(default, rename = "metadata")]
-    _metadata: Option<BTreeMap<String, serde_yaml::Value>>,
+    metadata: BTreeMap<String, serde_json::Value>,
+}
+
+/// Accepts `allowed-tools` as one string or a list, since frontmatter uses both
+/// spellings.
+fn deserialize_string_or_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    match Option::<OneOrMany>::deserialize(deserializer)? {
+        None => Ok(Vec::new()),
+        Some(OneOrMany::One(value)) => Ok(vec![value]),
+        Some(OneOrMany::Many(values)) => Ok(values),
+    }
 }
 
 /// Whether `name` matches the Agent Skills grammar: lowercase ASCII letters and
@@ -234,6 +291,50 @@ pub fn render_catalog(skills: &[Skill]) -> String {
     out
 }
 
+/// Lists the files bundled with a skill, relative to its directory and sorted.
+///
+/// `SKILL.md` is omitted — the caller already has it — and symbolic links are
+/// skipped, so a link cycle cannot turn the listing into an infinite walk.
+#[must_use]
+pub fn supporting_files(path: &Path) -> Vec<String> {
+    let Some(directory) = path.parent() else {
+        return Vec::new();
+    };
+
+    let mut files = Vec::new();
+    collect_supporting_files(directory, "", &mut files);
+    files.sort();
+    files
+}
+
+fn collect_supporting_files(directory: &Path, prefix: &str, files: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || matches!(name.as_str(), "node_modules") {
+            continue;
+        }
+
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let relative = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+
+        if file_type.is_dir() {
+            collect_supporting_files(&entry.path(), &relative, files);
+        } else if file_type.is_file() && name != SKILL_FILE {
+            files.push(relative);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +378,39 @@ mod tests {
             parsed("---\nname: pdf\ndescription: >\n  Read PDFs.\n  Convert them too.\n---\n")
                 .expect("valid skill");
         assert_eq!(skill.description, "Read PDFs. Convert them too.");
+    }
+
+    #[test]
+    fn standard_fields_are_read() {
+        let skill = parsed(
+            "---\nname: pdf\ndescription: D.\nlicense: MIT\ncompatibility: Linux\nallowed-tools: [Bash, Read]\nmetadata:\n  author: example\n  version: '1.2'\n---\n",
+        )
+        .expect("valid skill");
+        assert_eq!(skill.license.as_deref(), Some("MIT"));
+        assert_eq!(skill.compatibility.as_deref(), Some("Linux"));
+        assert_eq!(skill.allowed_tools, vec!["Bash", "Read"]);
+        assert_eq!(
+            skill
+                .metadata
+                .get("author")
+                .and_then(|value| value.as_str()),
+            Some("example")
+        );
+        assert_eq!(
+            skill
+                .metadata
+                .get("version")
+                .and_then(|value| value.as_str()),
+            Some("1.2")
+        );
+    }
+
+    #[test]
+    fn allowed_tools_accepts_one_string() {
+        let skill =
+            parsed("---\nname: pdf\ndescription: D.\nallowed-tools: Bash(git:*) Read\n---\n")
+                .expect("valid skill");
+        assert_eq!(skill.allowed_tools, vec!["Bash(git:*) Read"]);
     }
 
     #[test]
@@ -350,6 +484,13 @@ mod tests {
     }
 
     #[test]
+    fn roots_without_a_workspace_are_user_only() {
+        let found = roots(Path::new(""));
+        assert!(found.len() <= 1);
+        assert!(!found.iter().any(|root| root.starts_with(".srud")));
+    }
+
+    #[test]
     fn the_nearer_root_wins_a_name_clash() {
         let base = std::env::temp_dir().join(format!("srud-skills-shadow-{}", std::process::id()));
         let near = base.join("near");
@@ -373,6 +514,10 @@ mod tests {
                 path: PathBuf::from("/x/pdf/SKILL.md"),
                 model_invocable: true,
                 user_invocable: true,
+                license: None,
+                compatibility: None,
+                allowed_tools: Vec::new(),
+                metadata: BTreeMap::new(),
             },
             Skill {
                 name: "private".into(),
@@ -380,6 +525,10 @@ mod tests {
                 path: PathBuf::from("/x/private/SKILL.md"),
                 model_invocable: false,
                 user_invocable: true,
+                license: None,
+                compatibility: None,
+                allowed_tools: Vec::new(),
+                metadata: BTreeMap::new(),
             },
         ];
         let text = render_catalog(&skills);
@@ -400,14 +549,43 @@ mod tests {
             path: PathBuf::from("/x/private/SKILL.md"),
             model_invocable: false,
             user_invocable: true,
+            license: None,
+            compatibility: None,
+            allowed_tools: Vec::new(),
+            metadata: BTreeMap::new(),
         }];
         assert!(render_catalog(&skills).is_empty());
     }
 
     #[test]
-    fn metadata_is_tolerated_but_not_consumed() {
+    fn metadata_is_parsed_into_the_skill() {
         let skill = parsed("---\nname: pdf\ndescription: D.\nmetadata:\n  author: example\n---\n")
             .expect("valid skill");
-        assert_eq!(skill.name, "pdf");
+        assert_eq!(
+            skill
+                .metadata
+                .get("author")
+                .and_then(|value| value.as_str()),
+            Some("example")
+        );
+    }
+
+    #[test]
+    fn supporting_files_are_relative_and_sorted() {
+        let root = std::env::temp_dir().join(format!("srud-skill-files-{}", std::process::id()));
+        write_skill(&root, "demo", "name: demo\ndescription: D.\n", "body");
+        std::fs::create_dir_all(root.join("demo").join("scripts")).unwrap();
+        std::fs::write(root.join("demo").join("scripts").join("run.sh"), "x").unwrap();
+        std::fs::create_dir_all(root.join("demo").join("references")).unwrap();
+        std::fs::write(root.join("demo").join("references").join("guide.md"), "x").unwrap();
+        std::fs::write(root.join("demo").join("template.txt"), "x").unwrap();
+
+        let files = supporting_files(&root.join("demo").join(SKILL_FILE));
+        assert_eq!(
+            files,
+            vec!["references/guide.md", "scripts/run.sh", "template.txt"]
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

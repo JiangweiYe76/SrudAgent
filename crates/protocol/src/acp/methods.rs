@@ -57,6 +57,19 @@ pub const SRUD_SESSION_ROLLOUT_READ: &str = "_srud/unstable/session/rollout/read
 /// client-to-agent method for the user to rename one, so this fills that gap.
 pub const SRUD_SESSION_SET_TITLE: &str = "_srud/unstable/session/set_title";
 
+/// Client -> agent: list the skills visible from a working directory.
+///
+/// The catalog sent to the model carries only names and descriptions; this
+/// method exposes the same skills to a client that wants to show them without
+/// loading any body.
+pub const SRUD_SKILLS_LIST: &str = "_srud/unstable/skills/list";
+
+/// Client -> agent: read one skill's metadata and instructions.
+///
+/// Separate from the list because the body and the bundled files can be large;
+/// a client asks for them only for the skill a user opened.
+pub const SRUD_SKILLS_READ: &str = "_srud/unstable/skills/read";
+
 // Provider administration. These are the only methods that ever carry a
 // credential, and none of them is a `configOptions` concern: what a *session*
 // may choose between travels in `configOptions`, while which endpoints exist and

@@ -21,6 +21,8 @@
 //! | `session/set_config_option` | choose the model a session runs on          |
 //! | `session/set_mode` | choose the session's sandbox mode                   |
 //! | `_srud/unstable/session/set_title` | rename a session               |
+//! | `_srud/unstable/skills/list` | list skills visible from a cwd          |
+//! | `_srud/unstable/skills/read` | read one skill's metadata and body       |
 //! | `_srud/unstable/provider/list` | list providers, with keys masked      |
 //! | `_srud/unstable/provider/set` | add or replace a provider             |
 //! | `_srud/unstable/provider/delete` | remove a provider                   |
@@ -58,6 +60,7 @@ use srud_protocol::acp::methods::{
     SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SESSION_SET_MODE,
     SRUD_PROVIDER_DELETE, SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT,
     SRUD_SESSION_FORK, SRUD_SESSION_REGENERATE, SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
+    SRUD_SKILLS_LIST, SRUD_SKILLS_READ,
 };
 use srud_protocol::acp::{
     AcpError, CloseSessionResponse, DeleteSessionResponse, Implementation, InitializeRequest,
@@ -75,6 +78,7 @@ mod model;
 mod provider;
 mod restore;
 mod session;
+mod skills;
 #[cfg(test)]
 mod support;
 mod turn;
@@ -272,6 +276,8 @@ impl Agent {
             SRUD_SESSION_FORK => self.handle_fork(params).await.map(serialize),
             SRUD_SESSION_STEER => self.handle_steer(params).await.map(serialize),
             SRUD_SESSION_REGENERATE => self.handle_regenerate(params).await.map(serialize),
+            SRUD_SKILLS_LIST => self.handle_skills_list(params),
+            SRUD_SKILLS_READ => self.handle_skill_read(params),
             SRUD_PROVIDER_LIST => self.handle_provider_list(params),
             SRUD_PROVIDER_SET => self.handle_provider_set(params),
             SRUD_PROVIDER_DELETE => self.handle_provider_delete(params),
