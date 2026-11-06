@@ -75,6 +75,7 @@ const en = {
   'toolCall.input': 'Input',
   'toolCall.output': 'Output',
   'toolCall.unexpectedText': 'not JSON',
+  'toolCall.viewFull': 'View full content',
 
   'thought.title': 'Thinking',
 

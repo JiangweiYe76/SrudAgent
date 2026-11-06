@@ -870,3 +870,131 @@ describe('the way back to the bottom', () => {
     expect(distanceFromBottom(el)).toBe(0);
   });
 });
+
+describe('the thinking header', () => {
+  it('shows the newest complete segment while reasoning arrives', () => {
+    render([
+      turn({
+        id: 't1',
+        steps: [
+          {
+            id: 's1',
+            thought: 'first sentence. second sentence still going',
+            assistantText: '',
+            toolCalls: [],
+          },
+        ],
+      }),
+    ]);
+
+    // The body stays folded, so the header is the only place this can appear.
+    expect(container.textContent).toContain('first sentence.');
+    expect(container.textContent).not.toContain('second sentence');
+  });
+
+  it('does not preview reasoning that is no longer arriving', () => {
+    render([
+      turn({
+        id: 't1',
+        steps: [
+          {
+            id: 's1',
+            thought: 'first sentence. second sentence.',
+            assistantText: '',
+            toolCalls: [],
+          },
+        ],
+        endReason: 'completed',
+        endedAt: 1,
+      }),
+    ]);
+
+    expect(container.textContent).not.toContain('second sentence');
+  });
+});
+
+describe('an opened card', () => {
+  function cardTrigger(): HTMLElement {
+    return container.querySelector<HTMLElement>(
+      '.rounded-lg.border.border-border button',
+    )!;
+  }
+
+  function toolCallTurn(): Turn {
+    return turn({
+      id: 't1',
+      steps: [
+        {
+          id: 's1',
+          assistantText: '',
+          toolCalls: [
+            {
+              id: 'tc1',
+              name: 'write',
+              args: '{"path":"a.rs"}',
+              result: 'ok',
+              pending: false,
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  it('scrolls its body instead of growing the transcript', () => {
+    render([toolCallTurn()]);
+    act(() => cardTrigger().click());
+
+    expect(
+      container.querySelector('[class*="max-h-[min(28rem,50dvh)]"]'),
+    ).not.toBeNull();
+  });
+
+  it('bounds an opened reasoning block the same way', () => {
+    render([
+      turn({
+        id: 't1',
+        steps: [
+          {
+            id: 's1',
+            thought: 'x'.repeat(4000),
+            assistantText: '',
+            toolCalls: [],
+          },
+        ],
+      }),
+    ]);
+    act(() => cardTrigger().click());
+
+    expect(
+      container.querySelector('[class*="max-h-[min(32rem,60dvh)]"]'),
+    ).not.toBeNull();
+  });
+
+  it('stops following the bottom when the reader opens one', () => {
+    // Opening a card is a reading gesture, not new content. Following on that
+    // growth would put the top of the card the reader just opened off screen.
+    render([toolCallTurn()]);
+    const el = list();
+    setGeometry(el, { scrollHeight: 2000, clientHeight: 400 });
+    follow();
+    expect(distanceFromBottom(el)).toBe(0);
+
+    act(() => cardTrigger().click());
+
+    setGeometry(el, { scrollHeight: 2400, clientHeight: 400 });
+    fireResize();
+
+    expect(el.scrollTop).toBe(1600);
+  });
+
+  it('leaves off-screen turns out of layout', () => {
+    // Long histories should not pay for turns nobody is looking at. The browser
+    // skips layout and paint for those, and keeps their last size as a placeholder.
+    render([turn({ id: 't1' }), turn({ id: 't2' })]);
+    const turns = container.querySelectorAll(
+      '[class*="content-visibility:auto"]',
+    );
+    expect(turns).toHaveLength(2);
+  });
+});

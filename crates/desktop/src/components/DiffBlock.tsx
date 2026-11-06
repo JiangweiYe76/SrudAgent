@@ -1,5 +1,9 @@
 import type { ToolDiff } from '@/lib/types';
 
+// Lines past this are reported rather than drawn: a large file change would
+// otherwise build a row for every line even though the card only shows a few.
+const MAX_RENDER_LINES = 400;
+
 /**
  * One file change a tool call reports, as a minus/plus diff.
  *
@@ -9,13 +13,15 @@ import type { ToolDiff } from '@/lib/types';
 export function DiffBlock({ diff }: { diff: ToolDiff }) {
   const removed = diff.oldText ? diff.oldText.split('\n') : [];
   const added = diff.newText ? diff.newText.split('\n') : [];
+  const shownRemoved = removed.slice(0, MAX_RENDER_LINES);
+  const shownAdded = added.slice(0, MAX_RENDER_LINES);
   return (
     <div className="overflow-hidden rounded-md border border-border">
       <div className="truncate bg-muted px-2 py-1 font-mono text-[11px] text-muted-foreground">
         {diff.path}
       </div>
       <div className="overflow-x-auto font-mono text-[11.5px] leading-5">
-        {removed.map((line, i) => (
+        {shownRemoved.map((line, i) => (
           <div
             key={`-${i}`}
             className="whitespace-pre bg-destructive/10 text-destructive"
@@ -24,7 +30,12 @@ export function DiffBlock({ diff }: { diff: ToolDiff }) {
             {line}
           </div>
         ))}
-        {added.map((line, i) => (
+        {removed.length > MAX_RENDER_LINES && (
+          <div className="px-2 py-1 text-[11px] text-muted-foreground">
+            … +{removed.length - MAX_RENDER_LINES} lines
+          </div>
+        )}
+        {shownAdded.map((line, i) => (
           <div
             key={`+${i}`}
             className="whitespace-pre bg-success/10 text-success"
@@ -33,6 +44,11 @@ export function DiffBlock({ diff }: { diff: ToolDiff }) {
             {line}
           </div>
         ))}
+        {added.length > MAX_RENDER_LINES && (
+          <div className="px-2 py-1 text-[11px] text-muted-foreground">
+            … +{added.length - MAX_RENDER_LINES} lines
+          </div>
+        )}
       </div>
     </div>
   );
