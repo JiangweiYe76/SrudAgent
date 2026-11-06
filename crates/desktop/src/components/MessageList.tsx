@@ -169,23 +169,63 @@ function isThinking(turn: Turn, step: Step): boolean {
   return !step.assistantText && step.toolCalls.length === 0;
 }
 
+// Where a segment of reasoning ends: a line break, or sentence punctuation.
+// The collapsed preview shows the newest complete segment rather than the text
+// still being written, so the header does not flicker with every token.
+const SEGMENT_END = /\n|[。！？]|[.!?](?=\s)/g;
+
+function latestThoughtPreview(thought: string): string {
+  const text = thought.trimEnd();
+  const ends: number[] = [];
+  for (const match of text.matchAll(SEGMENT_END)) {
+    ends.push((match.index ?? 0) + match[0].length);
+  }
+  if (ends.length === 0) return text.replace(/\s+/g, ' ').trim();
+  const end = ends[ends.length - 1];
+  const start = ends.length > 1 ? ends[ends.length - 2] : 0;
+  return text.slice(start, end).replace(/\s+/g, ' ').trim();
+}
+
 // The model's reasoning, folded into a block above the answer it produced.
-function ThoughtBlock({ thought, live }: { thought: string; live: boolean }) {
+function ThoughtBlock({
+  thought,
+  live,
+  onUserToggle,
+}: {
+  thought: string;
+  live: boolean;
+  // Opening a card is a reading gesture rather than new content, so the caller
+  // uses this to stop the transcript from following the growth it causes.
+  onUserToggle: () => void;
+}) {
   const [open, setOpen] = useState(false);
+  const preview = live && !open ? latestThoughtPreview(thought) : '';
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
+    <Collapsible
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        onUserToggle();
+      }}
+    >
       <div className="rounded-lg border border-border bg-muted text-[12.5px]">
         <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
           <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="shrink-0 text-muted-foreground">
             {t('thought.title')}
           </span>
-          <span className="flex-1" />
+          {preview ? (
+            <span className="min-w-0 flex-1 truncate text-muted-foreground/70">
+              {preview}
+            </span>
+          ) : (
+            <span className="flex-1" />
+          )}
           {live && <ThinkingDots />}
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
         </CollapsibleTrigger>
-        <CollapsibleContent>
+        <CollapsibleContent className="max-h-[min(32rem,60dvh)] overflow-y-auto overscroll-contain">
           <Markdown
             className="border-t border-border px-3 py-2 text-muted-foreground"
             streaming={live}
@@ -352,8 +392,13 @@ export const MessageList = memo(function MessageList({
             onRegenerate !== undefined &&
             turn.endReason !== undefined &&
             index === turns.length - 1;
+          // Off-screen turns skip layout and paint; the remembered size stops
+          // the scrollbar from jumping while they are placeholders.
           return (
-            <div key={turn.id} className="flex flex-col gap-3">
+            <div
+              key={turn.id}
+              className="flex flex-col gap-3 [content-visibility:auto] [contain-intrinsic-size:auto_600px]"
+            >
               {/* Each user message right-aligns inside the full column width:
                   the block stays stretched, so the bubble's `max-w-[80%]`
                   resolves against the column instead of against a
@@ -427,6 +472,7 @@ export const MessageList = memo(function MessageList({
                     <ThoughtBlock
                       thought={step.thought}
                       live={isThinking(turn, step)}
+                      onUserToggle={() => reportFollowing(false)}
                     />
                   )}
                   {step.assistantText && (
@@ -445,6 +491,7 @@ export const MessageList = memo(function MessageList({
                     <Collapsible
                       key={tc.id}
                       defaultOpen={(tc.diffs?.length ?? 0) > 0}
+                      onOpenChange={() => reportFollowing(false)}
                     >
                       <div className="rounded-lg border border-border bg-muted text-[12.5px]">
                         <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
@@ -474,7 +521,7 @@ export const MessageList = memo(function MessageList({
                             came back finds only what went in. The two payloads
                             are both JSON and look alike, so each is labelled. */}
                         {/* What changed first, then the raw payloads of how. */}
-                        <CollapsibleContent className="flex flex-col gap-3 border-t border-border px-3 py-2">
+                        <CollapsibleContent className="flex max-h-[min(28rem,50dvh)] flex-col gap-3 overflow-y-auto overscroll-contain border-t border-border px-3 py-2">
                           {tc.diffs?.map((diff, i) => (
                             <DiffBlock key={`${i}-${diff.path}`} diff={diff} />
                           ))}

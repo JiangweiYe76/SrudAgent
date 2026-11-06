@@ -174,3 +174,44 @@ describe('copying', () => {
     expect(copy?.getAttribute('title')).toBe('Copy code');
   });
 });
+
+describe('a payload past the rendering limit', () => {
+  it('reports the lines it left out', () => {
+    const text = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join(
+      '\n',
+    );
+    const shown = output(text, false);
+
+    expect(shown.querySelector('pre')?.textContent).toContain('line 400');
+    expect(shown.querySelector('pre')?.textContent).not.toContain('line 401');
+    expect(shown.textContent).toContain('… +100 lines');
+  });
+
+  it('measures the indented payload, not the one-line wire form', () => {
+    // 500 array items arrive on one line and become 502 lines once every value
+    // sits on its own. The limit has to be applied after the indenting.
+    const value = JSON.stringify(Array.from({ length: 500 }, (_, i) => i));
+    const shown = output(value, false);
+
+    expect(shown.textContent).toMatch(/… \+\d+ lines/);
+    // A cut payload is drawn as plain text: the tree would describe a structure
+    // whose tail is no longer there.
+    expect(shown.querySelector('pre span')).toBeNull();
+  });
+
+  it('keeps the whole payload one click away', () => {
+    const text = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join(
+      '\n',
+    );
+    const shown = output(text, false);
+    const button = [...shown.querySelectorAll('button')].find(
+      (candidate) => candidate.textContent === 'View full content',
+    )!;
+
+    act(() => button.click());
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain('line 500');
+  });
+});

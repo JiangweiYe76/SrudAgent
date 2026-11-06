@@ -51,17 +51,35 @@ export interface JsonPayload {
  * key it belongs to when there is nothing to put it on.
  */
 export function readJson(raw: string): JsonPayload {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { text: raw, tree: null, unparsable: true };
+  const formatted = formatJson(raw);
+  if (formatted.unparsable) {
+    return { text: formatted.text, tree: null, unparsable: true };
   }
-
-  const text = JSON.stringify(parsed, null, 2);
   return {
-    text,
-    tree: lowlight.highlight('json', text) as unknown as HastNode,
+    text: formatted.text,
+    tree: highlightJson(formatted.text),
     unparsable: false,
   };
+}
+
+/**
+ * Indents a payload without building a grammar tree.
+ *
+ * A payload can be long enough that the tree is not worth building, but its text
+ * still has to be laid out before it can be measured against a rendering limit.
+ */
+export function formatJson(raw: string): { text: string; unparsable: boolean } {
+  try {
+    return {
+      text: JSON.stringify(JSON.parse(raw), null, 2),
+      unparsable: false,
+    };
+  } catch {
+    return { text: raw, unparsable: true };
+  }
+}
+
+/** The highlighted tree for text that has already been formatted. */
+export function highlightJson(text: string): HastNode {
+  return lowlight.highlight('json', text) as unknown as HastNode;
 }
