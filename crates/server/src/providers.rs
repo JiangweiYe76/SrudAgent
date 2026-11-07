@@ -240,6 +240,124 @@ impl Providers {
     }
 }
 
+/// The rule a provider broke, and the values that sentence needs.
+///
+/// Kept apart from [`ProviderError`] so a client can word the refusal itself:
+/// the variant names the rule, and its fields are the only things a translation
+/// can place. English is still written here, for logs and for the clients that
+/// read the message rather than the rule.
+#[derive(Debug)]
+pub enum InvalidProvider {
+    /// The id is not one a model reference can start with.
+    Id {
+        /// The id as it was given.
+        id: String,
+    },
+    /// The provider has no name.
+    Name,
+    /// The base URL is not an absolute HTTP or HTTPS URL.
+    BaseUrl,
+    /// A model in the list has no id.
+    ModelId,
+    /// Two models share an id.
+    DuplicateModel {
+        /// The id both of them use.
+        id: String,
+    },
+    /// Two providers in the file share an id.
+    DuplicateProvider {
+        /// The id both of them use.
+        id: String,
+    },
+    /// A model declares thinking but offers no level to choose.
+    ThinkingLevelsMissing {
+        /// The model that declares it.
+        model: String,
+    },
+    /// A model's default thinking level is one it does not offer.
+    ThinkingDefaultMissing {
+        /// The model that defaults to it.
+        model: String,
+        /// The level it defaults to.
+        level: String,
+    },
+    /// A model maps a thinking level to nothing.
+    ThinkingBlankValue {
+        /// The model whose level it is.
+        model: String,
+        /// The level that maps to nothing.
+        level: String,
+    },
+}
+
+impl InvalidProvider {
+    /// The token a client translates by.
+    ///
+    /// Stable: it travels on the wire, so renaming one breaks every client that
+    /// reads it rather than the message beside it.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Id { .. } => "invalid-id",
+            Self::Name => "blank-name",
+            Self::BaseUrl => "bad-base-url",
+            Self::ModelId => "blank-model-id",
+            Self::DuplicateModel { .. } => "duplicate-model",
+            Self::DuplicateProvider { .. } => "duplicate-provider",
+            Self::ThinkingLevelsMissing { .. } => "thinking-levels-missing",
+            Self::ThinkingDefaultMissing { .. } => "thinking-default-missing",
+            Self::ThinkingBlankValue { .. } => "thinking-blank-value",
+        }
+    }
+
+    /// The values [`Self::kind`]'s wording has to place.
+    #[must_use]
+    pub fn params(&self) -> serde_json::Value {
+        match self {
+            Self::Id { id } => serde_json::json!({ "id": id }),
+            Self::Name | Self::BaseUrl | Self::ModelId => serde_json::json!({}),
+            Self::DuplicateModel { id } | Self::DuplicateProvider { id } => {
+                serde_json::json!({ "id": id })
+            }
+            Self::ThinkingLevelsMissing { model } => serde_json::json!({ "model": model }),
+            Self::ThinkingDefaultMissing { model, level }
+            | Self::ThinkingBlankValue { model, level } => {
+                serde_json::json!({ "model": model, "level": level })
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for InvalidProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Id { id } => write!(
+                f,
+                "ID `{id}` must be lowercase letters, digits, `-` or `_`, and start with a letter \
+                 or digit"
+            ),
+            Self::Name => f.write_str("name must not be blank"),
+            Self::BaseUrl => {
+                f.write_str("base URL must be an absolute HTTP or HTTPS URL with no trailing slash")
+            }
+            Self::ModelId => f.write_str("a model ID must not be blank"),
+            Self::DuplicateModel { id } => write!(f, "model ID `{id}` is listed twice"),
+            Self::DuplicateProvider { id } => write!(f, "provider ID `{id}` is used twice"),
+            Self::ThinkingLevelsMissing { model } => {
+                write!(f, "model `{model}` declares thinking but lists no levels")
+            }
+            Self::ThinkingDefaultMissing { model, level } => write!(
+                f,
+                "model `{model}` defaults to thinking level `{level}`, which it does not list"
+            ),
+            Self::ThinkingBlankValue { model, level } => write!(
+                f,
+                "model `{model}` maps thinking level `{level}` to a blank value"
+            ),
+        }
+    }
+}
+
 /// Why a provider document, or a change to one, was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
@@ -265,12 +383,9 @@ pub enum ProviderError {
         message: String,
     },
 
-    /// A provider was rejected.
-    ///
-    /// The detail below completes this as one sentence, which is what the
-    /// settings panel shows as written.
+    /// A provider was rejected, and the rule it broke.
     #[error("Invalid provider: {0}")]
-    Invalid(String),
+    Invalid(InvalidProvider),
 
     /// No configured provider has that id.
     #[error("No provider with ID `{0}`")]
@@ -283,6 +398,36 @@ pub enum ProviderError {
     /// The reference is not `provider/model`.
     #[error("`{0}` is not a `provider/model` reference")]
     BadReference(String),
+}
+
+impl ProviderError {
+    /// The rule this refusal names, as a token a client can word for itself.
+    ///
+    /// `None` when the failure is not a rule of ours: a filesystem error or a
+    /// parse failure repeats words from somewhere else, and no table of ours
+    /// can improve on them.
+    #[must_use]
+    pub fn kind(&self) -> Option<&'static str> {
+        match self {
+            Self::Config(_) | Self::Io { .. } | Self::Parse { .. } => None,
+            Self::Invalid(rule) => Some(rule.kind()),
+            Self::UnknownProvider(_) => Some("unknown-provider"),
+            Self::UnknownModel(_) => Some("unknown-model"),
+            Self::BadReference(_) => Some("bad-reference"),
+        }
+    }
+
+    /// The values the token's wording has to place, empty when it needs none.
+    #[must_use]
+    pub fn params(&self) -> serde_json::Value {
+        match self {
+            Self::Invalid(rule) => rule.params(),
+            Self::UnknownProvider(id) => serde_json::json!({ "id": id }),
+            Self::UnknownModel(reference) => serde_json::json!({ "model": reference }),
+            Self::BadReference(reference) => serde_json::json!({ "reference": reference }),
+            Self::Config(_) | Self::Io { .. } | Self::Parse { .. } => serde_json::json!({}),
+        }
+    }
 }
 
 /// Whether a provider id is usable as the first half of a model reference.
@@ -758,20 +903,17 @@ pub trait ModelFactory: Send + Sync {
 /// Checks a provider is one this agent can talk to.
 fn validate_provider(provider: &Provider) -> Result<(), ProviderError> {
     if !valid_id(&provider.id) {
-        return Err(ProviderError::Invalid(format!(
-            "ID `{}` must be lowercase letters, digits, `-` or `_`, and start with a letter or digit",
-            provider.id
-        )));
+        return Err(ProviderError::Invalid(InvalidProvider::Id {
+            id: provider.id.clone(),
+        }));
     }
     if provider.name.is_empty() {
-        return Err(ProviderError::Invalid("name must not be blank".to_owned()));
+        return Err(ProviderError::Invalid(InvalidProvider::Name));
     }
     if !valid_base_url(&provider.base_url) {
         // The value itself is not repeated back: it is in the field above,
         // and a long one would drown the sentence.
-        return Err(ProviderError::Invalid(
-            "base URL must be an absolute HTTP or HTTPS URL with no trailing slash".to_owned(),
-        ));
+        return Err(ProviderError::Invalid(InvalidProvider::BaseUrl));
     }
     // An empty `models` is allowed: a provider is added first and has models
     // added to it afterwards, and a half-filled one is not a broken file. It
@@ -781,14 +923,12 @@ fn validate_provider(provider: &Provider) -> Result<(), ProviderError> {
     for model in &provider.models {
         let id = model.id.trim();
         if id.is_empty() {
-            return Err(ProviderError::Invalid(
-                "a model ID must not be blank".to_owned(),
-            ));
+            return Err(ProviderError::Invalid(InvalidProvider::ModelId));
         }
         if !seen.insert(id) {
-            return Err(ProviderError::Invalid(format!(
-                "model ID `{id}` is listed twice"
-            )));
+            return Err(ProviderError::Invalid(InvalidProvider::DuplicateModel {
+                id: id.to_owned(),
+            }));
         }
         validate_thinking(id, model.thinking.as_ref())?;
     }
@@ -809,21 +949,28 @@ fn validate_thinking(
         return Ok(());
     };
     if thinking.levels.is_empty() {
-        return Err(ProviderError::Invalid(format!(
-            "model `{model_id}` declares thinking but lists no levels"
-        )));
+        return Err(ProviderError::Invalid(
+            InvalidProvider::ThinkingLevelsMissing {
+                model: model_id.to_owned(),
+            },
+        ));
     }
     if !thinking.levels.contains_key(&thinking.default) {
-        return Err(ProviderError::Invalid(format!(
-            "model `{model_id}` defaults to thinking level `{}`, which it does not list",
-            thinking.default
-        )));
+        return Err(ProviderError::Invalid(
+            InvalidProvider::ThinkingDefaultMissing {
+                model: model_id.to_owned(),
+                level: thinking.default.to_string(),
+            },
+        ));
     }
     for (level, value) in &thinking.levels {
         if value.trim().is_empty() {
-            return Err(ProviderError::Invalid(format!(
-                "model `{model_id}` maps thinking level `{level}` to a blank value"
-            )));
+            return Err(ProviderError::Invalid(
+                InvalidProvider::ThinkingBlankValue {
+                    model: model_id.to_owned(),
+                    level: level.to_string(),
+                },
+            ));
         }
     }
     Ok(())
@@ -839,10 +986,9 @@ fn validate_document(providers: &Providers) -> Result<(), ProviderError> {
     for provider in &providers.providers {
         validate_provider(provider)?;
         if !seen.insert(provider.id.as_str()) {
-            return Err(ProviderError::Invalid(format!(
-                "provider ID `{}` is used twice",
-                provider.id
-            )));
+            return Err(ProviderError::Invalid(InvalidProvider::DuplicateProvider {
+                id: provider.id.clone(),
+            }));
         }
     }
     // A `default` that names nothing is tolerated rather than refused: the file
@@ -1160,8 +1306,9 @@ mod tests {
 
     #[test]
     fn a_refusal_reads_as_a_sentence() {
-        // The settings panel prints this verbatim, so it is copy rather than
-        // an internal fragment: a lowercase opener reads as a leaked detail.
+        // A client with no wording for the rule, and the logs, read this as
+        // written, so it is copy rather than an internal fragment: a
+        // lowercase opener reads as a leaked detail.
         let (store, _path, _env) = store();
 
         let mut relative = sample("openai", None);
@@ -1176,6 +1323,30 @@ mod tests {
             "Invalid provider: base URL must be an absolute HTTP or HTTPS URL with no \
              trailing slash"
         );
+    }
+
+    #[test]
+    fn a_refusal_names_the_rule_a_client_words() {
+        // The token and the values are what a client translates by, so both
+        // travel with the refusal rather than being read out of its sentence.
+        let err = ProviderError::Invalid(InvalidProvider::DuplicateModel {
+            id: "o3".to_owned(),
+        });
+
+        assert_eq!(err.kind(), Some("duplicate-model"));
+        assert_eq!(err.params(), serde_json::json!({ "id": "o3" }));
+    }
+
+    #[test]
+    fn a_failure_that_is_not_a_rule_names_nothing() {
+        // A filesystem failure repeats words from the OS, which no wording of
+        // ours can improve on: it is shown as it came.
+        let err = ProviderError::Io {
+            path: PathBuf::from("/home/x/providers.json"),
+            source: std::io::Error::other("denied"),
+        };
+
+        assert_eq!(err.kind(), None);
     }
 
     #[test]

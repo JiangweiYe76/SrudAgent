@@ -23,12 +23,14 @@ use base64::Engine as _;
 use serde_json::Value;
 use srud_client::openai::{ChatClient, ClientConfig};
 use srud_core::client::{ModelClient, ModelError};
-use srud_protocol::acp::{AcpError, JsonRpcMessage, Notification, Response, SessionNotification};
-use srud_protocol::error::INTERNAL_ERROR;
+use srud_protocol::acp::{
+    AcpError, JsonRpcMessage, Notification, RequestId, Response, SessionNotification,
+};
+use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS};
 use srud_protocol::transport::tauri::{NotifyBody, RpcNotify, RpcRequest, RPC_NOTIFY_EVENT};
 use srud_server::{
-    config, standard_tools, Agent, Model, ModelFactory, ModelProviders, Provider, ProviderStore,
-    RpcReply,
+    config, standard_tools, Agent, Model, ModelFactory, ModelProviders, Provider, ProviderError,
+    ProviderStore, RpcReply,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -215,20 +217,25 @@ async fn handle_provider_command(
                     })
                     .collect(),
             };
-            store.upsert(input).map_err(|e| e.to_string())?
+            match store.upsert(input) {
+                Ok(catalog) => catalog,
+                Err(err) => return Ok(refusal(id, err)),
+            }
         }
         "_srud/unstable/provider/delete" => {
             let request: DeleteProviderRequest = parse_params(params).map_err(|e| e.to_string())?;
-            store
-                .delete(&request.provider_id)
-                .map_err(|e| e.to_string())?
+            match store.delete(&request.provider_id) {
+                Ok(catalog) => catalog,
+                Err(err) => return Ok(refusal(id, err)),
+            }
         }
         "_srud/unstable/provider/set_default" => {
             let request: SetDefaultProviderRequest =
                 parse_params(params).map_err(|e| e.to_string())?;
-            store
-                .set_default(&request.model)
-                .map_err(|e| e.to_string())?
+            match store.set_default(&request.model) {
+                Ok(catalog) => catalog,
+                Err(err) => return Ok(refusal(id, err)),
+            }
         }
         _ => {
             return Ok(JsonRpcMessage::wrap(Response::new(
@@ -250,6 +257,31 @@ async fn handle_provider_command(
         id,
         Ok::<_, AcpError>(view),
     )))
+}
+
+/// A change the store refused, as an error the client can word itself.
+///
+/// `data` carries the rule and the values its wording has to place, so a client
+/// with a translation table can print its own sentence. The message stays as
+/// the fallback: a client that has no wording for the rule — an older build, or
+/// one written before the rule existed — shows it instead.
+fn refusal(id: RequestId, err: ProviderError) -> RpcReply {
+    let Some(kind) = err.kind() else {
+        // Not a rule of ours: a filesystem or parse failure, whose words come
+        // from somewhere else and read better as they are.
+        return JsonRpcMessage::wrap(Response::new(
+            id,
+            Err::<Value, AcpError>(AcpError::new(INTERNAL_ERROR, err.to_string())),
+        ));
+    };
+
+    JsonRpcMessage::wrap(Response::new(
+        id,
+        Err::<Value, AcpError>(
+            AcpError::new(INVALID_PARAMS, err.to_string())
+                .data(serde_json::json!({ "kind": kind, "params": err.params() })),
+        ),
+    ))
 }
 
 /// Parses the params of a request, leaving the caller to encode a failure.

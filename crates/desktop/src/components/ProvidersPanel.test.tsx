@@ -452,16 +452,26 @@ describe('ProvidersPanel', () => {
     mocks.invoke = async (_cmd, args) => {
       const payload = args!.payload as { id: number; method: string };
       if (payload.method === '_srud/unstable/provider/set') {
-        throw new Error('Invalid provider: base URL must be an absolute URL');
+        return {
+          jsonrpc: '2.0',
+          id: payload.id,
+          error: {
+            code: -32602,
+            message: 'Invalid provider: base URL must be an absolute URL',
+            // The rule the agent names, which is what this client words.
+            data: { kind: 'bad-base-url', params: {} },
+          },
+        };
       }
       return reply(payload.id, catalog);
     };
     await render();
     await click(button('Save'));
 
+    // The banner carries this client's wording, not the agent's sentence.
     const refusals = () =>
       [...document.querySelectorAll('p')].filter((p) =>
-        p.textContent?.includes('Invalid provider'),
+        p.textContent?.startsWith('The base URL must be an absolute'),
       );
     await vi.waitFor(() => {
       expect(refusals()).toHaveLength(1);

@@ -27,7 +27,7 @@ import { Button } from '@/components/ui/button';
 import { Field, TextInput } from '@/components/ui/field';
 import { PasswordInput } from '@/components/ui/password-input';
 import { ModelForm } from '@/components/ModelForm';
-import { useProviderStore } from '@/lib/providers';
+import { refusalText, useProviderStore } from '@/lib/providers';
 import type { Provider, ProviderDraft, ProviderModel } from '@/lib/acp';
 import { t } from '@/lib/i18n';
 import type { ReactNode } from 'react';
@@ -158,7 +158,7 @@ export function ProviderDetail({
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       {error && (
         <p className="m-0 shrink-0 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {error}
+          {refusalText(error)}
         </p>
       )}
 

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { draftModelOptions, draftThinkingOptions } from './providers';
+import {
+  draftModelOptions,
+  draftThinkingOptions,
+  refusalText,
+} from './providers';
 import type { Provider } from './acp';
 import type { ThinkingConfig } from './types';
 
@@ -140,5 +144,52 @@ describe('draftThinkingOptions', () => {
       draftThinkingOptions([slashed], 'siliconflow/Qwen/Qwen3.5-4B', null)
         ?.currentValue,
     ).toBe('medium');
+  });
+});
+
+describe('refusalText', () => {
+  it('words a rule this client knows', () => {
+    expect(
+      refusalText({
+        detail:
+          'Invalid provider: base URL must be an absolute HTTP or HTTPS URL',
+        kind: 'bad-base-url',
+        params: {},
+      }),
+    ).toBe(
+      'The base URL must be an absolute HTTP or HTTPS URL with no trailing slash.',
+    );
+  });
+
+  it('places the values the rule names', () => {
+    expect(
+      refusalText({
+        detail: 'Invalid provider: provider ID `a` is used twice',
+        kind: 'duplicate-provider',
+        params: { id: 'a' },
+      }),
+    ).toBe('The provider ID `a` is used twice.');
+  });
+
+  it('prints what the agent said for a rule it has not heard of', () => {
+    // A client written before the rule existed still says something true.
+    expect(
+      refusalText({
+        detail: 'Invalid provider: a rule from a newer agent',
+        kind: 'rule-from-the-future',
+        params: {},
+      }),
+    ).toBe('Invalid provider: a rule from a newer agent');
+  });
+
+  it('prints what the agent said when it named no rule', () => {
+    // A filesystem failure is not a rule: it repeats words from elsewhere.
+    expect(
+      refusalText({
+        detail: 'Cannot use /home/x/providers.json: Access is denied.',
+        kind: null,
+        params: {},
+      }),
+    ).toBe('Cannot use /home/x/providers.json: Access is denied.');
   });
 });

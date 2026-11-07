@@ -228,6 +228,27 @@ const en = {
   'providers.key.set': 'key {key}',
   'providers.key.none': 'no key',
 
+  // What a refused change says. The agent names the rule and the values; the
+  // wording is here so it can be written in the reader's language.
+  'providers.error.invalidId':
+    'The ID must be lowercase letters, digits, `-` or `_`, and start with a letter or digit.',
+  'providers.error.blankName': 'A provider needs a name.',
+  'providers.error.badBaseUrl':
+    'The base URL must be an absolute HTTP or HTTPS URL with no trailing slash.',
+  'providers.error.blankModelId': 'A model needs an ID.',
+  'providers.error.duplicateProvider': 'The provider ID `{id}` is used twice.',
+  'providers.error.thinkingLevelsMissing':
+    'The model `{model}` declares thinking but lists no levels.',
+  'providers.error.thinkingDefaultMissing':
+    'The model `{model}` defaults to thinking level `{level}`, which it does not list.',
+  'providers.error.thinkingBlankValue':
+    'The model `{model}` maps thinking level `{level}` to a blank value.',
+  'providers.error.unknownProvider':
+    'No provider with the ID `{id}` exists any more.',
+  'providers.error.unknownModel': 'No model `{model}` exists any more.',
+  'providers.error.badReference':
+    '`{reference}` is not a `provider/model` reference.',
+
   'chat.placeholder':
     'Type a message… (Enter to send, Shift+Enter for newline)',
   'chat.send': 'Send',
@@ -253,7 +274,7 @@ const en = {
     '(mock) Got it. Real replies will appear here once the backend is wired up.',
 } as const;
 
-type Key = keyof typeof en;
+export type Key = keyof typeof en;
 
 const dictionaries: Record<Locale, Record<Key, string>> = { en };
 
