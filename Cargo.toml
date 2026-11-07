@@ -45,3 +45,12 @@ grep-searcher = "0.1"
 grep-matcher = "0.1"
 grep-regex = "0.1"
 ignore = "0.4"
+
+# The policy every crate inherits; a crate opts in with `[lints] workspace = true`.
+# `dead_code` is left at its default: the two it reports on Windows belong to a
+# separate fix, not to a rule this file should make permanent.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"

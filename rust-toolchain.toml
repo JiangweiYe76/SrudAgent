@@ -1,0 +1,12 @@
+# What `cargo` and `rustc` run as inside this repository.
+#
+# rustup reads this file on every invocation, so a fresh clone gets the compiler
+# with clippy and rustfmt attached instead of failing the first check with
+# "component not installed".
+#
+# The channel is named rather than pinned to a version: an exact number makes
+# every machine download that build once before it can compile anything, and
+# moving forward is then a single line here.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
