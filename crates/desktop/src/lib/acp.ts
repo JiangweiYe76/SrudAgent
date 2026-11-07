@@ -20,6 +20,8 @@ export type Json = Record<string, unknown>;
 interface RpcError {
   code: number;
   message: string;
+  /** What the agent attached beyond the sentence; see `RpcFailure.data`. */
+  data?: unknown;
 }
 
 interface RpcReply {
@@ -37,11 +39,17 @@ export class RpcFailure extends Error {
   readonly code: number;
   /** The agent's own words, without the code prefix this class adds. */
   readonly detail: string;
+  /**
+   * What the agent attached beside the sentence. A refusal it expects the
+   * client to word itself carries the rule and the values that wording places.
+   */
+  readonly data: unknown;
 
-  constructor(code: number, message: string) {
+  constructor(code: number, message: string, data?: unknown) {
     super(`${code}: ${message}`);
     this.code = code;
     this.detail = message;
+    this.data = data;
     this.name = 'RpcFailure';
   }
 }
@@ -94,7 +102,12 @@ export async function rpcRequest(method: string, params: Json): Promise<Json> {
   const reply = await invoke<RpcReply>('rpc_request', {
     payload: { jsonrpc: '2.0', id, method, params },
   });
-  if (reply.error) throw new RpcFailure(reply.error.code, reply.error.message);
+  if (reply.error)
+    throw new RpcFailure(
+      reply.error.code,
+      reply.error.message,
+      reply.error.data,
+    );
   return (reply.result ?? {}) as Json;
 }
 

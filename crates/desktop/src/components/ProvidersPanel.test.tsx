@@ -447,4 +447,38 @@ describe('ProvidersPanel', () => {
     await render();
     expect(document.body.textContent).toContain('cannot be used');
   });
+
+  it('reports a refused save once, in the pane that caused it', async () => {
+    mocks.invoke = async (_cmd, args) => {
+      const payload = args!.payload as { id: number; method: string };
+      if (payload.method === '_srud/unstable/provider/set') {
+        return {
+          jsonrpc: '2.0',
+          id: payload.id,
+          error: {
+            code: -32602,
+            message: 'Invalid provider: base URL must be an absolute URL',
+            // The rule the agent names, which is what this client words.
+            data: { kind: 'bad-base-url', params: {} },
+          },
+        };
+      }
+      return reply(payload.id, catalog);
+    };
+    await render();
+    await click(button('Save'));
+
+    // The banner carries this client's wording, not the agent's sentence.
+    const refusals = () =>
+      [...document.querySelectorAll('p')].filter((p) =>
+        p.textContent?.startsWith('The base URL must be an absolute'),
+      );
+    await vi.waitFor(() => {
+      expect(refusals()).toHaveLength(1);
+    });
+
+    // The pane is where the fields that caused it are, so it is the only
+    // column that prints it — the list beside it stays quiet.
+    expect(detailPane().contains(refusals()[0])).toBe(true);
+  });
 });

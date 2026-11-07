@@ -17,7 +17,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ProviderDetail } from '@/components/ProviderDetail';
-import { defaultChoices, useProviderStore } from '@/lib/providers';
+import { defaultChoices, refusalText, useProviderStore } from '@/lib/providers';
 import { cn } from '@/lib/utils';
 import { t } from '@/lib/i18n';
 
@@ -152,9 +152,12 @@ export function ProvidersPanel() {
             {t('providers.add')}
           </Button>
 
-          {error && (
+          {/* The pane owns the message whenever it is open, so the same
+              refusal is not printed twice. This is only for the states with no
+              pane to show it — a listing that failed, say. */}
+          {error && !adding && !selected && (
             <p className="m-0 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {error}
+              {refusalText(error)}
             </p>
           )}
 

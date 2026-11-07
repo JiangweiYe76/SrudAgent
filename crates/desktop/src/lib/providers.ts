@@ -9,6 +9,7 @@ import {
   deleteProvider as requestDelete,
   listProviders,
   MODEL_OPTION_ID,
+  RpcFailure,
   saveProvider as requestSave,
   setDefaultModel as requestDefault,
   THINKING_OPTION_ID,
@@ -16,6 +17,7 @@ import {
   type ProviderCatalog,
   type ProviderDraft,
 } from './acp';
+import { t, type Key } from './i18n';
 import {
   THINKING_LEVELS,
   type ModelOptions,
@@ -35,11 +37,73 @@ interface ProviderState {
   loaded: boolean;
   // The last refusal, kept rather than rethrown: the panel is where it belongs,
   // and a failure to list is not a reason to take the window down.
-  error: string | null;
+  error: ProviderRefusal | null;
   load: () => Promise<void>;
   save: (draft: ProviderDraft) => Promise<boolean>;
   remove: (id: string) => Promise<boolean>;
   setDefault: (model: string) => Promise<boolean>;
+}
+
+/**
+ * A change the agent refused, in the shape its wording needs.
+ *
+ * Keeping it structured rather than pre-formatted is what lets the panel say it
+ * in the reader's language: `kind` names the rule, `params` are the values the
+ * sentence places, and `detail` is the agent's own words for the rules this
+ * client has no wording for — or for a failure that never reached the agent.
+ */
+export interface ProviderRefusal {
+  /** What the agent said, shown when the rule has no wording here. */
+  detail: string;
+  /** The rule the agent named, when it names one. */
+  kind: string | null;
+  /** The values that rule's wording places. */
+  params: Record<string, string>;
+}
+
+// The wording each rule has here. One this table has never heard of is printed
+// as the agent wrote it, so a client written before a rule still says something
+// true rather than nothing.
+const REFUSAL_KEYS: Record<string, Key> = {
+  'invalid-id': 'providers.error.invalidId',
+  'blank-name': 'providers.error.blankName',
+  'bad-base-url': 'providers.error.badBaseUrl',
+  'blank-model-id': 'providers.error.blankModelId',
+  'duplicate-model': 'providers.model.duplicate',
+  'duplicate-provider': 'providers.error.duplicateProvider',
+  'thinking-levels-missing': 'providers.error.thinkingLevelsMissing',
+  'thinking-default-missing': 'providers.error.thinkingDefaultMissing',
+  'thinking-blank-value': 'providers.error.thinkingBlankValue',
+  'unknown-provider': 'providers.error.unknownProvider',
+  'unknown-model': 'providers.error.unknownModel',
+  'bad-reference': 'providers.error.badReference',
+};
+
+/** What to show for a refusal, in this build's words. */
+export function refusalText(refusal: ProviderRefusal): string {
+  const key = refusal.kind === null ? undefined : REFUSAL_KEYS[refusal.kind];
+  return key === undefined ? refusal.detail : t(key, refusal.params);
+}
+
+function refusalOf(err: unknown): ProviderRefusal {
+  if (!(err instanceof RpcFailure)) {
+    // A transport failure: no reply, so nothing to word ourselves.
+    return { detail: String(err), kind: null, params: {} };
+  }
+  const data = (err.data ?? {}) as { kind?: unknown; params?: unknown };
+  return {
+    detail: err.detail,
+    kind: typeof data.kind === 'string' ? data.kind : null,
+    params: isParams(data.params) ? data.params : {},
+  };
+}
+
+function isParams(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Object.values(value).every((entry) => typeof entry === 'string')
+  );
 }
 
 export const useProviderStore = create<ProviderState>((set) => {
@@ -56,7 +120,7 @@ export const useProviderStore = create<ProviderState>((set) => {
   }
 
   function failed(err: unknown): boolean {
-    set({ error: String(err) });
+    set({ error: refusalOf(err) });
     return false;
   }
 
