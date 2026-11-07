@@ -447,4 +447,28 @@ describe('ProvidersPanel', () => {
     await render();
     expect(document.body.textContent).toContain('cannot be used');
   });
+
+  it('reports a refused save once, in the pane that caused it', async () => {
+    mocks.invoke = async (_cmd, args) => {
+      const payload = args!.payload as { id: number; method: string };
+      if (payload.method === '_srud/unstable/provider/set') {
+        throw new Error('Invalid provider: base URL must be an absolute URL');
+      }
+      return reply(payload.id, catalog);
+    };
+    await render();
+    await click(button('Save'));
+
+    const refusals = () =>
+      [...document.querySelectorAll('p')].filter((p) =>
+        p.textContent?.includes('Invalid provider'),
+      );
+    await vi.waitFor(() => {
+      expect(refusals()).toHaveLength(1);
+    });
+
+    // The pane is where the fields that caused it are, so it is the only
+    // column that prints it — the list beside it stays quiet.
+    expect(detailPane().contains(refusals()[0])).toBe(true);
+  });
 });
