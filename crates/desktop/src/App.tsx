@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings } from 'lucide-react';
+import { Settings, TriangleAlert, X } from 'lucide-react';
 import { Toaster } from 'sonner';
 import { Sidebar } from './components/Sidebar';
 import { MessageList, type MessageListHandle } from './components/MessageList';
@@ -53,6 +53,7 @@ function App() {
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
+  const [hiddenInitError, setHiddenInitError] = useState<string | null>(null);
   const setDraft = useSessionStore((s) => s.setDraft);
   const setAttachments = useSessionStore((s) => s.setAttachments);
   const draft = useSessionStore((s) => draftFor(s, activeId));
@@ -249,9 +250,23 @@ function App() {
             </Button>
           </div>
         </header>
-        {initError && (
-          <div className="border-b border-border bg-destructive/10 px-5 py-2 text-xs text-destructive">
-            {initError}
+        {/* Only app-level failures land here; a failed turn carries its own
+            notice at the end of that turn. */}
+        {initError && hiddenInitError !== initError && (
+          <div className="flex items-center gap-2 border-b border-border bg-destructive/5 px-5 py-2 text-xs text-destructive">
+            <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate" title={initError}>
+              {initError}
+            </span>
+            <button
+              type="button"
+              onClick={() => setHiddenInitError(initError)}
+              title={t('common.close')}
+              aria-label={t('common.close')}
+              className="shrink-0 cursor-pointer rounded p-0.5 hover:bg-item-hover"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
         )}
         <MessageList

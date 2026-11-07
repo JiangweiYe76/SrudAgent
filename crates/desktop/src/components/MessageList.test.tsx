@@ -297,10 +297,9 @@ describe('an empty conversation', () => {
 
 describe('following the bottom while streaming', () => {
   it('lands on the bottom as tokens arrive, without animating', () => {
-    // The old code used `scrollIntoView({ behavior: 'smooth' })` on every token.
-    // Re-targeting a smooth scroll that often means it never completes: measured in
-    // a real browser over a 60-chunk stream, it ended 1320px — the whole height of
-    // the content — short of the bottom, having moved nowhere at all.
+    // A smooth move re-targeted on every token never completes: over a 60-chunk
+    // stream it can end a full content-height short of the bottom, having moved
+    // nowhere at all. The follow assigns the position in one step instead.
     render([
       turn({
         id: 't1',
@@ -910,6 +909,68 @@ describe('the thinking header', () => {
     ]);
 
     expect(container.textContent).not.toContain('second sentence');
+  });
+});
+
+describe('a failed turn', () => {
+  function failedTurn(): Turn {
+    return turn({
+      id: 't1',
+      userInput: '',
+      steps: [],
+      endReason: 'error',
+      error: {
+        code: -32603,
+        message: 'the turn ended with an internal error',
+      },
+      endedAt: 1,
+    });
+  }
+
+  it('shows a mapped notice rather than the protocol text', () => {
+    render([failedTurn()]);
+
+    expect(container.textContent).toContain('The model request failed');
+    expect(container.textContent).not.toContain('-32603');
+    // The notice carries the end reason; a second label would repeat it.
+    expect(container.textContent).not.toContain('turn error');
+  });
+
+  it('retries the failed turn in its own place', () => {
+    const asked: Turn[] = [];
+    render([failedTurn()], (tt) => asked.push(tt));
+
+    const retry = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Retry',
+    )!;
+    act(() => retry.click());
+
+    expect(asked).toEqual([expect.objectContaining({ id: 't1' })]);
+  });
+
+  it('does not repeat the notice with a meta row', () => {
+    // A failed turn has no answer to copy, and the notice already carries the
+    // retry, so the row under a finished turn would only duplicate it.
+    render([failedTurn()], () => {});
+
+    expect(container.querySelector('button[title="Copy"]')).toBeNull();
+    expect(
+      container.querySelector('button[aria-label="Regenerate"]'),
+    ).toBeNull();
+  });
+
+  it('still marks a reloaded failure that carried no error text', () => {
+    render([
+      turn({
+        id: 't1',
+        userInput: '',
+        steps: [],
+        endReason: 'error',
+        endedAt: 1,
+      }),
+    ]);
+
+    expect(container.textContent).toContain('This turn could not finish');
   });
 });
 

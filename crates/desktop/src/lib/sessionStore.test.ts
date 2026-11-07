@@ -59,7 +59,9 @@ const reply = (id: number, result: unknown) => ({ jsonrpc: '2.0', id, result });
 
 // The `_meta.srud` a `session/load` reply carries: every turn the session has
 // finished, and why.
-const turnsReply = (turns: Array<{ turnId: string; endReason: string }>) => ({
+const turnsReply = (
+  turns: Array<{ turnId: string; endReason: string; error?: string }>,
+) => ({
   _meta: { srud: { turns } },
 });
 
@@ -107,10 +109,10 @@ async function boot(
 ) {
   vi.resetModules();
   mocks.notifyCb = null;
-  const prompt = deferred<{ stopReason: string }>();
+  const prompt = deferred<{ stopReason: string; _meta?: unknown }>();
   // A regenerate answers only when its deferred settles, like a prompt: the
   // call returns the stop reason of the turn it ran.
-  const regenerate = deferred<{ stopReason: string }>();
+  const regenerate = deferred<{ stopReason: string; _meta?: unknown }>();
   // What the `session/load` reply carries beyond the model: how each replayed
   // turn ended. Resolved last: it is the last thing the client hears about the
   // conversation.
@@ -1077,7 +1079,42 @@ describe('sessionStore live path', () => {
     prompt.reject(new Error('boom'));
     await vi.waitFor(() => {
       expect(active().turns[0].endReason).toBe('error');
-      expect(useSessionStore.getState().initError).toContain('boom');
+      expect(active().turns[0].error?.message).toBe('boom');
+      expect(useSessionStore.getState().initError).toBeNull();
+    });
+  });
+
+  it('keeps the refusal code on the failed turn', async () => {
+    // The code belongs to the turn, not to the app: another conversation, or a
+    // later attempt in this one, must not inherit it.
+    const { useSessionStore, active, prompt, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const { RpcFailure } = await import('./acp');
+    prompt.reject(
+      new RpcFailure(-32603, 'the turn ended with an internal error'),
+    );
+    await vi.waitFor(() => {
+      expect(active().turns[0].error).toEqual({
+        code: -32603,
+        message: 'the turn ended with an internal error',
+      });
+      expect(useSessionStore.getState().initError).toBeNull();
+    });
+  });
+
+  it('closes a blocked turn as blocked rather than completed', async () => {
+    // ACP reports a blocked turn with the same stop reason as a finished one;
+    // the Srud-specific reason rides in `_meta`.
+    const { useSessionStore, active, prompt, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    prompt.resolve({
+      stopReason: 'end_turn',
+      _meta: { srud: { turnEndReason: 'blocked' } },
+    });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('blocked');
     });
   });
 
@@ -1458,6 +1495,37 @@ describe('sessionStore listing path', () => {
     // Closing a replayed turn is not activity: the row keeps the timestamp it
     // was listed with.
     expect(active().updatedAt).toBe(listed);
+  });
+
+  it('brings back why a replayed turn failed', async () => {
+    // A turn that failed before the app was restarted has no prompt response to
+    // read the cause from, so the failure text travels with the turn list. Without
+    // it the notice would offer no details on exactly the turns that need them.
+    const { fire, active, load } = await boot({ listed: [LISTED] });
+
+    fire(
+      {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'the question' },
+      },
+      { turnId: 'T1' },
+    );
+    load.resolve(
+      turnsReply([
+        {
+          turnId: 'T1',
+          endReason: 'error',
+          error: 'model request rejected: 429 Too Many Requests',
+        },
+      ]),
+    );
+
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('error');
+    });
+    expect(active().turns[0].error).toEqual({
+      message: 'model request rejected: 429 Too Many Requests',
+    });
   });
 
   it('stamps a live update once the replayed conversation has arrived', async () => {
@@ -2639,10 +2707,11 @@ describe('sessionStore regenerate', () => {
     expect(active().turns).toHaveLength(1);
     expect(active().turns[0].steps).toEqual([]);
     await vi.waitFor(() => {
-      expect(useSessionStore.getState().initError).toContain(
-        'regenerate refused',
+      expect(mocks.toast.error).toHaveBeenCalledWith(
+        'Could not re-answer this turn.',
       );
     });
+    expect(useSessionStore.getState().initError).toBeNull();
 
     // A refusal comes before the agent has recorded anything, so the answer it
     // was asked to replace is still the agent's latest turn. The turn on screen

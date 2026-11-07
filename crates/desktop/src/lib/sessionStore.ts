@@ -11,6 +11,7 @@ import type {
   ToolDiff,
   Turn,
   TurnEndReason,
+  TurnError,
   UsageState,
 } from './types';
 import { DEFAULT_SANDBOX_MODE } from './types';
@@ -52,7 +53,9 @@ const uid = (prefix: string) => `${prefix}${idCounter++}`;
 
 // ACP stop reasons mapped onto the UI's turn-end vocabulary.
 function mapStopReason(reason: string): TurnEndReason {
-  return reason === 'cancelled' ? 'interrupted' : 'completed';
+  if (reason === 'cancelled') return 'interrupted';
+  if (reason === 'blocked') return 'blocked';
+  return 'completed';
 }
 
 function textOf(block: unknown): string | null {
@@ -435,8 +438,11 @@ function applyUpdate(
     replayedEnd !== undefined &&
     turn.endReason === undefined
   ) {
-    turn.endReason = replayedEnd;
+    turn.endReason = replayedEnd.endReason;
     turn.endedAt = Date.now();
+    if (replayedEnd.error !== undefined) {
+      turn.error = { message: replayedEnd.error };
+    }
   }
 
   if (kind === 'user_message_chunk') {
@@ -915,11 +921,11 @@ function startLoad(localId: string, repairing: boolean) {
 // way. The record closes them as they open, so a replay lands the same however
 // the two order themselves. Not consumed on a match: every update of a listed
 // turn is history from the same replay and reads the record to stay so.
-const replayTurnEnds = new Map<string, Map<string, TurnEndReason>>();
+const replayTurnEnds = new Map<string, Map<string, LoadedTurnEnd>>();
 
 function rememberReplayTurnEnds(backendId: string, turns: LoadedTurnEnd[]) {
-  const ends = new Map<string, TurnEndReason>();
-  for (const turn of turns) ends.set(turn.turnId, turn.endReason);
+  const ends = new Map<string, LoadedTurnEnd>();
+  for (const turn of turns) ends.set(turn.turnId, turn);
   replayTurnEnds.set(backendId, ends);
 }
 
@@ -927,7 +933,7 @@ function rememberReplayTurnEnds(backendId: string, turns: LoadedTurnEnd[]) {
 function replayEndOf(
   session: Session,
   turnId: string | null,
-): TurnEndReason | undefined {
+): LoadedTurnEnd | undefined {
   if (turnId === null || session.backendId === null) return undefined;
   return replayTurnEnds.get(session.backendId)?.get(turnId);
 }
@@ -1322,7 +1328,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             }
           }
         } catch (err) {
-          closeTurn(sessionId, turn.id, 'error', String(err));
+          closeTurn(sessionId, turn.id, 'error', turnErrorOf(err));
           return;
         }
       }
@@ -1335,7 +1341,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         );
         closeTurn(sessionId, turn.id, mapStopReason(reason));
       } catch (err) {
-        closeTurn(sessionId, turn.id, 'error', String(err));
+        closeTurn(sessionId, turn.id, 'error', turnErrorOf(err));
       }
     })();
   },
@@ -1464,7 +1470,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // A re-answer that ran to the end closes like any other turn. One that
         // was stopped closes as interrupted, and the message stays with it.
         closeTurn(sessionId, turn.id, mapStopReason(reason));
-      } catch (err) {
+      } catch {
         // A refusal comes before the agent records anything, so the answer it
         // was asked to replace is still the agent's latest turn. The turn on
         // screen takes back everything it gave up, and the refusal is reported
@@ -1480,8 +1486,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 }
               : sess,
           ),
-          initError: String(err),
         }));
+        // A refused re-answer is an action failure, not a broken app, so it
+        // belongs in a transient message rather than above the transcript.
+        toast.error(t('turn.retryFailed'));
         // The turns queued behind this one wait for a turn to end in its place,
         // and a refusal ends none, so they are released here.
         queueMicrotask(() => flushFollowups(sessionId));
@@ -1767,11 +1775,17 @@ function setSandboxModeOf(
   }));
 }
 
+// The failure a turn carries, with the code kept apart from the sentence.
+function turnErrorOf(err: unknown): TurnError {
+  if (err instanceof RpcFailure) return { code: err.code, message: err.detail };
+  return { message: err instanceof Error ? err.message : String(err) };
+}
+
 function closeTurn(
   sessionId: string,
   turnId: string,
   endReason: TurnEndReason,
-  error?: string,
+  error?: TurnError,
 ) {
   useSessionStore.setState((s) => ({
     sessions: s.sessions.map((sess) => {
@@ -1779,7 +1793,14 @@ function closeTurn(
       return {
         ...sess,
         turns: sess.turns.map((tt) =>
-          tt.id === turnId ? { ...tt, endReason, endedAt: Date.now() } : tt,
+          tt.id === turnId
+            ? {
+                ...tt,
+                endReason,
+                endedAt: Date.now(),
+                ...(error ? { error } : {}),
+              }
+            : tt,
         ),
         updatedAt: Date.now(),
       };
@@ -1791,7 +1812,6 @@ function closeTurn(
       s.activeId === sessionId || s.unreadIds.includes(sessionId)
         ? s.unreadIds
         : [...s.unreadIds, sessionId],
-    ...(error ? { initError: error } : {}),
   }));
   // The text a turn produces reaches the log only when it closes, so a repair
   // that saw a gap during this turn waited for it to end.
@@ -1814,19 +1834,26 @@ function closeTurn(
 // as it opens — see `replayTurnEnds`.
 function closeReplayedTurns(sessionId: string, turns: LoadedTurnEnd[]) {
   if (turns.length === 0) return;
-  const ended = new Map(turns.map((turn) => [turn.turnId, turn.endReason]));
+  const ended = new Map(turns.map((turn) => [turn.turnId, turn]));
   useSessionStore.setState((s) => ({
     sessions: s.sessions.map((session) => {
       if (session.id !== sessionId) return session;
       let changed = false;
       const nextTurns = session.turns.map((turn) => {
-        const reason =
+        const end =
           turn.backendTurnId === undefined
             ? undefined
             : ended.get(turn.backendTurnId);
-        if (reason === undefined || turn.endReason !== undefined) return turn;
+        if (end === undefined || turn.endReason !== undefined) return turn;
         changed = true;
-        return { ...turn, endReason: reason, endedAt: Date.now() };
+        // The sentence arrives with the reason, so a reloaded failure carries
+        // the same text a live one does.
+        return {
+          ...turn,
+          endReason: end.endReason,
+          endedAt: Date.now(),
+          ...(end.error !== undefined ? { error: { message: end.error } } : {}),
+        };
       });
       return changed ? { ...session, turns: nextTurns } : session;
     }),
