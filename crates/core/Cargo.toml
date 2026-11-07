@@ -23,3 +23,6 @@ ignore = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

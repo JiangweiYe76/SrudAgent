@@ -8,3 +8,6 @@ description = "ACP v1 protocol contract: re-exported wire types, `_srud/*` exten
 serde = { workspace = true }
 serde_json = { workspace = true }
 agent-client-protocol-schema = { workspace = true }
+
+[lints]
+workspace = true

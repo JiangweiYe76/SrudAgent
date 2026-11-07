@@ -7,3 +7,6 @@ description = "Sandbox policy vocabulary and the argv boundary the runtime execu
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
+
+[lints]
+workspace = true
