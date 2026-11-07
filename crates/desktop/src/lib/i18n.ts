@@ -58,6 +58,7 @@ const en = {
   'time.daysAgo': '{n} d ago',
 
   'app.newSession': 'New session',
+  'app.retry': 'Retry',
 
   'sandbox.fullAccess': 'Full access',
   'sandbox.workspaceWrite': 'Workspace write',
