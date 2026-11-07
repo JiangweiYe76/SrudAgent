@@ -248,7 +248,7 @@ pub enum ProviderError {
     Config(#[from] config::ConfigError),
 
     /// The file could not be read or written.
-    #[error("cannot use {path}: {source}")]
+    #[error("Cannot use {path}: {source}")]
     Io {
         /// The file that could not be used.
         path: PathBuf,
@@ -266,15 +266,18 @@ pub enum ProviderError {
     },
 
     /// A provider was rejected.
-    #[error("invalid provider: {0}")]
+    ///
+    /// The detail below completes this as one sentence, which is what the
+    /// settings panel shows as written.
+    #[error("Invalid provider: {0}")]
     Invalid(String),
 
     /// No configured provider has that id.
-    #[error("no provider with ID `{0}`")]
+    #[error("No provider with ID `{0}`")]
     UnknownProvider(String),
 
     /// That provider does not offer that model.
-    #[error("no model `{0}`")]
+    #[error("No model `{0}`")]
     UnknownModel(String),
 
     /// The reference is not `provider/model`.
@@ -764,10 +767,11 @@ fn validate_provider(provider: &Provider) -> Result<(), ProviderError> {
         return Err(ProviderError::Invalid("name must not be blank".to_owned()));
     }
     if !valid_base_url(&provider.base_url) {
-        return Err(ProviderError::Invalid(format!(
-            "baseUrl `{}` must be an absolute http or https URL with no trailing slash",
-            provider.base_url
-        )));
+        // The value itself is not repeated back: it is in the field above,
+        // and a long one would drown the sentence.
+        return Err(ProviderError::Invalid(
+            "base URL must be an absolute HTTP or HTTPS URL with no trailing slash".to_owned(),
+        ));
     }
     // An empty `models` is allowed: a provider is added first and has models
     // added to it afterwards, and a half-filled one is not a broken file. It
@@ -1152,6 +1156,26 @@ mod tests {
 
         assert!(!path.exists(), "a refused write leaves no file");
         assert!(store.snapshot().providers.is_empty());
+    }
+
+    #[test]
+    fn a_refusal_reads_as_a_sentence() {
+        // The settings panel prints this verbatim, so it is copy rather than
+        // an internal fragment: a lowercase opener reads as a leaked detail.
+        let (store, _path, _env) = store();
+
+        let mut relative = sample("openai", None);
+        relative.base_url = "openai.example/v1".into();
+        let text = store
+            .upsert(relative)
+            .expect_err("a relative base URL is refused")
+            .to_string();
+
+        assert_eq!(
+            text,
+            "Invalid provider: base URL must be an absolute HTTP or HTTPS URL with no \
+             trailing slash"
+        );
     }
 
     #[test]
