@@ -151,6 +151,29 @@ describe('mermaid while streaming', () => {
   });
 });
 
+describe('a diagram already drawn', () => {
+  // Every message re-renders whenever any message streams, so a diagram has to
+  // outlive a render it did not cause.
+  it('is not redrawn when the rest of the message changes', async () => {
+    const mermaid = await import('mermaid');
+    const render = vi.spyOn(mermaid.default, 'render').mockResolvedValue({
+      svg: '<svg></svg>',
+      diagramType: 'flowchart',
+    } as unknown as Awaited<ReturnType<typeof mermaid.default.render>>);
+
+    const chart = '```mermaid\ngraph LR\n  A --> B\n```';
+    renderInto(chart);
+    await settle();
+    expect(drawnDiagram()).not.toBeNull();
+
+    update(`${chart}\n\nA paragraph that arrived later.`);
+
+    expect(drawnDiagram()).not.toBeNull();
+    expect(render).toHaveBeenCalledTimes(1);
+    render.mockRestore();
+  });
+});
+
 describe('mermaid routing', () => {
   // Static markup, so these describe the first render and nothing else — which is
   // the point: routing is decided during the markdown pass, before any effect has
@@ -273,6 +296,18 @@ describe('mermaid', () => {
     expect(container.querySelector('.mermaid-source')!.textContent).toContain(
       'this is not a diagram at all',
     );
+  });
+
+  it('leaves nothing of its own failure behind in the page', async () => {
+    // Mermaid's fallback for a chart it cannot parse is a full-width "Syntax
+    // error in text" panel appended to `document.body`, and it is appended on a
+    // path that throws before the cleanup runs — so each typo would paint a bomb
+    // over the app and keep it there for the life of the window, one per parse.
+    renderInto('```mermaid\nthis is not a diagram at all !!\n```');
+    await settle();
+
+    expect(container.querySelector('.mermaid-error')).not.toBeNull();
+    expect(document.querySelector('[id^="dmermaid-"]')).toBeNull();
   });
 
   it('drops the toggle once a chart has failed, rather than leaving it dead', async () => {

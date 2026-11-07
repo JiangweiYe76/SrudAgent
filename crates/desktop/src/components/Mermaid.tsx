@@ -36,6 +36,12 @@ function configFor(dark: boolean) {
     // Model output is untrusted. `strict` keeps labels as text rather than
     // letting mermaid interpret markup in them.
     securityLevel: 'strict' as const,
+    // Without this a chart that will not parse is answered with mermaid's own
+    // failure page: a full-width "Syntax error in text" panel with a bomb on it,
+    // appended to `document.body` — and that path throws before the cleanup, so
+    // every typo leaves one behind, over the app, for the life of the window.
+    // Suppressed, mermaid throws and the block shows the source with the reason.
+    suppressErrorRendering: true,
     theme: dark ? ('dark' as const) : ('default' as const),
   };
 }
