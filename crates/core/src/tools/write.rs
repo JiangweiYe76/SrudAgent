@@ -145,15 +145,10 @@ fn write_failure(path: &Path, err: &std::io::Error) -> String {
         }
         // Making a directory fails this way when a name on the path is already a
         // file, which is a fact about the shape of the path rather than about
-        // permission, and the error text does not say so.
-        std::io::ErrorKind::AlreadyExists => {
-            "A name above the file already exists as a file, so no directory can be \
-             put there. The file this call names is not the obstacle; check the \
-             directories leading to it."
-        }
-        // The same shape one level deeper: nothing above the file is a directory,
-        // so the walk stops there instead of at the name that is in the way.
-        std::io::ErrorKind::NotADirectory => {
+        // permission, and the error text does not say so. The two errnos for it —
+        // `NotADirectory` on unix, `AlreadyExists` on Windows — get one message,
+        // so the answer is the same wherever the agent runs.
+        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotADirectory => {
             "A name above the file is a file rather than a directory, so the path \
              cannot be walked. Check the directories leading to it."
         }
@@ -371,7 +366,7 @@ mod tests {
             "the refusal names the file that could not be written: {refusal}"
         );
         assert!(
-            refusal.contains("exists as a file"),
+            refusal.contains("is a file rather than a directory"),
             "and says the shape of the path is why: {refusal}"
         );
     }
@@ -400,10 +395,13 @@ mod tests {
         );
     }
 
+    // A pipe answers a write for as long as something reads it, so the call
+    // would not return. A device node is a unix notion and `/dev/null` is one
+    // only there: on Windows the same path is an ordinary name, so the refusal
+    // is only exercised where the situation exists.
+    #[cfg(unix)]
     #[tokio::test]
     async fn refuses_a_path_that_is_not_a_regular_file() {
-        // A pipe answers a write for as long as something reads it, so the call
-        // would not return.
         let dir = scratch("device");
 
         let refusal = refusal(
