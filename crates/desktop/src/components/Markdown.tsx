@@ -1,4 +1,10 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  type ReactNode,
+} from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -39,6 +45,18 @@ function languageOf(node: HastNode | undefined): string | undefined {
 }
 
 /**
+ * Whether the text is still arriving, for the renderers below.
+ *
+ * It travels on context rather than as a prop closed over by a per-render
+ * renderer. React identifies a component by its function, so a `pre` rebuilt on
+ * every render is a different type each time: every fence in the transcript is
+ * unmounted and remounted as a new chunk arrives, which resets a diagram's state
+ * to "pending" and, since the redraw is cancelled by the next chunk, leaves a
+ * finished diagram showing its placeholder for as long as anything else streams.
+ */
+const Streaming = createContext(false);
+
+/**
  * A fenced block: a titled header carrying the language on the left and a copy
  * button on the right, over the code itself.
  *
@@ -53,13 +71,12 @@ function CodeBlock({
   node,
   children,
   className,
-  streaming,
 }: {
   node?: HastNode;
   children?: ReactNode;
   className?: string;
-  streaming?: boolean;
 }) {
+  const streaming = useContext(Streaming);
   const language = languageOf(node);
   const source = node ? textOf(node) : '';
 
@@ -179,41 +196,38 @@ export function Markdown({
 
   return (
     <div ref={rootRef} className={cn('message-markdown', className)}>
-      <ReactMarkdown
-        // `remark-math` reads `$$…$$` as display math only when the delimiters
-        // sit on their own lines. The extra plugin gives a one-line formula the
-        // same centered block instead of leaving it inline.
-        remarkPlugins={[remarkGfm, remarkMath, remarkDisplayMath]}
-        // Order matters: highlighting rewrites tokens into spans, so the lines
-        // have to be split afterwards or a break inside a multi-line string
-        // would drag half a token onto the next line.
-        //
-        // `detect` stays off: guessing a language from the code's contents
-        // mislabels prose and costs time on every re-render.
-        //
-        // `languages` replaces the default set outright, so `common` is spread in
-        // rather than passed over — naming only the grammar here would leave every
-        // other fence in every message unhighlighted.
-        rehypePlugins={[
-          // Before the renderers that replace nodes: KaTeX and the highlighter
-          // discard the source positions copying needs.
-          rehypeSourceOffsets,
-          rehypeKatex,
-          [
-            rehypeHighlight,
-            { detect: false, languages: { ...common, mermaid: mermaidLang } },
-          ],
-          [rehypeCodeLines, {}],
-        ]}
-        components={{
-          ...components,
-          // `pre` is overridden per-render because it is the only component that
-          // needs to know whether the message is still arriving.
-          pre: (props) => <CodeBlock {...props} streaming={streaming} />,
-        }}
-      >
-        {children}
-      </ReactMarkdown>
+      <Streaming.Provider value={streaming}>
+        <ReactMarkdown
+          // `remark-math` reads `$$…$$` as display math only when the delimiters
+          // sit on their own lines. The extra plugin gives a one-line formula the
+          // same centered block instead of leaving it inline.
+          remarkPlugins={[remarkGfm, remarkMath, remarkDisplayMath]}
+          // Order matters: highlighting rewrites tokens into spans, so the lines
+          // have to be split afterwards or a break inside a multi-line string
+          // would drag half a token onto the next line.
+          //
+          // `detect` stays off: guessing a language from the code's contents
+          // mislabels prose and costs time on every re-render.
+          //
+          // `languages` replaces the default set outright, so `common` is spread in
+          // rather than passed over — naming only the grammar here would leave every
+          // other fence in every message unhighlighted.
+          rehypePlugins={[
+            // Before the renderers that replace nodes: KaTeX and the highlighter
+            // discard the source positions copying needs.
+            rehypeSourceOffsets,
+            rehypeKatex,
+            [
+              rehypeHighlight,
+              { detect: false, languages: { ...common, mermaid: mermaidLang } },
+            ],
+            [rehypeCodeLines, {}],
+          ]}
+          components={components}
+        >
+          {children}
+        </ReactMarkdown>
+      </Streaming.Provider>
     </div>
   );
 }
