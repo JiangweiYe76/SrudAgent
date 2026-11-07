@@ -109,6 +109,14 @@ pub struct SrudTurnEnd {
     pub turn_id: String,
     /// `completed`, `interrupted`, `blocked` or `error`.
     pub end_reason: String,
+    /// The failure as the model client reported it, on a turn that ended with
+    /// `"error"` and whose log recorded any.
+    ///
+    /// Rides here rather than in a message of its own because a replayed turn has
+    /// no `session/prompt` response to carry it: this list is the only place a
+    /// client being shown an old conversation learns how each turn went.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Per-step token counts carried under `_meta.srud.usage`.
@@ -277,23 +285,26 @@ mod tests {
                 SrudTurnEnd {
                     turn_id: "t1".into(),
                     end_reason: "completed".into(),
+                    error: None,
                 },
                 SrudTurnEnd {
                     turn_id: "t2".into(),
-                    end_reason: "interrupted".into(),
+                    end_reason: "error".into(),
+                    error: Some("the provider said no".into()),
                 },
             ]),
             ..Default::default()
         };
 
         // Only `turns` is set: the list alone makes the payload worth wrapping.
+        // A turn with nothing to say about why it ended carries no `error` key.
         let wrapped = meta.to_meta().expect("a turn list is not empty");
         let value = serde_json::to_value(&wrapped).unwrap();
         assert_eq!(
             value,
             json!({ "srud": { "turns": [
                 { "turnId": "t1", "endReason": "completed" },
-                { "turnId": "t2", "endReason": "interrupted" },
+                { "turnId": "t2", "endReason": "error", "error": "the provider said no" },
             ] } })
         );
         assert_eq!(SrudMeta::from_meta(&wrapped), Some(meta));

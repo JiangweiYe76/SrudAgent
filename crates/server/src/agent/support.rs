@@ -103,6 +103,62 @@ pub(super) fn stalling(events: Vec<ModelEvent>) -> Arc<dyn ModelClient> {
     })
 }
 
+/// A client that refuses every request, as a provider with a bad key would.
+///
+/// Separate from [`scripted`] because a refusal happens before the stream
+/// exists: there is no event to put on one.
+pub(super) fn rejecting(message: &str) -> Arc<dyn ModelClient> {
+    Arc::new(Refusing {
+        message: message.to_string(),
+        events: None,
+        attempts: std::sync::Mutex::new(0),
+    })
+}
+
+/// A client that refuses the first request and serves the script after it.
+///
+/// What a retry looks like from the model's side: the first attempt fails before
+/// a stream exists, the second answers.
+pub(super) fn refusing_once(message: &str, events: Vec<ModelEvent>) -> Arc<dyn ModelClient> {
+    Arc::new(Refusing {
+        message: message.to_string(),
+        events: Some(events),
+        attempts: std::sync::Mutex::new(0),
+    })
+}
+
+/// A client that refuses every request, or only the first one.
+struct Refusing {
+    message: String,
+    /// What to serve once the refusal is spent. `None` refuses forever.
+    events: Option<Vec<ModelEvent>>,
+    attempts: std::sync::Mutex<usize>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for Refusing {
+    async fn stream(
+        &self,
+        _request: ModelRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ModelStream, srud_core::client::ModelError> {
+        let mut attempts = self.attempts.lock().expect("attempts lock");
+        *attempts += 1;
+        if *attempts == 1 || self.events.is_none() {
+            return Err(srud_core::client::ModelError::Rejected(
+                self.message.clone(),
+            ));
+        }
+        let events = self.events.clone().expect("a script past the refusal");
+        Ok(Box::pin(stream::iter(
+            events
+                .into_iter()
+                .chain(std::iter::once(ModelEvent::Done))
+                .map(Ok),
+        )))
+    }
+}
+
 pub(super) fn agent(model: Arc<dyn ModelClient>) -> Agent {
     Agent::new(model, Arc::new(ToolRegistry::new()))
 }

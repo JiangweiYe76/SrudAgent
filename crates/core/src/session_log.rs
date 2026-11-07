@@ -235,6 +235,7 @@ mod tests {
         log.record(&SessionEvent::TurnEnded {
             turn_id: turn(),
             reason: TurnEndReason::Completed,
+            error: None,
         })
         .await
         .expect("recorded");
@@ -255,6 +256,7 @@ mod tests {
         log.record(&SessionEvent::TurnEnded {
             turn_id,
             reason: TurnEndReason::Interrupted,
+            error: None,
         })
         .await
         .expect("recorded");
@@ -295,6 +297,7 @@ mod tests {
                 SessionEvent::TurnEnded {
                     turn_id: turn(),
                     reason: TurnEndReason::Error,
+                    error: None,
                 },
                 "turn",
             ),

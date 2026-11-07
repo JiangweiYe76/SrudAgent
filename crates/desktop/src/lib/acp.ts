@@ -35,10 +35,13 @@ interface RpcReply {
 // needs the code, not the sentence.
 export class RpcFailure extends Error {
   readonly code: number;
+  /** The agent's own words, without the code prefix this class adds. */
+  readonly detail: string;
 
   constructor(code: number, message: string) {
     super(`${code}: ${message}`);
     this.code = code;
+    this.detail = message;
     this.name = 'RpcFailure';
   }
 }
@@ -138,6 +141,17 @@ export interface PromptImage {
   data: string;
 }
 
+// A blocked turn reports `end_turn` like a completed one; the Srud-specific
+// reason travels in `_meta`, so the stop reason alone is not enough.
+function turnEndReasonOf(result: Json): string {
+  const meta = result._meta as Json | undefined;
+  const srud = meta?.srud as Json | undefined;
+  const reason = srud?.turnEndReason;
+  return typeof reason === 'string'
+    ? reason
+    : String(result.stopReason ?? 'end_turn');
+}
+
 export async function sendPrompt(
   sessionId: string,
   text: string,
@@ -154,7 +168,7 @@ export async function sendPrompt(
       ...(text ? [{ type: 'text', text }] : []),
     ],
   });
-  return String(result.stopReason ?? 'end_turn');
+  return turnEndReasonOf(result);
 }
 
 // Injects `text` into a turn that is already running. The agent appends it to
@@ -201,6 +215,8 @@ export async function regenerateTurn(
 export interface LoadedTurnEnd {
   turnId: string;
   endReason: TurnEndReason;
+  /** The failure the model client reported, when the turn ended with one. */
+  error?: string;
 }
 
 // The selectors the session was left on, how each replayed turn ended, and the
@@ -244,7 +260,8 @@ function parseTurnEnds(meta: unknown): LoadedTurnEnd[] {
     const turnId = turn?.turnId;
     const endReason = turn?.endReason;
     if (typeof turnId !== 'string' || !isTurnEndReason(endReason)) return [];
-    return [{ turnId, endReason }];
+    const error = typeof turn?.error === 'string' ? turn.error : undefined;
+    return [{ turnId, endReason, ...(error ? { error } : {}) }];
   });
 }
 

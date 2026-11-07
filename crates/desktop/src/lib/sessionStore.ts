@@ -11,6 +11,7 @@ import type {
   ToolDiff,
   Turn,
   TurnEndReason,
+  TurnError,
   UsageState,
 } from './types';
 import { DEFAULT_SANDBOX_MODE } from './types';
@@ -52,7 +53,9 @@ const uid = (prefix: string) => `${prefix}${idCounter++}`;
 
 // ACP stop reasons mapped onto the UI's turn-end vocabulary.
 function mapStopReason(reason: string): TurnEndReason {
-  return reason === 'cancelled' ? 'interrupted' : 'completed';
+  if (reason === 'cancelled') return 'interrupted';
+  if (reason === 'blocked') return 'blocked';
+  return 'completed';
 }
 
 function textOf(block: unknown): string | null {
@@ -435,8 +438,11 @@ function applyUpdate(
     replayedEnd !== undefined &&
     turn.endReason === undefined
   ) {
-    turn.endReason = replayedEnd;
+    turn.endReason = replayedEnd.endReason;
     turn.endedAt = Date.now();
+    if (replayedEnd.error !== undefined) {
+      turn.error = { message: replayedEnd.error };
+    }
   }
 
   if (kind === 'user_message_chunk') {
@@ -915,11 +921,11 @@ function startLoad(localId: string, repairing: boolean) {
 // way. The record closes them as they open, so a replay lands the same however
 // the two order themselves. Not consumed on a match: every update of a listed
 // turn is history from the same replay and reads the record to stay so.
-const replayTurnEnds = new Map<string, Map<string, TurnEndReason>>();
+const replayTurnEnds = new Map<string, Map<string, LoadedTurnEnd>>();
 
 function rememberReplayTurnEnds(backendId: string, turns: LoadedTurnEnd[]) {
-  const ends = new Map<string, TurnEndReason>();
-  for (const turn of turns) ends.set(turn.turnId, turn.endReason);
+  const ends = new Map<string, LoadedTurnEnd>();
+  for (const turn of turns) ends.set(turn.turnId, turn);
   replayTurnEnds.set(backendId, ends);
 }
 
@@ -927,7 +933,7 @@ function rememberReplayTurnEnds(backendId: string, turns: LoadedTurnEnd[]) {
 function replayEndOf(
   session: Session,
   turnId: string | null,
-): TurnEndReason | undefined {
+): LoadedTurnEnd | undefined {
   if (turnId === null || session.backendId === null) return undefined;
   return replayTurnEnds.get(session.backendId)?.get(turnId);
 }
@@ -1048,6 +1054,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     return starting;
 
     async function start() {
+      // The mock is opt-in. It works in the desktop shell too, so the error
+      // notice can be checked in the real window instead of only in a browser.
+      if (
+        import.meta.env.VITE_SRUD_MOCK === '1' &&
+        import.meta.env.MODE !== 'test'
+      ) {
+        const { mockSessions } = await import('./mockSessions');
+        const { sessions, activeId } = mockSessions();
+        set({ sessions, activeId, initError: null });
+        return;
+      }
+
       try {
         await initialize();
         onNotify((params) => {
@@ -1236,8 +1254,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             try {
               await setSessionMode(created.sessionId, chosenSandbox);
               sandboxMode = { ...sandboxMode, currentValue: chosenSandbox };
-            } catch (err) {
-              useSessionStore.setState({ initError: String(err) });
+            } catch {
+              toast.error(t('session.settingFailed'));
             }
           }
           let options: SessionOptions = {
@@ -1256,10 +1274,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 options.model.configId,
                 chosenModel,
               );
-            } catch (err) {
+            } catch {
               // The session runs on what it was created with; the picker shows
               // the agent's answer rather than the choice that did not take.
-              useSessionStore.setState({ initError: String(err) });
+              toast.error(t('session.settingFailed'));
             }
           }
           // The model switch carries the thinking selector back too, projected
@@ -1276,8 +1294,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 options.thinking.configId,
                 chosenThinking,
               );
-            } catch (err) {
-              useSessionStore.setState({ initError: String(err) });
+            } catch {
+              toast.error(t('session.settingFailed'));
             }
           }
           const draftTitle =
@@ -1317,12 +1335,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           if (draftTitle) {
             try {
               await setSessionTitle(backendId, draftTitle);
-            } catch (err) {
-              useSessionStore.setState({ initError: String(err) });
+            } catch {
+              toast.error(t('session.renameFailed'));
             }
           }
         } catch (err) {
-          closeTurn(sessionId, turn.id, 'error', String(err));
+          closeTurn(sessionId, turn.id, 'error', turnErrorOf(err));
           return;
         }
       }
@@ -1335,7 +1353,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         );
         closeTurn(sessionId, turn.id, mapStopReason(reason));
       } catch (err) {
-        closeTurn(sessionId, turn.id, 'error', String(err));
+        closeTurn(sessionId, turn.id, 'error', turnErrorOf(err));
       }
     })();
   },
@@ -1345,9 +1363,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!isBusy(session) || !session?.backendId) return;
     // The turn is not closed here: `session/cancel` only signals the token, and
     // the open `session/prompt` is what resolves it, as `interrupted`.
-    void cancelTurn(session.backendId).catch((err) =>
-      set({ initError: String(err) }),
-    );
+    void cancelTurn(session.backendId).catch(() => {
+      // A refusal here leaves the turn running, which the stop button still
+      // offers to try again, so it is reported and not carried further.
+      toast.error(t('turn.stopFailed'));
+    });
   },
 
   queueFollowup: (text) => {
@@ -1402,7 +1422,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     requestSteer(session.backendId, text)
       .then(drop)
-      .catch((err: unknown) => {
+      .catch(() => {
         // A refused steer (the turn ended or sealed in between) is retried as
         // the next turn when there is no turn left to steer into; while a turn
         // still runs the message keeps waiting instead of being lost.
@@ -1412,7 +1432,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           get().sendTurn(text, session.id);
           return;
         }
-        set({ initError: String(err) });
+        toast.error(t('session.steerFailed'));
       });
   },
 
@@ -1464,7 +1484,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // A re-answer that ran to the end closes like any other turn. One that
         // was stopped closes as interrupted, and the message stays with it.
         closeTurn(sessionId, turn.id, mapStopReason(reason));
-      } catch (err) {
+      } catch {
         // A refusal comes before the agent records anything, so the answer it
         // was asked to replace is still the agent's latest turn. The turn on
         // screen takes back everything it gave up, and the refusal is reported
@@ -1480,8 +1500,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 }
               : sess,
           ),
-          initError: String(err),
         }));
+        // A refused re-answer is an action failure, not a broken app, so it
+        // belongs in a transient message rather than above the transcript.
+        toast.error(t('turn.retryFailed'));
         // The turns queued behind this one wait for a turn to end in its place,
         // and a refusal ends none, so they are released here.
         queueMicrotask(() => flushFollowups(sessionId));
@@ -1528,7 +1550,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (next.model) setModelOf(localId, next.model);
         setThinkingOf(localId, next.thinking);
       })
-      .catch((err) => set({ initError: String(err) }));
+      .catch(() => toast.error(t('session.settingFailed')));
   },
 
   setThinking: (level) => {
@@ -1557,7 +1579,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (next.model) setModelOf(localId, next.model);
         setThinkingOf(localId, next.thinking);
       })
-      .catch((err) => set({ initError: String(err) }));
+      .catch(() => toast.error(t('session.settingFailed')));
   },
 
   setSandboxMode: (mode) => {
@@ -1580,7 +1602,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const localId = session.id;
     void setSessionMode(session.backendId, mode)
       .then(() => setSandboxModeOf(localId, { ...options, currentValue: mode }))
-      .catch((err) => set({ initError: String(err) }));
+      .catch(() => toast.error(t('session.settingFailed')));
   },
 
   renameSession: (id, title) => {
@@ -1600,8 +1622,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // The agent is the source of truth and echoes the accepted title back as a
     // `session_info_update`, so nothing is written locally here. A blank title
     // clears the name rather than storing an empty one.
-    void setSessionTitle(session.backendId, title.trim()).catch((err) =>
-      set({ initError: String(err) }),
+    void setSessionTitle(session.backendId, title.trim()).catch(() =>
+      toast.error(t('session.renameFailed')),
     );
   },
 
@@ -1630,10 +1652,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Opening it replays the history the fork carries, which is the point.
         get().select(created.id);
       })
-      .catch((err) => {
-        set({ initError: String(err) });
-        toast.error(t('sidebar.forkFailed'));
-      });
+      .catch(() => toast.error(t('sidebar.forkFailed')));
   },
 
   deleteSession: (id) => {
@@ -1654,10 +1673,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         removeSession(id);
         toast.success(t('sidebar.deleted'));
       })
-      .catch((err) => {
-        set({ initError: String(err) });
-        toast.error(t('sidebar.deleteFailed'));
-      })
+      .catch(() => toast.error(t('sidebar.deleteFailed')))
       .finally(() => {
         set((s) => ({ deletingIds: s.deletingIds.filter((x) => x !== id) }));
       });
@@ -1767,11 +1783,17 @@ function setSandboxModeOf(
   }));
 }
 
+// The failure a turn carries, with the code kept apart from the sentence.
+function turnErrorOf(err: unknown): TurnError {
+  if (err instanceof RpcFailure) return { code: err.code, message: err.detail };
+  return { message: err instanceof Error ? err.message : String(err) };
+}
+
 function closeTurn(
   sessionId: string,
   turnId: string,
   endReason: TurnEndReason,
-  error?: string,
+  error?: TurnError,
 ) {
   useSessionStore.setState((s) => ({
     sessions: s.sessions.map((sess) => {
@@ -1779,7 +1801,14 @@ function closeTurn(
       return {
         ...sess,
         turns: sess.turns.map((tt) =>
-          tt.id === turnId ? { ...tt, endReason, endedAt: Date.now() } : tt,
+          tt.id === turnId
+            ? {
+                ...tt,
+                endReason,
+                endedAt: Date.now(),
+                ...(error ? { error } : {}),
+              }
+            : tt,
         ),
         updatedAt: Date.now(),
       };
@@ -1791,7 +1820,6 @@ function closeTurn(
       s.activeId === sessionId || s.unreadIds.includes(sessionId)
         ? s.unreadIds
         : [...s.unreadIds, sessionId],
-    ...(error ? { initError: error } : {}),
   }));
   // The text a turn produces reaches the log only when it closes, so a repair
   // that saw a gap during this turn waited for it to end.
@@ -1814,19 +1842,26 @@ function closeTurn(
 // as it opens — see `replayTurnEnds`.
 function closeReplayedTurns(sessionId: string, turns: LoadedTurnEnd[]) {
   if (turns.length === 0) return;
-  const ended = new Map(turns.map((turn) => [turn.turnId, turn.endReason]));
+  const ended = new Map(turns.map((turn) => [turn.turnId, turn]));
   useSessionStore.setState((s) => ({
     sessions: s.sessions.map((session) => {
       if (session.id !== sessionId) return session;
       let changed = false;
       const nextTurns = session.turns.map((turn) => {
-        const reason =
+        const end =
           turn.backendTurnId === undefined
             ? undefined
             : ended.get(turn.backendTurnId);
-        if (reason === undefined || turn.endReason !== undefined) return turn;
+        if (end === undefined || turn.endReason !== undefined) return turn;
         changed = true;
-        return { ...turn, endReason: reason, endedAt: Date.now() };
+        // The sentence arrives with the reason, so a reloaded failure carries
+        // the same text a live one does.
+        return {
+          ...turn,
+          endReason: end.endReason,
+          endedAt: Date.now(),
+          ...(end.error !== undefined ? { error: { message: end.error } } : {}),
+        };
       });
       return changed ? { ...session, turns: nextTurns } : session;
     }),

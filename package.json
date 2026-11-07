@@ -7,6 +7,8 @@
     "setup": "pnpm --dir crates/desktop install",
     "dev": "pnpm --dir crates/desktop run dev:app",
     "dev:web": "pnpm --dir crates/desktop run dev",
+    "dev:mock": "pnpm --dir crates/desktop run dev:app:mock",
+    "dev:mock:web": "pnpm --dir crates/desktop run dev:web:mock",
     "build": "pnpm --dir crates/desktop run tauri build",
     "test:web": "pnpm --dir crates/desktop run test",
     "test:rust": "cargo test --workspace",

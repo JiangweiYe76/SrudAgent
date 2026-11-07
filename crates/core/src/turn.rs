@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use futures::StreamExt;
 
-use crate::client::{ModelClient, ModelEvent, ModelRequest, TokenUsage};
+use crate::client::{ModelClient, ModelError, ModelEvent, ModelRequest, TokenUsage};
 use crate::context;
 use crate::prompt;
 use crate::session::Session;
@@ -34,12 +34,80 @@ use crate::tools::{failure_text, ToolContext, ToolError, ToolOutcome, ToolRegist
 use crate::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnId, TurnInput};
 
 /// What a finished turn produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnResult {
     /// Which turn this was.
     pub turn_id: TurnId,
     /// Why it stopped.
     pub reason: TurnEndReason,
+    /// The failure as the model client reported it, when the turn failed because
+    /// of one.
+    ///
+    /// Empty for a completed turn, an interrupted one, and a failed one nothing
+    /// described.
+    pub error: Option<String>,
+}
+
+/// Why a step stopped, and what the model client said when it said anything.
+///
+/// Carried out of [`run_step`] rather than collapsed into a [`TurnEndReason`]
+/// because the reason alone cannot tell a rejected request from a broken
+/// transport, and the words that can are the only place the cause survives.
+struct TurnFailure {
+    reason: TurnEndReason,
+    detail: Option<String>,
+}
+
+impl TurnFailure {
+    /// A failure nothing reported: a log that refused a record, or a step cut
+    /// short before it could say anything.
+    fn silent(reason: TurnEndReason) -> Self {
+        Self {
+            reason,
+            detail: None,
+        }
+    }
+
+    /// A failure something named, keeping its words.
+    ///
+    /// Both a client's refusal and a log's refusal are read the same way: the
+    /// reason is an error, and the sentence is what the failing side said.
+    fn reported(error: &impl std::fmt::Display) -> Self {
+        Self {
+            reason: TurnEndReason::Error,
+            detail: Some(one_line(&error.to_string())),
+        }
+    }
+}
+
+/// How much of a client's message is kept.
+///
+/// A rejected request comes back with the provider's body — a JSON object, or an
+/// HTML page from whatever sits in front of it. One line is enough to recognise
+/// the cause, and neither a log nor a client showing it inline has room for the
+/// rest.
+const FAILURE_DETAIL_LIMIT: usize = 600;
+
+/// Collapses a client's message to one line, cut at
+/// [`FAILURE_DETAIL_LIMIT`] bytes and closed with an ellipsis.
+fn one_line(text: &str) -> String {
+    let mut collapsed = String::with_capacity(text.len());
+    for word in text.split_whitespace() {
+        if !collapsed.is_empty() {
+            collapsed.push(' ');
+        }
+        collapsed.push_str(word);
+    }
+    if collapsed.len() <= FAILURE_DETAIL_LIMIT {
+        return collapsed;
+    }
+    let mut end = FAILURE_DETAIL_LIMIT;
+    while !collapsed.is_char_boundary(end) {
+        end -= 1;
+    }
+    collapsed.truncate(end);
+    collapsed.push('…');
+    collapsed
 }
 
 /// One turn's recording, in the only order these three things may happen.
@@ -276,16 +344,26 @@ impl<'a> Journal<'a> {
 
     /// Records the turn's end and then announces it.
     ///
+    /// `error` is the client's own words when a model request failed, and is
+    /// absent for every other way a turn ends. It is recorded beside the reason
+    /// rather than instead of it: the reason says a turn broke, and the sentence
+    /// says why.
+    ///
     /// # Errors
     ///
     /// As [`Journal::record`]. A turn whose end cannot be recorded still ends —
     /// the caller falls back to announcing it without a record, which leaves the
     /// log one record short rather than leaving the turn open.
-    pub async fn end(&self, reason: TurnEndReason) -> Result<(), RecordError> {
+    pub async fn end(
+        &self,
+        reason: TurnEndReason,
+        error: Option<String>,
+    ) -> Result<(), RecordError> {
         self.log
             .record(&crate::session_event::SessionEvent::TurnEnded {
                 turn_id: self.turn_id,
                 reason,
+                error,
             })
             .await?;
         Ok(())
@@ -442,20 +520,27 @@ pub async fn run_turn_after(
     if let Err(err) = opened {
         // Nothing was announced, so nothing is announced here either: the caller
         // is told instead.
-        let _ = journal.end(TurnEndReason::Error).await;
+        let _ = journal.end(TurnEndReason::Error, None).await;
         return Err(TurnError::Unrecordable(err));
     }
 
-    let reason = drive(&journal, client, tools, &cancel, &sections, &sandbox).await;
+    let failure = drive(&journal, client, tools, &cancel, &sections, &sandbox).await;
 
     // The end is announced even when it could not be recorded. A log one record
     // short is recoverable; a turn left open on the wire is not, because the
     // caller waits on this turn to close.
-    let _ = journal.end(reason).await;
+    let _ = journal.end(failure.reason, failure.detail.clone()).await;
 
-    sink.emit(Event::TurnComplete { turn_id, reason });
+    sink.emit(Event::TurnComplete {
+        turn_id,
+        reason: failure.reason,
+    });
 
-    Ok(TurnResult { turn_id, reason })
+    Ok(TurnResult {
+        turn_id,
+        reason: failure.reason,
+        error: failure.detail,
+    })
 }
 
 /// A turn's opening: the record that starts it, then what the user said.
@@ -579,23 +664,23 @@ async fn drive(
     cancel: &tokio_util::sync::CancellationToken,
     sections: &[prompt::Section],
     sandbox: &srud_sandbox::SandboxPolicy,
-) -> TurnEndReason {
+) -> TurnFailure {
     let mut step: u32 = 0;
     loop {
         if cancel.is_cancelled() {
-            return TurnEndReason::Interrupted;
+            return TurnFailure::silent(TurnEndReason::Interrupted);
         }
 
         // Steered messages are claimed exactly here: at a boundary, after
         // whatever the last step produced, so the request built below carries
         // them behind the answer they respond to rather than ahead of it.
-        if drain_steers(journal).await.is_err() {
-            return TurnEndReason::Error;
+        if let Err(err) = drain_steers(journal).await {
+            return TurnFailure::reported(&err);
         }
 
         step += 1;
-        if journal.begin_step(step).await.is_err() {
-            return TurnEndReason::Error;
+        if let Err(err) = journal.begin_step(step).await {
+            return TurnFailure::reported(&err);
         }
 
         let request = {
@@ -607,8 +692,8 @@ async fn drive(
 
         // The step closes however it went, so a log that stops here still says
         // which step it stopped in rather than leaving one open forever.
-        if journal.end_step(step).await.is_err() {
-            return TurnEndReason::Error;
+        if let Err(err) = journal.end_step(step).await {
+            return TurnFailure::reported(&err);
         }
 
         match outcome {
@@ -619,13 +704,13 @@ async fn drive(
                 // refuses any steer that arrives after this point, so the caller
                 // is told to retry it as a turn of its own.
                 if journal.session().seal_turn() {
-                    return TurnEndReason::Completed;
+                    return TurnFailure::silent(TurnEndReason::Completed);
                 }
                 continue;
             }
             // Tool output is now in history, so another request is owed.
             Ok(StepOutcome::NeedsFollowUp) => continue,
-            Err(reason) => return reason,
+            Err(failure) => return failure,
         }
     }
 }
@@ -646,10 +731,13 @@ async fn run_step(
     cancel: &tokio_util::sync::CancellationToken,
     request: ModelRequest,
     sandbox: &srud_sandbox::SandboxPolicy,
-) -> Result<StepOutcome, TurnEndReason> {
+) -> Result<StepOutcome, TurnFailure> {
     let mut stream = match client.stream(request, cancel.clone()).await {
         Ok(stream) => stream,
-        Err(_) => return Err(TurnEndReason::Error),
+        // The request never started: a rejected key, an exhausted quota, or a
+        // provider that refused it. Its words are the only thing that tells
+        // those apart.
+        Err(error) => return Err(TurnFailure::reported(&error)),
     };
 
     // One id per message, minted before the first chunk of it. Every chunk of this
@@ -679,7 +767,7 @@ async fn run_step(
             // report the interruption as something else.
             let _ = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
             flush_usage(journal, usage).await;
-            return Err(TurnEndReason::Interrupted);
+            return Err(TurnFailure::silent(TurnEndReason::Interrupted));
         }
 
         let next = stream.next().await;
@@ -687,16 +775,16 @@ async fn run_step(
             // The provider went away without signalling completion.
             let _ = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
             flush_usage(journal, usage).await;
-            return Err(TurnEndReason::Error);
+            return Err(TurnFailure::reported(&ModelError::Truncated));
         };
 
         let event = match item {
             Ok(event) => event,
-            Err(_) => {
+            Err(error) => {
                 let _ =
                     flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
                 flush_usage(journal, usage).await;
-                return Err(TurnEndReason::Error);
+                return Err(TurnFailure::reported(&error));
             }
         };
 
@@ -740,7 +828,7 @@ async fn run_step(
     // unfinished in the log.
     flush_assistant(journal, &message_id, &thought_id, &message, &reasoning)
         .await
-        .map_err(|_| TurnEndReason::Error)?;
+        .map_err(|err| TurnFailure::reported(&err))?;
 
     if tool_calls.is_empty() {
         flush_usage(journal, usage).await;
@@ -756,20 +844,19 @@ async fn run_step(
             serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
         record_tool_call(journal, &call, &arguments)
             .await
-            .map_err(|_| TurnEndReason::Error)?;
+            .map_err(|err| TurnFailure::reported(&err))?;
         recorded.push((call, arguments));
     }
     flush_usage(journal, usage).await;
 
     for (call, arguments) in recorded {
         if cancel.is_cancelled() {
-            return Err(TurnEndReason::Interrupted);
+            return Err(TurnFailure::silent(TurnEndReason::Interrupted));
         }
-        if run_recorded_tool_call(journal, tools, call, arguments, cancel.clone(), sandbox)
-            .await
-            .is_err()
+        if let Err(err) =
+            run_recorded_tool_call(journal, tools, call, arguments, cancel.clone(), sandbox).await
         {
-            return Err(TurnEndReason::Error);
+            return Err(TurnFailure::reported(&err));
         }
     }
 

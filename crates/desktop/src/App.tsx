@@ -8,6 +8,7 @@ import { ModelSelect } from './components/ModelSelect';
 import { ThinkingSelect } from './components/ThinkingSelect';
 import { FullAccessModal } from './components/FullAccessModal';
 import { SettingsModal } from './components/SettingsModal';
+import { AppErrorBar } from './components/AppErrorBar';
 import { Button } from './components/ui/button';
 import {
   useSessionStore,
@@ -53,6 +54,7 @@ function App() {
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
+  const [hiddenInitError, setHiddenInitError] = useState<string | null>(null);
   const setDraft = useSessionStore((s) => s.setDraft);
   const setAttachments = useSessionStore((s) => s.setAttachments);
   const draft = useSessionStore((s) => draftFor(s, activeId));
@@ -249,10 +251,17 @@ function App() {
             </Button>
           </div>
         </header>
-        {initError && (
-          <div className="border-b border-border bg-destructive/10 px-5 py-2 text-xs text-destructive">
-            {initError}
-          </div>
+        {/* Only app-level failures land here; a failed turn carries its own
+            notice at the end of that turn. */}
+        {initError && hiddenInitError !== initError && (
+          <AppErrorBar
+            message={initError}
+            onRetry={() => {
+              setHiddenInitError(null);
+              void init();
+            }}
+            onDismiss={() => setHiddenInitError(initError)}
+          />
         )}
         <MessageList
           ref={messageList}

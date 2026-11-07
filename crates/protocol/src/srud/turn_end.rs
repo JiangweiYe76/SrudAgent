@@ -15,6 +15,10 @@
 //! turn answers `session/prompt` with a JSON-RPC error, not a result, so
 //! there is no `StopReason` to map to. The server layer handles that
 //! path; this module only covers the three reasons that end with a result.
+//! That error's `message` is the cause the model client reported, and its
+//! `data.detail` is the same text for a client that reads fields rather than
+//! sentences. A replayed turn carries it as `_meta.srud.turns[].error` instead,
+//! since a `session/load` response has no error object to put it in.
 
 use crate::acp::StopReason;
 use crate::srud::meta::SrudMeta;

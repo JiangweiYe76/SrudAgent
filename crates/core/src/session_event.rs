@@ -252,6 +252,14 @@ pub enum SessionEvent {
         turn_id: TurnId,
         /// Why it stopped.
         reason: TurnEndReason,
+        /// The failure as the model client reported it, when the turn failed
+        /// because of one.
+        ///
+        /// Optional: absent on every other end, and absent on a record that never
+        /// carried one. A reader shows such a turn as one that stopped without
+        /// saying why, rather than inventing a cause.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 
     /// One model request's token counts, as the provider reported them.
@@ -517,6 +525,7 @@ mod tests {
             SessionEvent::TurnEnded {
                 turn_id,
                 reason: TurnEndReason::Interrupted,
+                error: None,
             },
             SessionEvent::turn_discarded(turn_id),
         ];
@@ -558,6 +567,7 @@ mod tests {
                 SessionEvent::TurnEnded {
                     turn_id,
                     reason: TurnEndReason::Completed,
+                    error: None,
                 },
                 "turn_ended",
                 vec!["turn_id", "reason"],
@@ -589,6 +599,43 @@ mod tests {
             expected.sort_unstable();
             assert_eq!(keys, expected, "{value}");
         }
+    }
+
+    #[test]
+    fn a_turn_end_carries_what_the_client_said_when_it_failed() {
+        // The reason says a turn broke; the sentence says why. Only the second
+        // one tells a rejected key from an exhausted quota.
+        let entry = SessionEvent::TurnEnded {
+            turn_id: TurnId::new(),
+            reason: TurnEndReason::Error,
+            error: Some("model request rejected: 429 Too Many Requests".into()),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+
+        assert!(
+            json.contains("\"error\":\"model request rejected"),
+            "{json}"
+        );
+        let back: SessionEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn a_turn_end_that_carries_no_failure_text_still_reads() {
+        // The field is optional, so a line without it is a whole record rather
+        // than a damaged one. Reading it as damaged would cost a session for a
+        // sentence it never had.
+        let line = concat!(
+            r#"{"type":"turn_ended","turn_id":"#,
+            r#""11111111-1111-4111-8111-111111111111","reason":"error"}"#
+        );
+        let event: SessionEvent = serde_json::from_str(line).expect("a record without it reads");
+
+        let SessionEvent::TurnEnded { reason, error, .. } = event else {
+            panic!("a turn end, not {event:?}");
+        };
+        assert_eq!(reason, TurnEndReason::Error);
+        assert_eq!(error, None, "nothing was recorded, so nothing is claimed");
     }
 
     #[test]
@@ -627,7 +674,8 @@ mod tests {
         assert_eq!(
             SessionEvent::TurnEnded {
                 turn_id,
-                reason: TurnEndReason::Completed
+                reason: TurnEndReason::Completed,
+                error: None,
             }
             .turn_id(),
             Some(turn_id)

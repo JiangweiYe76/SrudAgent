@@ -586,17 +586,26 @@ pub fn replay_notification(
 /// protocol crate's mapping table where only the three result-bearing reasons
 /// flow through `map_turn_end_reason`. The returned [`TurnEndWire`] may carry
 /// a `_meta.srud` marker (e.g. the blocked reason) for the response.
-pub fn prompt_outcome(reason: TurnEndReason) -> Result<TurnEndWire, AcpError> {
+///
+/// `error` is the client's own words for the failure, when it said any. It goes
+/// into both halves of the error object: the message is what a client can show
+/// without knowing anything about SrudAgent, and `data.detail` is the same text
+/// under a key a client can read without parsing a sentence.
+pub fn prompt_outcome(reason: TurnEndReason, error: Option<&str>) -> Result<TurnEndWire, AcpError> {
     use srud_protocol::srud::turn_end::SrudTurnEndReason;
     let srud = match reason {
         TurnEndReason::Completed => SrudTurnEndReason::Completed,
         TurnEndReason::Interrupted => SrudTurnEndReason::Interrupted,
         TurnEndReason::Blocked => SrudTurnEndReason::Blocked,
         TurnEndReason::Error => {
-            return Err(AcpError::new(
-                srud_protocol::error::INTERNAL_ERROR,
-                "the turn ended with an internal error",
-            ))
+            return Err(match error {
+                Some(detail) => AcpError::new(srud_protocol::error::INTERNAL_ERROR, detail)
+                    .data(serde_json::json!({ "detail": detail })),
+                None => AcpError::new(
+                    srud_protocol::error::INTERNAL_ERROR,
+                    "the turn ended with an internal error",
+                ),
+            })
         }
     };
     Ok(map_turn_end_reason(srud))
@@ -1131,12 +1140,12 @@ mod tests {
     #[test]
     fn prompt_outcome_matches_the_mapping_table() {
         use srud_protocol::acp::StopReason;
-        let wire = prompt_outcome(TurnEndReason::Completed).unwrap();
+        let wire = prompt_outcome(TurnEndReason::Completed, None).unwrap();
         assert_eq!(wire.stop_reason, StopReason::EndTurn);
         assert_eq!(wire.meta, None);
-        let wire = prompt_outcome(TurnEndReason::Interrupted).unwrap();
+        let wire = prompt_outcome(TurnEndReason::Interrupted, None).unwrap();
         assert_eq!(wire.stop_reason, StopReason::Cancelled);
-        let wire = prompt_outcome(TurnEndReason::Blocked).unwrap();
+        let wire = prompt_outcome(TurnEndReason::Blocked, None).unwrap();
         assert_eq!(wire.stop_reason, StopReason::EndTurn);
         assert_eq!(
             wire.meta
@@ -1144,8 +1153,29 @@ mod tests {
                 .and_then(|m| m.turn_end_reason.as_deref()),
             Some("blocked")
         );
-        let err = prompt_outcome(TurnEndReason::Error).unwrap_err();
+        let err = prompt_outcome(TurnEndReason::Error, None).unwrap_err();
         assert_eq!(i32::from(err.code), srud_protocol::error::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn a_failed_turn_carries_what_the_client_said() {
+        // Without this the client can only say that something went wrong: the
+        // reason the provider gave is the one thing that tells a rejected key
+        // from an exhausted quota.
+        let err = prompt_outcome(
+            TurnEndReason::Error,
+            Some("429 Too Many Requests: rate limit reached"),
+        )
+        .unwrap_err();
+
+        assert_eq!(i32::from(err.code), srud_protocol::error::INTERNAL_ERROR);
+        assert_eq!(err.message, "429 Too Many Requests: rate limit reached");
+        assert_eq!(
+            err.data,
+            Some(serde_json::json!({
+                "detail": "429 Too Many Requests: rate limit reached",
+            }))
+        );
     }
 
     #[test]

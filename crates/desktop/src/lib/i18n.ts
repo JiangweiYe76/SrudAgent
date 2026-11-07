@@ -48,6 +48,9 @@ const en = {
 
   'session.repairFailed':
     'Part of this conversation was lost while loading and could not be restored.',
+  'session.settingFailed': 'Could not change this setting.',
+  'session.renameFailed': 'Could not rename the session.',
+  'session.steerFailed': 'Could not send that message.',
 
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',
@@ -55,6 +58,7 @@ const en = {
   'time.daysAgo': '{n} d ago',
 
   'app.newSession': 'New session',
+  'app.retry': 'Retry',
 
   'sandbox.fullAccess': 'Full access',
   'sandbox.workspaceWrite': 'Workspace write',
@@ -82,6 +86,20 @@ const en = {
   'turn.awaitingReply': 'Waiting for a reply',
   'turn.ended': 'turn {reason}',
   'turn.regenerate': 'Regenerate',
+  'turn.retry': 'Retry',
+  'turn.retryFailed': 'Could not re-answer this turn.',
+  'turn.stopFailed': 'Could not stop the turn.',
+  'turn.error.title': 'The model request failed',
+  'turn.error.authTitle': 'Provider sign-in required',
+  'turn.error.rateTitle': 'Too many requests',
+  'turn.error.serverTitle': 'The provider returned an error',
+  'turn.error.contextTitle': 'The conversation is too long',
+  'turn.error.networkTitle': 'Connection failed',
+  'turn.error.unknownTitle': 'This turn could not finish',
+  'turn.error.details': 'Details',
+  'turn.error.detailsTitle': 'Error details',
+  'turn.error.code': 'Code',
+  'turn.error.message': 'Message',
 
   'msg.copy': 'Copy',
   'msg.copied': 'Copied',

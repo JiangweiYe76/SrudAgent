@@ -167,6 +167,13 @@ export interface Attachment {
   data: string;
 }
 
+// Why a turn could not finish. The code stays apart from the message so the UI
+// can show a mapped headline and keep the raw pair for details.
+export interface TurnError {
+  code?: number;
+  message: string;
+}
+
 // One user input and the full agent processing it triggers.
 export interface Turn {
   id: string;
@@ -184,6 +191,9 @@ export interface Turn {
   steps: Step[];
   // Absent while the turn is still running.
   endReason?: TurnEndReason;
+  // Why the turn ended with `error`, once one has arrived. Absent on a finished
+  // turn, and absent after a reload that carried no error text.
+  error?: TurnError;
   createdAt: number;
   endedAt?: number;
 }

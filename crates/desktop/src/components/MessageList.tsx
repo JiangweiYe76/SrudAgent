@@ -21,6 +21,7 @@ import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
 import { JsonBlock } from '@/components/JsonBlock';
 import { DiffBlock } from '@/components/DiffBlock';
+import { TurnErrorNotice } from '@/components/TurnErrorNotice';
 import { MessageContextMenu } from '@/components/MessageContextMenu';
 import { Modal, ModalContent } from '@/components/ui/modal';
 import {
@@ -553,33 +554,43 @@ export const MessageList = memo(function MessageList({
                   <ThinkingDots />
                 </div>
               )}
+              {/* The failure belongs to this turn, so it sits where the answer
+                  would have been rather than above the whole conversation. */}
+              {turn.endReason === 'error' && (
+                <TurnErrorNotice
+                  error={turn.error}
+                  onRetry={regenerable ? () => onRegenerate(turn) : undefined}
+                />
+              )}
               {/* A turn with nothing to show still gets its row when it can be
                   asked again: an answer that came back empty is the one most
-                  worth retrying, and hiding the control would leave no way to. */}
-              {turn.endReason !== undefined && (hasOutput || regenerable) && (
-                <div className="flex items-center justify-between">
-                  <MetaRow
-                    text={lastText}
-                    ts={turn.endedAt ?? turn.createdAt}
-                    onRegenerate={
-                      regenerable ? () => onRegenerate(turn) : undefined
-                    }
-                  />
-                  {turn.endReason !== 'completed' && (
-                    <div
-                      className={`text-xs ${
-                        turn.endReason === 'error'
-                          ? 'text-destructive'
-                          : turn.endReason === 'blocked'
+                  worth retrying, and hiding the control would leave no way to.
+                  A failed turn is the exception: its notice owns retry and
+                  details, so a second row would only repeat them. */}
+              {turn.endReason !== undefined &&
+                turn.endReason !== 'error' &&
+                (hasOutput || regenerable) && (
+                  <div className="flex items-center justify-between">
+                    <MetaRow
+                      text={lastText}
+                      ts={turn.endedAt ?? turn.createdAt}
+                      onRegenerate={
+                        regenerable ? () => onRegenerate(turn) : undefined
+                      }
+                    />
+                    {turn.endReason !== 'completed' && (
+                      <div
+                        className={`text-xs ${
+                          turn.endReason === 'blocked'
                             ? 'text-warning'
                             : 'text-muted-foreground'
-                      }`}
-                    >
-                      {t('turn.ended', { reason: turn.endReason })}
-                    </div>
-                  )}
-                </div>
-              )}
+                        }`}
+                      >
+                        {t('turn.ended', { reason: turn.endReason })}
+                      </div>
+                    )}
+                  </div>
+                )}
             </div>
           );
         })}
