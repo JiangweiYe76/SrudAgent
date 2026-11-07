@@ -298,6 +298,18 @@ describe('mermaid', () => {
     );
   });
 
+  it('leaves nothing of its own failure behind in the page', async () => {
+    // Mermaid's fallback for a chart it cannot parse is a full-width "Syntax
+    // error in text" panel appended to `document.body`, and it is appended on a
+    // path that throws before the cleanup runs — so each typo would paint a bomb
+    // over the app and keep it there for the life of the window, one per parse.
+    renderInto('```mermaid\nthis is not a diagram at all !!\n```');
+    await settle();
+
+    expect(container.querySelector('.mermaid-error')).not.toBeNull();
+    expect(document.querySelector('[id^="dmermaid-"]')).toBeNull();
+  });
+
   it('drops the toggle once a chart has failed, rather than leaving it dead', async () => {
     // The source is already on screen because the chart would not draw, so a
     // switch-to-code button would be offering the view the reader is already
