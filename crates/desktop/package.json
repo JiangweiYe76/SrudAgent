@@ -6,6 +6,8 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "vite",
+    "dev:web:mock": "cross-env VITE_SRUD_MOCK=1 vite",
+    "dev:app:mock": "cross-env WEBKIT_DISABLE_DMABUF_RENDERER=1 VITE_SRUD_MOCK=1 tauri dev",
     "test": "vitest run",
     "dev:app": "cross-env WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri dev",
     "build": "tsc && vite build",

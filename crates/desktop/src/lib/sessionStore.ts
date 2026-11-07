@@ -1054,6 +1054,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     return starting;
 
     async function start() {
+      // The mock is opt-in. It works in the desktop shell too, so the error
+      // notice can be checked in the real window instead of only in a browser.
+      if (
+        import.meta.env.VITE_SRUD_MOCK === '1' &&
+        import.meta.env.MODE !== 'test'
+      ) {
+        const { mockSessions } = await import('./mockSessions');
+        const { sessions, activeId } = mockSessions();
+        set({ sessions, activeId, initError: null });
+        return;
+      }
+
       try {
         await initialize();
         onNotify((params) => {
