@@ -664,6 +664,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_turn_can_be_answered_again() {
+        // Retry is what the notice offers a failed turn, so the request that
+        // failed has to be replaceable: the turn named its id and recorded the
+        // words it was asked, even though the answer never came.
+        let agent = agent(refusing_once(
+            "500 upstream is unavailable",
+            vec![ModelEvent::TextDelta {
+                delta: "second answer".into(),
+            }],
+        ));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+        let turn_id = turn_id_of(&agent, &session_id, "Hola").await;
+        assert!(
+            !turn_id.is_empty(),
+            "the failed prompt still named its turn"
+        );
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(10),
+            agent.handle(request(
+                SRUD_SESSION_REGENERATE,
+                json!({ "sessionId": session_id.0.as_ref(), "turnId": turn_id }),
+            )),
+        )
+        .await
+        .expect("a regenerate resolves rather than hanging");
+        let value = result_of(reply);
+        assert_eq!(value["stopReason"], json!("end_turn"), "{value:?}");
+
+        // The conversation ends with the answer, once: the failed attempt added
+        // nothing to it.
+        let session = agent
+            .sessions
+            .get(&session_id)
+            .expect("the session is live");
+        assert_eq!(
+            session.state().history().last(),
+            Some(&srud_core::types::ResponseItem::assistant("second answer"))
+        );
+    }
+
+    #[tokio::test]
     async fn a_restored_session_can_answer_its_last_turn_again() {
         let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
         std::env::set_var(
