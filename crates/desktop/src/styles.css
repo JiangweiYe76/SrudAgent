@@ -104,6 +104,15 @@
     margin: 0;
   }
 
+  /* The window is a frame, not a scroll container: each pane that can overflow
+     scrolls inside its own box. A document allowed to scroll takes the whole
+     shell with it — header out of view, sidebar clipped at the top, and the
+     scrollbar on the window's edge instead of on the pane's. */
+  html,
+  body {
+    overflow: hidden;
+  }
+
   body {
     font-family:
       system-ui,
@@ -112,6 +121,34 @@
       sans-serif;
     background: var(--bg);
     color: var(--text);
+  }
+
+  /* The webview draws its own scrollbar unless told otherwise: a light track with
+     stepper buttons at each end, which is the brightest thing in a dark window.
+     The rules below replace it with a thin thumb tinted from the theme. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    /* The border is transparent and the fill clipped inside it, which is what
+       insets the thumb from the pane's edge without a second element. */
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-color: color-mix(in oklab, var(--text-dim) 30%, transparent);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--text-dim) 55%, transparent);
+  }
+  ::-webkit-scrollbar-button {
+    display: none;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }
 
