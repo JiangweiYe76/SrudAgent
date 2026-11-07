@@ -29,15 +29,19 @@ function drawnDiagram(): SVGSVGElement | null {
 }
 
 /**
- * Waits for the diagram to settle.
+ * Waits for the diagram to settle, and says whether it did.
  *
  * Mermaid's render is a promise chain with nothing to await, so this polls for the
  * outcome — an SVG, or the error path — rather than guessing a delay.
  *
  * Scoped to `.mermaid-diagram` because the bar's own controls are SVGs too, and
  * matching one of those would return before mermaid had done anything.
+ *
+ * The caller that cannot go on without an outcome checks the result: a `false`
+ * here with the block's state attached says what was on screen, where an
+ * assertion further down would only report that a null was not null.
  */
-async function settle(ms = 5000): Promise<void> {
+async function settle(ms = 5000): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     await act(async () => {
@@ -51,9 +55,18 @@ async function settle(ms = 5000): Promise<void> {
       container.querySelector('.mermaid-error') ||
       !container.querySelector('.mermaid-generating')
     ) {
-      return;
+      return true;
     }
   }
+  return false;
+}
+
+/** What the block is showing, for a wait that ran out before it could see. */
+function pageState(): string {
+  const error = container.querySelector('.mermaid-error')?.textContent;
+  return `generating: ${!!container.querySelector('.mermaid-generating')} · error: ${
+    error ?? 'none'
+  } · svg: ${!!drawnDiagram()}`;
 }
 
 /** Clicks a control in the block's bar, as a reader would. */
@@ -86,7 +99,16 @@ function update(markdown: string, streaming = false): void {
   });
 }
 
-describe('mermaid while streaming', () => {
+/**
+ * Room for a suite that draws real mermaid.
+ *
+ * Vitest stops a test at five seconds, which is also how long `settle` waits, so
+ * on a loaded machine the test is killed mid-wait and all it can report is that
+ * it timed out. Rendering under jsdom competes with every other file in the run.
+ */
+const RENDERING = { timeout: 20_000 } as const;
+
+describe('mermaid while streaming', RENDERING, () => {
   // A fence still being written reaches this component as a finished block:
   // CommonMark treats input that ends inside a fence as a complete code block.
   // Reporting a parse error for it would show the reader a red box for every
@@ -131,12 +153,15 @@ describe('mermaid while streaming', () => {
 
     // The fence closes and the turn ends: now it is a finished chart.
     update(`${partial} C{Go}\n\`\`\`\n\nThat is the flow.`, false);
-    await settle();
 
     // Under jsdom the drawing itself cannot complete — mermaid measures shapes
     // with `getBBox`, which jsdom does not implement — so what is checked here
     // is that it got as far as trying, rather than sitting on the placeholder.
-    expect(container.querySelector('.mermaid-generating')).toBeNull();
+    const settled = await settle();
+    expect(
+      settled,
+      `the block never left its placeholder — ${pageState()}`,
+    ).toBe(true);
   });
 
   it('still lets a reader watch the source arrive', async () => {
@@ -151,7 +176,7 @@ describe('mermaid while streaming', () => {
   });
 });
 
-describe('a diagram already drawn', () => {
+describe('a diagram already drawn', RENDERING, () => {
   // Every message re-renders whenever any message streams, so a diagram has to
   // outlive a render it did not cause.
   it('is not redrawn when the rest of the message changes', async () => {
@@ -207,7 +232,7 @@ describe('mermaid routing', () => {
   });
 });
 
-describe('mermaid', () => {
+describe('mermaid', RENDERING, () => {
   // A valid chart cannot be asserted to produce an SVG here: mermaid measures its
   // shapes with `getBBox`, which jsdom does not implement, so rendering throws
   // regardless of the chart. Parsing is the part that does not need geometry, so
