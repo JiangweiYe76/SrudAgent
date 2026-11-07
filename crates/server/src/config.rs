@@ -218,12 +218,16 @@ mod tests {
     #[test]
     fn a_blank_override_is_no_override() {
         let _env = Guard::take(NAMES);
+        // A path that is absolute on whichever platform this runs on: to Windows
+        // `/home/someone` is not, and the search would fall through to the real
+        // user profile instead of the one named here.
+        let elsewhere = test_env::unique_dir("srud-config-blank");
         env::set_var(HOME_VAR, "   ");
-        env::set_var(UNIX_HOME_VAR, "/home/someone");
+        env::set_var(UNIX_HOME_VAR, &elsewhere);
 
         assert_eq!(
             home(),
-            Some(PathBuf::from("/home/someone/.srudagent")),
+            Some(elsewhere.join(DIR_NAME)),
             "an empty line behaves the same as omitting the variable"
         );
     }
