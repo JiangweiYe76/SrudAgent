@@ -97,7 +97,7 @@ impl Agent {
             }
         })?;
 
-        let wire: TurnEndWire = prompt_outcome(result.reason)?;
+        let wire: TurnEndWire = prompt_outcome(result.reason, result.error.as_deref())?;
         let response = PromptResponse::new(wire.stop_reason);
         Ok(match wire.meta {
             Some(meta) => response.meta(meta.to_meta()),
@@ -276,7 +276,7 @@ impl Agent {
             }
         })?;
 
-        let wire: TurnEndWire = prompt_outcome(result.reason)?;
+        let wire: TurnEndWire = prompt_outcome(result.reason, result.error.as_deref())?;
         Ok(match wire.meta {
             Some(meta) => RegenerateResponse {
                 stop_reason: wire.stop_reason,
@@ -394,6 +394,39 @@ mod tests {
                 "agent_message_chunk",
                 "agent_message_chunk"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_turn_carries_the_provider_s_words() {
+        // The client can only act on a cause it can read: "an internal error"
+        // tells nobody whether to fix the key, wait, or shorten the prompt.
+        let agent = agent(rejecting("401 Incorrect API key provided"));
+        initialize(&agent).await;
+        let session_id = new_session(&agent).await;
+
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "hi" }]
+                    }),
+                ))
+                .await,
+        );
+
+        assert_eq!(i32::from(error.code), INTERNAL_ERROR);
+        assert_eq!(
+            error.message,
+            "model request rejected: 401 Incorrect API key provided"
+        );
+        assert_eq!(
+            error.data,
+            Some(json!({
+                "detail": "model request rejected: 401 Incorrect API key provided",
+            }))
         );
     }
 

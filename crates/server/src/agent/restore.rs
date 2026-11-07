@@ -97,9 +97,10 @@ impl Agent {
         let turns: Vec<SrudTurnEnd> = loaded
             .turn_ends
             .iter()
-            .map(|(turn_id, reason)| SrudTurnEnd {
-                turn_id: turn_id.to_string(),
-                end_reason: end_reason_wire(*reason).to_string(),
+            .map(|end| SrudTurnEnd {
+                turn_id: end.turn_id.to_string(),
+                end_reason: end_reason_wire(end.reason).to_string(),
+                error: end.error.clone(),
             })
             .collect();
         let srud = SrudMeta {
@@ -481,6 +482,59 @@ mod tests {
         assert!(
             updates.iter().all(|(_, end)| end.is_none()),
             "no update closes a turn: {updates:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_loaded_turn_remembers_why_it_failed() {
+        // A client being shown an old conversation has no prompt response to read
+        // the cause from, so the load reply has to carry it. Without this the
+        // failure would reload as a turn that stopped for no stated reason.
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-load-turn-error"),
+        );
+
+        let first = agent(rejecting("429 Too Many Requests: rate limit reached"));
+        initialize(&first).await;
+        let (session_id, cwd) = session_with_a_home(&first).await;
+        let failed = error_of(
+            first
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "hello" }],
+                    }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(failed.code), INTERNAL_ERROR);
+
+        let second = agent(scripted(vec![]));
+        initialize(&second).await;
+        let response = result_of(
+            second
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({
+                        "sessionId": session_id.0.as_ref(),
+                        "cwd": cwd,
+                        "mcpServers": [],
+                    }),
+                ))
+                .await,
+        );
+
+        let turns = response["_meta"]["srud"]["turns"]
+            .as_array()
+            .expect("the load response lists the turns");
+        assert_eq!(turns.len(), 1, "{turns:?}");
+        assert_eq!(turns[0]["endReason"], json!("error"));
+        assert_eq!(
+            turns[0]["error"],
+            json!("model request rejected: 429 Too Many Requests: rate limit reached")
         );
     }
 

@@ -12,6 +12,7 @@ use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use srud_core::types::{
     Event, EventSink, ImagePart, Op, ResponseItem, Role, TurnEndReason, TurnInput,
 };
+use srud_core::SessionEvent;
 use tokio_util::sync::CancellationToken;
 
 /// Records every event, so tests can assert on order.
@@ -499,6 +500,89 @@ async fn exactly_one_terminator_is_emitted_when_the_model_fails() {
         .filter(|kind| *kind == "TurnComplete")
         .count();
     assert_eq!(terminators, 1, "exactly one terminator, even on failure");
+}
+
+#[tokio::test]
+async fn a_failed_turn_keeps_the_clients_words() {
+    // The reason alone says "error", which is the same for a rejected key and a
+    // provider that hung up. What tells them apart is the sentence, and it has to
+    // reach both the caller and the log: a reloaded session has no prompt
+    // response to read it from.
+    let session = session();
+    let sink = Recorder::default();
+    let (tools, _calls) = tool_registry();
+    let client = Scripted::new(vec![vec![Err(ModelError::Rejected(
+        "429 Too Many Requests: rate limit reached".into(),
+    ))]]);
+    let log = Volatile::new();
+
+    let result = srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        client.as_ref(),
+        &tools,
+        &log,
+        &sink,
+    )
+    .await
+    .expect("the turn still completes");
+
+    assert_eq!(result.reason, TurnEndReason::Error);
+    assert_eq!(
+        result.error.as_deref(),
+        Some("model request rejected: 429 Too Many Requests: rate limit reached"),
+        "the caller is given what the client said"
+    );
+
+    let recorded = log
+        .records()
+        .into_iter()
+        .find_map(|logged| match logged.event {
+            SessionEvent::TurnEnded { error, .. } => Some(error),
+            _ => None,
+        })
+        .expect("the turn's end is recorded");
+    assert_eq!(
+        recorded.as_deref(),
+        Some("model request rejected: 429 Too Many Requests: rate limit reached"),
+        "and so is a reader that only has the log"
+    );
+}
+
+#[tokio::test]
+async fn a_stream_that_stops_without_finishing_says_so() {
+    // A provider that hangs up has no error to report, so the loop states the
+    // fact itself: a turn that shows nothing would otherwise look like a turn
+    // that answered nothing.
+    let session = session();
+    let sink = Recorder::default();
+    let (tools, _calls) = tool_registry();
+    // The stream ends after a delta without a `Done`.
+    let client = Scripted::new(vec![vec![text("partial")]]);
+    let log = Volatile::new();
+
+    let result = srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        client.as_ref(),
+        &tools,
+        &log,
+        &sink,
+    )
+    .await
+    .expect("the turn still completes");
+
+    assert_eq!(result.reason, TurnEndReason::Error);
+    assert_eq!(
+        result.error.as_deref(),
+        Some("model stream ended unexpectedly")
+    );
 }
 
 #[tokio::test]

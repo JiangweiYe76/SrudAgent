@@ -103,6 +103,27 @@ pub(super) fn stalling(events: Vec<ModelEvent>) -> Arc<dyn ModelClient> {
     })
 }
 
+/// A client that refuses every request, as a provider with a bad key would.
+///
+/// Separate from [`scripted`] because a refusal happens before the stream
+/// exists: there is no event to put on one.
+pub(super) fn rejecting(message: &str) -> Arc<dyn ModelClient> {
+    Arc::new(Refusing(message.to_string()))
+}
+
+struct Refusing(String);
+
+#[async_trait::async_trait]
+impl ModelClient for Refusing {
+    async fn stream(
+        &self,
+        _request: ModelRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ModelStream, srud_core::client::ModelError> {
+        Err(srud_core::client::ModelError::Rejected(self.0.clone()))
+    }
+}
+
 pub(super) fn agent(model: Arc<dyn ModelClient>) -> Agent {
     Agent::new(model, Arc::new(ToolRegistry::new()))
 }

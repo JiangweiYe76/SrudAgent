@@ -113,8 +113,12 @@ impl SessionLogWriter {
     ///
     /// As [`SessionLogWriter::record`].
     pub async fn end_turn(&self, turn_id: TurnId, reason: TurnEndReason) -> Result<(), io::Error> {
-        self.record(&SessionEvent::TurnEnded { turn_id, reason })
-            .await
+        self.record(&SessionEvent::TurnEnded {
+            turn_id,
+            reason,
+            error: None,
+        })
+        .await
     }
 
     /// Records one history entry, already stamped with its turn and message.
@@ -294,15 +298,30 @@ pub struct Loaded {
     pub history: Vec<ResponseItem>,
     /// What a client replaying the session should be shown, oldest first.
     pub conversation: Vec<SessionEvent>,
-    /// Why each turn ended, oldest first.
+    /// How each turn ended, oldest first.
     ///
     /// A client being shown a session has no `session/prompt` response to close
-    /// its turns, so the reasons are read from here: a turn left without an end
+    /// its turns, so the ends are read from here: a turn left without an end
     /// record is in [`repairs`], and its reason is the one written there.
-    pub turn_ends: Vec<(TurnId, TurnEndReason)>,
+    pub turn_ends: Vec<TurnEnd>,
     /// Records to append before the session runs again, closing what the log left
     /// open.
     pub repairs: Vec<SessionEvent>,
+}
+
+/// How one recorded turn ended.
+///
+/// The reason and the model client's words travel together because a reader is
+/// told both at once: a client replaying a session shows the failure where the
+/// answer would have been, and needs the sentence next to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnEnd {
+    /// Which turn.
+    pub turn_id: TurnId,
+    /// Why it stopped.
+    pub reason: TurnEndReason,
+    /// The failure as the model client reported it, when it said anything.
+    pub error: Option<String>,
 }
 
 /// Why a log could not be rebuilt into a session.
@@ -491,7 +510,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     let mut sandbox = SandboxLevel::default();
     // Every recorded entry, with the turn it was written in.
     let mut items: Vec<(TurnId, &SessionEvent)> = Vec::new();
-    let mut turn_ends: Vec<(TurnId, TurnEndReason)> = Vec::new();
+    let mut turn_ends: Vec<TurnEnd> = Vec::new();
     let mut discarded: Vec<TurnId> = Vec::new();
 
     for entry in &log.entries {
@@ -500,12 +519,20 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
             SessionEvent::Model { model: last } => model = last.clone(),
             SessionEvent::Thinking { level } => thinking = level.clone(),
             SessionEvent::Sandbox { mode } => sandbox = *mode,
-            SessionEvent::TurnEnded { turn_id, reason } => {
+            SessionEvent::TurnEnded {
+                turn_id,
+                reason,
+                error,
+            } => {
                 // A turn ends once. A log carrying a second end for one is
                 // damaged, and the first is the one that says what happened, so
                 // a client is never shown two reasons for the same turn.
-                if !turn_ends.iter().any(|(id, _)| id == turn_id) {
-                    turn_ends.push((*turn_id, *reason));
+                if !turn_ends.iter().any(|end| end.turn_id == *turn_id) {
+                    turn_ends.push(TurnEnd {
+                        turn_id: *turn_id,
+                        reason: *reason,
+                        error: error.clone(),
+                    });
                 }
             }
             SessionEvent::TurnDiscarded { turn_id } => discarded.push(*turn_id),
@@ -577,7 +604,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     // boundary in a conversation that no longer has the turn.
     let open: Vec<TurnId> = held
         .into_iter()
-        .filter(|id| !turn_ends.iter().any(|(ended, _)| ended == id))
+        .filter(|id| !turn_ends.iter().any(|end| end.turn_id == *id))
         .fold(Vec::new(), |mut open, id| {
             if !open.contains(&id) {
                 open.push(id);
@@ -597,7 +624,15 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     // is told so: otherwise the last turn of an interrupted session would have no
     // reason and would look like it were still running.
     turn_ends.extend(repairs.iter().filter_map(|event| match event {
-        SessionEvent::TurnEnded { turn_id, reason } => Some((*turn_id, *reason)),
+        SessionEvent::TurnEnded {
+            turn_id,
+            reason,
+            error,
+        } => Some(TurnEnd {
+            turn_id: *turn_id,
+            reason: *reason,
+            error: error.clone(),
+        }),
         _ => None,
     }));
 
@@ -680,6 +715,8 @@ fn repairs(items: &[&SessionEvent], open: &[TurnId]) -> Vec<SessionEvent> {
     repairs.extend(open.iter().map(|turn_id| SessionEvent::TurnEnded {
         turn_id: *turn_id,
         reason: TurnEndReason::Interrupted,
+        // Nothing was reported: the turn was cut short, not refused.
+        error: None,
     }));
     repairs
 }
@@ -1093,6 +1130,15 @@ mod tests {
         )
     }
 
+    /// How a turn ended, with nothing said about why.
+    fn ended(turn_id: TurnId, reason: TurnEndReason) -> TurnEnd {
+        TurnEnd {
+            turn_id,
+            reason,
+            error: None,
+        }
+    }
+
     #[test]
     fn a_discarded_turn_gives_back_its_message_and_keeps_the_answer_out() {
         // What regenerate needs from a reload: the question the second turn
@@ -1106,6 +1152,7 @@ mod tests {
             SessionEvent::TurnEnded {
                 turn_id: first,
                 reason: TurnEndReason::Completed,
+                error: None,
             },
             SessionEvent::turn_discarded(first),
             SessionEvent::TurnStarted { turn_id: second },
@@ -1113,6 +1160,7 @@ mod tests {
             SessionEvent::TurnEnded {
                 turn_id: second,
                 reason: TurnEndReason::Completed,
+                error: None,
             },
         ]);
 
@@ -1139,8 +1187,8 @@ mod tests {
         assert_eq!(
             loaded.turn_ends,
             vec![
-                (first, TurnEndReason::Completed),
-                (second, TurnEndReason::Completed)
+                ended(first, TurnEndReason::Completed),
+                ended(second, TurnEndReason::Completed)
             ],
             "both turns ended, whether or not one of them still counts"
         );
@@ -1225,6 +1273,7 @@ mod tests {
             vec![SessionEvent::TurnEnded {
                 turn_id: second,
                 reason: TurnEndReason::Interrupted,
+                error: None,
             }],
             "only the turn that is still in the conversation is closed"
         );
@@ -1283,6 +1332,7 @@ mod tests {
             SessionEvent::TurnEnded {
                 turn_id,
                 reason: TurnEndReason::Completed,
+                error: None,
             },
         ]);
 
@@ -1312,6 +1362,7 @@ mod tests {
             vec![SessionEvent::TurnEnded {
                 turn_id,
                 reason: TurnEndReason::Interrupted,
+                error: None,
             }]
         );
     }
@@ -1338,10 +1389,12 @@ mod tests {
                 SessionEvent::TurnEnded {
                     turn_id: first,
                     reason: TurnEndReason::Interrupted,
+                    error: None,
                 },
                 SessionEvent::TurnEnded {
                     turn_id: second,
                     reason: TurnEndReason::Interrupted,
+                    error: None,
                 },
             ]
         );
@@ -1420,6 +1473,7 @@ mod tests {
             SessionEvent::TurnEnded {
                 turn_id,
                 reason: TurnEndReason::Completed,
+                error: None,
             },
         ]);
 
@@ -1453,6 +1507,7 @@ mod tests {
             SessionEvent::TurnEnded {
                 turn_id,
                 reason: TurnEndReason::Completed,
+                error: None,
             },
         ]);
 
@@ -1501,6 +1556,7 @@ mod tests {
             SessionEvent::TurnEnded {
                 turn_id,
                 reason: TurnEndReason::Completed,
+                error: None,
             },
         ]);
 
@@ -1660,12 +1716,14 @@ mod tests {
             SessionEvent::TurnEnded {
                 turn_id: first,
                 reason: TurnEndReason::Completed,
+                error: None,
             },
             SessionEvent::TurnStarted { turn_id: second },
             said(second, "two"),
             SessionEvent::TurnEnded {
                 turn_id: second,
                 reason: TurnEndReason::Interrupted,
+                error: None,
             },
         ]);
 
@@ -1674,8 +1732,8 @@ mod tests {
         assert_eq!(
             loaded.turn_ends,
             vec![
-                (first, TurnEndReason::Completed),
-                (second, TurnEndReason::Interrupted),
+                ended(first, TurnEndReason::Completed),
+                ended(second, TurnEndReason::Interrupted),
             ],
             "in the order the turns ran"
         );
@@ -1696,7 +1754,7 @@ mod tests {
 
         assert_eq!(
             loaded.turn_ends,
-            vec![(turn_id, TurnEndReason::Interrupted)],
+            vec![ended(turn_id, TurnEndReason::Interrupted)],
             "the reason the repair gives it"
         );
     }
@@ -1730,6 +1788,7 @@ mod tests {
             SessionEvent::TurnEnded {
                 turn_id,
                 reason: TurnEndReason::Completed,
+                error: None,
             },
         ]);
         let mut log = log;
@@ -1739,11 +1798,15 @@ mod tests {
             event: SessionEvent::TurnEnded {
                 turn_id,
                 reason: TurnEndReason::Interrupted,
+                error: None,
             },
         });
 
         let loaded = rebuild(&log, true).expect("a session");
 
-        assert_eq!(loaded.turn_ends, vec![(turn_id, TurnEndReason::Completed)]);
+        assert_eq!(
+            loaded.turn_ends,
+            vec![ended(turn_id, TurnEndReason::Completed)]
+        );
     }
 }
