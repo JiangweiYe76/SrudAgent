@@ -192,9 +192,12 @@ async fn a_path_outside_the_working_directory_keeps_its_root() {
     )
     .await;
 
-    let content = reply["content"].as_str().expect("text");
+    // The separator is the platform's business, so the two are compared after
+    // normalising it; what is pinned here is that the root above is still there.
+    let content = reply["content"].as_str().expect("text").replace('\\', "/");
+    let elsewhere = elsewhere.to_str().expect("path").replace('\\', "/");
     assert!(
-        content.starts_with(elsewhere.to_str().expect("path")),
+        content.starts_with(&elsewhere),
         "the absolute path is reported as given, got: {content}"
     );
     assert!(

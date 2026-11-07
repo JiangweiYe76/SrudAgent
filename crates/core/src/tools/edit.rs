@@ -1152,9 +1152,12 @@ mod tests {
         assert_eq!(read_back(&dir, "f.txt"), "x\na\ny\n");
     }
 
+    // Reading a device node never ends, and nothing here bounds it. `/dev/null`
+    // is a device on unix and an ordinary file name on Windows, so the situation
+    // this refuses exists on one platform only.
+    #[cfg(unix)]
     #[tokio::test]
     async fn refuses_a_path_that_is_not_a_regular_file() {
-        // Reading a device node never ends, and nothing here bounds it.
         let dir = scratch("device");
 
         let refusal = refusal(&edit(&dir, at("/dev/null", "a", "b")).await);
