@@ -1254,8 +1254,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             try {
               await setSessionMode(created.sessionId, chosenSandbox);
               sandboxMode = { ...sandboxMode, currentValue: chosenSandbox };
-            } catch (err) {
-              useSessionStore.setState({ initError: String(err) });
+            } catch {
+              toast.error(t('session.settingFailed'));
             }
           }
           let options: SessionOptions = {
@@ -1274,10 +1274,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 options.model.configId,
                 chosenModel,
               );
-            } catch (err) {
+            } catch {
               // The session runs on what it was created with; the picker shows
               // the agent's answer rather than the choice that did not take.
-              useSessionStore.setState({ initError: String(err) });
+              toast.error(t('session.settingFailed'));
             }
           }
           // The model switch carries the thinking selector back too, projected
@@ -1294,8 +1294,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 options.thinking.configId,
                 chosenThinking,
               );
-            } catch (err) {
-              useSessionStore.setState({ initError: String(err) });
+            } catch {
+              toast.error(t('session.settingFailed'));
             }
           }
           const draftTitle =
@@ -1335,8 +1335,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           if (draftTitle) {
             try {
               await setSessionTitle(backendId, draftTitle);
-            } catch (err) {
-              useSessionStore.setState({ initError: String(err) });
+            } catch {
+              toast.error(t('session.renameFailed'));
             }
           }
         } catch (err) {
@@ -1363,9 +1363,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!isBusy(session) || !session?.backendId) return;
     // The turn is not closed here: `session/cancel` only signals the token, and
     // the open `session/prompt` is what resolves it, as `interrupted`.
-    void cancelTurn(session.backendId).catch((err) =>
-      set({ initError: String(err) }),
-    );
+    void cancelTurn(session.backendId).catch(() => {
+      // A refusal here leaves the turn running, which the stop button still
+      // offers to try again, so it is reported and not carried further.
+      toast.error(t('turn.stopFailed'));
+    });
   },
 
   queueFollowup: (text) => {
@@ -1420,7 +1422,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     requestSteer(session.backendId, text)
       .then(drop)
-      .catch((err: unknown) => {
+      .catch(() => {
         // A refused steer (the turn ended or sealed in between) is retried as
         // the next turn when there is no turn left to steer into; while a turn
         // still runs the message keeps waiting instead of being lost.
@@ -1430,7 +1432,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           get().sendTurn(text, session.id);
           return;
         }
-        set({ initError: String(err) });
+        toast.error(t('session.steerFailed'));
       });
   },
 
@@ -1548,7 +1550,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (next.model) setModelOf(localId, next.model);
         setThinkingOf(localId, next.thinking);
       })
-      .catch((err) => set({ initError: String(err) }));
+      .catch(() => toast.error(t('session.settingFailed')));
   },
 
   setThinking: (level) => {
@@ -1577,7 +1579,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (next.model) setModelOf(localId, next.model);
         setThinkingOf(localId, next.thinking);
       })
-      .catch((err) => set({ initError: String(err) }));
+      .catch(() => toast.error(t('session.settingFailed')));
   },
 
   setSandboxMode: (mode) => {
@@ -1600,7 +1602,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const localId = session.id;
     void setSessionMode(session.backendId, mode)
       .then(() => setSandboxModeOf(localId, { ...options, currentValue: mode }))
-      .catch((err) => set({ initError: String(err) }));
+      .catch(() => toast.error(t('session.settingFailed')));
   },
 
   renameSession: (id, title) => {
@@ -1620,8 +1622,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // The agent is the source of truth and echoes the accepted title back as a
     // `session_info_update`, so nothing is written locally here. A blank title
     // clears the name rather than storing an empty one.
-    void setSessionTitle(session.backendId, title.trim()).catch((err) =>
-      set({ initError: String(err) }),
+    void setSessionTitle(session.backendId, title.trim()).catch(() =>
+      toast.error(t('session.renameFailed')),
     );
   },
 
@@ -1650,10 +1652,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Opening it replays the history the fork carries, which is the point.
         get().select(created.id);
       })
-      .catch((err) => {
-        set({ initError: String(err) });
-        toast.error(t('sidebar.forkFailed'));
-      });
+      .catch(() => toast.error(t('sidebar.forkFailed')));
   },
 
   deleteSession: (id) => {
@@ -1674,10 +1673,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         removeSession(id);
         toast.success(t('sidebar.deleted'));
       })
-      .catch((err) => {
-        set({ initError: String(err) });
-        toast.error(t('sidebar.deleteFailed'));
-      })
+      .catch(() => toast.error(t('sidebar.deleteFailed')))
       .finally(() => {
         set((s) => ({ deletingIds: s.deletingIds.filter((x) => x !== id) }));
       });

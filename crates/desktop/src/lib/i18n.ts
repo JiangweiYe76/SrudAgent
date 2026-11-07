@@ -48,6 +48,9 @@ const en = {
 
   'session.repairFailed':
     'Part of this conversation was lost while loading and could not be restored.',
+  'session.settingFailed': 'Could not change this setting.',
+  'session.renameFailed': 'Could not rename the session.',
+  'session.steerFailed': 'Could not send that message.',
 
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',
@@ -84,6 +87,7 @@ const en = {
   'turn.regenerate': 'Regenerate',
   'turn.retry': 'Retry',
   'turn.retryFailed': 'Could not re-answer this turn.',
+  'turn.stopFailed': 'Could not stop the turn.',
   'turn.error.title': 'The model request failed',
   'turn.error.authTitle': 'Provider sign-in required',
   'turn.error.rateTitle': 'Too many requests',

@@ -98,6 +98,9 @@ async function boot(
     steerFails?: boolean;
     // Makes `session/regenerate` refuse, for the same reason.
     regenerateFails?: boolean;
+    // Refuses the selectors a header offers, as an agent that will not take the
+    // choice does.
+    settingFails?: boolean;
     // The `configOptions` the agent hangs on each reply, as the wire spells them.
     newModel?: unknown;
     loadModel?: unknown;
@@ -181,12 +184,14 @@ async function boot(
           );
         }
         case 'session/set_config_option':
+          if (options.settingFails) throw new Error('config refused');
           return reply(payload.id, {
             ...(options.switched === undefined
               ? {}
               : { configOptions: options.switched }),
           });
         case 'session/set_mode':
+          if (options.settingFails) throw new Error('mode refused');
           return reply(payload.id, {});
         case 'session/cancel':
           return reply(payload.id, {});
@@ -427,12 +432,15 @@ describe('sessionStore live path', () => {
 
     useSessionStore.getState().steerFollowup(0);
     await vi.waitFor(() => {
-      expect(useSessionStore.getState().initError).not.toBeNull();
+      expect(mocks.toast.error).toHaveBeenCalledWith(
+        'Could not send that message.',
+      );
     });
     // The turn still runs and would not take it, so the message stays where the
     // user can still see it — a refusal is not a silent drop.
     expect(active().followups).toEqual(['second']);
     expect(promptsSoFar()).toBe(1);
+    expect(useSessionStore.getState().initError).toBeNull();
   });
 
   it('a draft ignores backend updates until it materializes', async () => {
@@ -686,16 +694,48 @@ describe('sessionStore live path', () => {
     });
     useSessionStore.getState().deleteSession(id);
     await vi.waitFor(() => {
-      expect(useSessionStore.getState().initError).toContain('delete refused');
+      expect(mocks.toast.error).toHaveBeenCalledWith(
+        'Could not delete the session.',
+      );
     });
     // The row is dropped only after the agent agrees, so a failed delete loses
-    // nothing.
+    // nothing. It is reported where the action was taken, not above the
+    // transcript: the conversation is fine.
     expect(useSessionStore.getState().sessions).toHaveLength(1);
     expect(useSessionStore.getState().deletingIds).toEqual([]);
-    expect(mocks.toast.error).toHaveBeenCalledWith(
-      'Could not delete the session.',
-    );
+    expect(useSessionStore.getState().initError).toBeNull();
     expect(mocks.toast.success).not.toHaveBeenCalled();
+  });
+
+  it('reports a refused setting as a toast, not as a broken app', async () => {
+    // A selector the agent would not take is an action that failed, not a
+    // conversation that cannot be shown: the bar above the transcript is for the
+    // second kind only.
+    const { useSessionStore, waitForBackend } = await boot({
+      newModel: modelOptions('openai/gpt-4o'),
+      newModes: sandboxModes(),
+      settingFails: true,
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    mocks.toast.error.mockClear();
+    useSessionStore.getState().setModel('deepseek/chat');
+    await vi.waitFor(() => {
+      expect(mocks.toast.error).toHaveBeenCalledWith(
+        'Could not change this setting.',
+      );
+    });
+    expect(useSessionStore.getState().initError).toBeNull();
+
+    mocks.toast.error.mockClear();
+    useSessionStore.getState().setSandboxMode('full-access');
+    await vi.waitFor(() => {
+      expect(mocks.toast.error).toHaveBeenCalledWith(
+        'Could not change this setting.',
+      );
+    });
+    expect(useSessionStore.getState().initError).toBeNull();
   });
 
   it('says a delete is under way until the agent agrees', async () => {
