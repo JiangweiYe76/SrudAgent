@@ -1,0 +1,31 @@
+[package]
+name = "srud-sandbox-launcher"
+version.workspace = true
+edition.workspace = true
+description = "Windows launcher that runs a command inside a restricted-token / NTFS-ACL boundary."
+
+# The Windows backend is a separate process so the main runtime never holds a
+# restricted token itself: the sandbox crate wraps argv into
+# `[launcher, --mode …, (--root …)…, --, …argv]` and this binary builds the
+# token, grants the writable roots, and spawns the command inside the boundary.
+# On other targets it builds to a stub so `cargo build --workspace` stays green.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+# This crate is the repository's single Win32 FFI boundary. The workspace sets
+# `unsafe_code = "forbid"` for the safe application crates; calling the token /
+# ACL / process APIs requires `unsafe`, so the launcher opts out locally rather
+# than relaxing the policy everywhere else.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+dbg_macro = "deny"
