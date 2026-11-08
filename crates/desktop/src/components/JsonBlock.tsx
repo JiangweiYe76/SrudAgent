@@ -3,6 +3,7 @@
 // The label is what makes the pair readable. A tool call has two payloads and
 // they look alike — both are a block of JSON — so a reader who opened a call to
 // check what the agent asked for has to be told which one they are looking at.
+import { memo, useMemo } from 'react';
 import { formatJson, highlightJson } from '@/lib/json';
 import { renderHighlighted } from '@/lib/highlightTree';
 import { CopyCode } from '@/components/CodeBlockBar';
@@ -83,7 +84,7 @@ function truncateForRender(text: string): TruncatedText | null {
  * arguments would otherwise leave an "Input" label hanging over an empty space,
  * which reads as something that failed to load rather than as nothing to show.
  */
-export function JsonBlock({
+export const JsonBlock = memo(function JsonBlock({
   label,
   value,
   fallback,
@@ -94,10 +95,11 @@ export function JsonBlock({
   fallback?: string;
   isError?: boolean;
 }) {
-  if (value.trim() === '' && fallback === undefined) return null;
-
   const empty = value.trim() === '';
-  const formatted = empty ? { text: '', unparsable: false } : formatJson(value);
+  const formatted = useMemo(
+    () => (empty ? { text: '', unparsable: false } : formatJson(value)),
+    [empty, value],
+  );
   // A failure is prose by design, so it is shown as prose. A success that is not
   // JSON is not prose at all — it is a payload that lost its structure, and saying
   // so beats colouring a sentence as though it were an object.
@@ -106,14 +108,22 @@ export function JsonBlock({
   // A failure's own words are what it is: re-indenting them would reflow prose
   // that was written to be read, and it would imply the text had been parsed.
   const base = asProse && isError === true ? value : formatted.text;
-  const truncated = empty ? null : truncateForRender(base);
+  const truncated = useMemo(
+    () => (empty ? null : truncateForRender(base)),
+    [empty, base],
+  );
   const displayed = truncated ? truncated.text : base;
   // Text past the rendering limit is shown as written: highlighting a head that
   // was cut mid-payload would mark a structure that is no longer there.
-  const tree =
-    !truncated && !asProse && !formatted.unparsable
-      ? highlightJson(base)
-      : null;
+  const tree = useMemo(
+    () =>
+      !truncated && !asProse && !formatted.unparsable
+        ? highlightJson(base)
+        : null,
+    [truncated, asProse, formatted.unparsable, base],
+  );
+
+  if (empty && fallback === undefined) return null;
 
   return (
     <div className="flex min-w-0 flex-col gap-1">
@@ -180,4 +190,4 @@ export function JsonBlock({
       )}
     </div>
   );
-}
+});

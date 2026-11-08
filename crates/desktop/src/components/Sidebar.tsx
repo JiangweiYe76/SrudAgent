@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import {
   GitFork,
   Loader2,
@@ -101,6 +101,93 @@ function SessionActions({
   );
 }
 
+interface SessionRowProps {
+  session: Session;
+  active: boolean;
+  deleting: boolean;
+  streaming: boolean;
+  unread: boolean;
+  onSelect: (id: string) => void;
+  onFork: (id: string) => void;
+  onRequestRename: (id: string) => void;
+  onRequestDelete: (id: string) => void;
+}
+
+// The store replaces only the session a write names, so rows for other sessions
+// keep their props and memo leaves them alone.
+const SessionRow = memo(function SessionRow({
+  session,
+  active,
+  deleting,
+  streaming,
+  unread,
+  onSelect,
+  onFork,
+  onRequestRename,
+  onRequestDelete,
+}: SessionRowProps) {
+  return (
+    <button
+      className={`group flex cursor-pointer items-center gap-1 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-item-hover ${
+        active ? 'bg-item-hover' : ''
+      } ${deleting ? 'opacity-60' : ''}`}
+      onClick={() => {
+        if (!deleting) onSelect(session.id);
+      }}
+      aria-disabled={deleting || undefined}
+    >
+      {/* The title and its timestamp stack; the actions centre against
+          both lines rather than sitting on the title alone. */}
+      <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
+        <span className="w-full truncate text-[13px]">
+          {displayTitle(session)}
+        </span>
+        <span className="text-[11px] text-muted-foreground">
+          {formatTime(session.updatedAt)}
+        </span>
+      </span>
+      {(streaming || unread) && (
+        // Deliberately no `role="status"`: that is the deleting
+        // spinner's contract, and tests read it as such. The state
+        // travels in the title instead.
+        <span
+          title={streaming ? t('sidebar.streaming') : t('sidebar.unread')}
+          className={`h-2 w-2 shrink-0 rounded-full ${
+            streaming ? 'animate-presence-dot bg-accent' : 'bg-success'
+          }`}
+        />
+      )}
+      {/* A session on its way out keeps its row until the agent agrees, dimmed
+          and with a spinner where the actions were: firing delete again would
+          stack a second request on the first. */}
+      {deleting ? (
+        <span
+          role="status"
+          aria-label={t('sidebar.deleting')}
+          title={t('sidebar.deleting')}
+          className="flex shrink-0 items-center justify-center p-1"
+        >
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+        </span>
+      ) : (
+        <SessionActions
+          onRename={() => onRequestRename(session.id)}
+          onFork={
+            session.backendId && !streaming ? () => onFork(session.id) : null
+          }
+          onDelete={() => {
+            if (isBusy(session)) {
+              toast.error(t('sidebar.deleteBusy'));
+              return;
+            }
+            onRequestDelete(session.id);
+          }}
+        />
+      )}
+    </button>
+  );
+});
+
 export function Sidebar({
   sessions,
   activeId,
@@ -129,6 +216,8 @@ export function Sidebar({
   const deleteTurns = deleteWarning(deleteTarget);
   // A draft has no workspace yet, so the modal falls back to user-wide skills.
   const skillsCwd = sessions.find((s) => s.id === activeId)?.cwd ?? '';
+  const deletingSet = useMemo(() => new Set(deletingIds), [deletingIds]);
+  const unreadSet = useMemo(() => new Set(unreadIds), [unreadIds]);
 
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-muted">
@@ -159,71 +248,24 @@ export function Sidebar({
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
         {sessions.map((s) => {
-          // On its way out: the row stays until the agent agrees, and says so —
-          // dimmed, with a spinner where the actions were, since firing delete
-          // again would stack a second request on the first.
-          const deleting = deletingIds.includes(s.id);
+          const deleting = deletingSet.has(s.id);
           // Streaming outranks unread: a session that is still replying has
           // nothing finished to catch up on yet.
           const streaming = !deleting && isBusy(s);
-          const unread = !deleting && !streaming && unreadIds.includes(s.id);
+          const unread = !deleting && !streaming && unreadSet.has(s.id);
           return (
-            <button
+            <SessionRow
               key={s.id}
-              className={`group flex cursor-pointer items-center gap-1 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-item-hover ${
-                s.id === activeId ? 'bg-item-hover' : ''
-              } ${deleting ? 'opacity-60' : ''}`}
-              onClick={() => {
-                if (!deleting) onSelect(s.id);
-              }}
-              aria-disabled={deleting || undefined}
-            >
-              {/* The title and its timestamp stack; the actions centre against
-                  both lines rather than sitting on the title alone. */}
-              <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
-                <span className="w-full truncate text-[13px]">
-                  {displayTitle(s)}
-                </span>
-                <span className="text-[11px] text-muted-foreground">
-                  {formatTime(s.updatedAt)}
-                </span>
-              </span>
-              {(streaming || unread) && (
-                // Deliberately no `role="status"`: that is the deleting
-                // spinner's contract, and tests read it as such. The state
-                // travels in the title instead.
-                <span
-                  title={
-                    streaming ? t('sidebar.streaming') : t('sidebar.unread')
-                  }
-                  className={`h-2 w-2 shrink-0 rounded-full ${
-                    streaming ? 'animate-presence-dot bg-accent' : 'bg-success'
-                  }`}
-                />
-              )}
-              {deleting ? (
-                <span
-                  role="status"
-                  aria-label={t('sidebar.deleting')}
-                  title={t('sidebar.deleting')}
-                  className="flex shrink-0 items-center justify-center p-1"
-                >
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                </span>
-              ) : (
-                <SessionActions
-                  onRename={() => setRenamingId(s.id)}
-                  onFork={s.backendId && !streaming ? () => onFork(s.id) : null}
-                  onDelete={() => {
-                    if (isBusy(s)) {
-                      toast.error(t('sidebar.deleteBusy'));
-                      return;
-                    }
-                    setDeletingId(s.id);
-                  }}
-                />
-              )}
-            </button>
+              session={s}
+              active={s.id === activeId}
+              deleting={deleting}
+              streaming={streaming}
+              unread={unread}
+              onSelect={onSelect}
+              onFork={onFork}
+              onRequestRename={setRenamingId}
+              onRequestDelete={setDeletingId}
+            />
           );
         })}
       </nav>

@@ -292,6 +292,7 @@ export const MessageList = memo(function MessageList({
   // A new turn means the reader just sent something and wants to watch it arrive,
   // so following resumes even if they had scrolled back to read something.
   const turnCount = turns.length;
+  const hasTurns = turnCount > 0;
   const seenTurns = useRef(turnCount);
   useEffect(() => {
     if (turnCount > seenTurns.current) reportFollowing(true);
@@ -316,8 +317,6 @@ export const MessageList = memo(function MessageList({
     [],
   );
 
-  // Follow the bottom, but only while following.
-  //
   // `scrollTop` is assigned rather than reached with `scrollIntoView({ behavior:
   // 'smooth' })`, for two measured reasons. Smooth was re-targeted on every token
   // and never completed, leaving the view stalled short of the bottom it was meant
@@ -325,29 +324,38 @@ export const MessageList = memo(function MessageList({
   // `scrollIntoView` scrolls every scrollable ancestor, not only this list. Setting
   // `scrollTop` lands on the new bottom in one step, which is what content growing
   // every few tens of milliseconds needs: there is nothing to animate towards.
-  useEffect(() => {
+  //
+  // Tokens and content that grows later both ask to follow; a repeat at the
+  // same scrollHeight writes nothing.
+  const lastFollowHeight = useRef<number | null>(null);
+  const follow = useCallback(() => {
     const list = listRef.current;
-    if (list && followingRef.current) list.scrollTop = list.scrollHeight;
-  }, [turns]);
+    if (!list || !followingRef.current) return;
+    const height = list.scrollHeight;
+    if (height === lastFollowHeight.current) return;
+    lastFollowHeight.current = height;
+    list.scrollTop = height;
+  }, []);
+
+  useEffect(() => {
+    follow();
+  }, [turns, follow]);
 
   // Content that grows *after* the tokens that introduced it: a mermaid diagram
   // and a formula both render asynchronously and make the transcript taller once
   // they land. Following on `turns` alone would leave the reader short of the
-  // bottom until they scrolled.
+  // bottom until they scrolled. The empty pane has no content element, so the
+  // observer reattaches when the first turn arrives.
   useEffect(() => {
-    const list = listRef.current;
     const content = contentRef.current;
-    if (!list || !content) return;
+    if (!content) return;
 
-    const follow = () => {
-      if (followingRef.current) list.scrollTop = list.scrollHeight;
-    };
     follow();
 
     const observer = new ResizeObserver(follow);
     observer.observe(content);
     return () => observer.disconnect();
-  }, []);
+  }, [follow, hasTurns]);
 
   // An empty pane is two things at once: a conversation nobody has had yet, and
   // one still on its way in. Saying "start a new chat" to a session mid-replay

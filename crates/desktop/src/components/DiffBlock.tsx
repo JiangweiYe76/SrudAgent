@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react';
 import type { ToolDiff } from '@/lib/types';
 
 // Lines past this are reported rather than drawn: a large file change would
@@ -10,9 +11,15 @@ const MAX_RENDER_LINES = 400;
  * A created file has no text before it and draws no minus rows: a minus row
  * of nothing would read as a deletion.
  */
-export function DiffBlock({ diff }: { diff: ToolDiff }) {
-  const removed = diff.oldText ? diff.oldText.split('\n') : [];
-  const added = diff.newText ? diff.newText.split('\n') : [];
+export const DiffBlock = memo(function DiffBlock({ diff }: { diff: ToolDiff }) {
+  const removed = useMemo(
+    () => (diff.oldText ? diff.oldText.split('\n') : []),
+    [diff.oldText],
+  );
+  const added = useMemo(
+    () => (diff.newText ? diff.newText.split('\n') : []),
+    [diff.newText],
+  );
   const shownRemoved = removed.slice(0, MAX_RENDER_LINES);
   const shownAdded = added.slice(0, MAX_RENDER_LINES);
   return (
@@ -52,4 +59,4 @@ export function DiffBlock({ diff }: { diff: ToolDiff }) {
       </div>
     </div>
   );
-}
+});

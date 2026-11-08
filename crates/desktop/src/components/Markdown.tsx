@@ -1,8 +1,10 @@
 import {
   createContext,
+  memo,
   useContext,
   useEffect,
   useRef,
+  type ComponentProps,
   type ReactNode,
 } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
@@ -162,6 +164,34 @@ const components: Components = {
   a: Link,
 };
 
+type MarkdownOptions = ComponentProps<typeof ReactMarkdown>;
+
+// `rehype-highlight` drops its default grammar set when `languages` is given.
+// The map carries the common grammars plus mermaid.
+const HIGHLIGHT_LANGUAGES = { ...common, mermaid: mermaidLang };
+
+// `remark-math` reads `$$…$$` as display math only when the delimiters sit on
+// their own lines. The extra plugin gives a one-line formula the same centered
+// block instead of leaving it inline.
+const REMARK_PLUGINS: NonNullable<MarkdownOptions['remarkPlugins']> = [
+  remarkGfm,
+  remarkMath,
+  remarkDisplayMath,
+];
+
+// Order matters: highlighting rewrites tokens into spans, so the lines have to
+// be split afterwards or a break inside a multi-line string would drag half a
+// token onto the next line. Source offsets run before KaTeX and the highlighter:
+// both replace the nodes they format, and the replacements carry no position.
+// `detect` stays off: guessing a language from the code's contents mislabels
+// prose and costs time on every re-render.
+const REHYPE_PLUGINS: NonNullable<MarkdownOptions['rehypePlugins']> = [
+  rehypeSourceOffsets,
+  rehypeKatex,
+  [rehypeHighlight, { detect: false, languages: HIGHLIGHT_LANGUAGES }],
+  [rehypeCodeLines, {}],
+];
+
 /**
  * Renders a message's markdown.
  *
@@ -175,7 +205,7 @@ const components: Components = {
  * `rehype-highlight` rather than Shiki because it runs synchronously — a
  * half-streamed fence would flash unstyled while an async highlighter resolves.
  */
-export function Markdown({
+export const Markdown = memo(function Markdown({
   children,
   className,
   streaming = false,
@@ -198,31 +228,8 @@ export function Markdown({
     <div ref={rootRef} className={cn('message-markdown', className)}>
       <Streaming.Provider value={streaming}>
         <ReactMarkdown
-          // `remark-math` reads `$$…$$` as display math only when the delimiters
-          // sit on their own lines. The extra plugin gives a one-line formula the
-          // same centered block instead of leaving it inline.
-          remarkPlugins={[remarkGfm, remarkMath, remarkDisplayMath]}
-          // Order matters: highlighting rewrites tokens into spans, so the lines
-          // have to be split afterwards or a break inside a multi-line string
-          // would drag half a token onto the next line.
-          //
-          // `detect` stays off: guessing a language from the code's contents
-          // mislabels prose and costs time on every re-render.
-          //
-          // `languages` replaces the default set outright, so `common` is spread in
-          // rather than passed over — naming only the grammar here would leave every
-          // other fence in every message unhighlighted.
-          rehypePlugins={[
-            // Before the renderers that replace nodes: KaTeX and the highlighter
-            // discard the source positions copying needs.
-            rehypeSourceOffsets,
-            rehypeKatex,
-            [
-              rehypeHighlight,
-              { detect: false, languages: { ...common, mermaid: mermaidLang } },
-            ],
-            [rehypeCodeLines, {}],
-          ]}
+          remarkPlugins={REMARK_PLUGINS}
+          rehypePlugins={REHYPE_PLUGINS}
           components={components}
         >
           {children}
@@ -230,4 +237,4 @@ export function Markdown({
       </Streaming.Provider>
     </div>
   );
-}
+});
