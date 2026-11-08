@@ -1,14 +1,16 @@
 //! The platform boundary behind [`wrap_argv`](crate::wrap_argv).
 //!
-//! A build selects one runner here. Linux turns a bounded policy into a
-//! bubblewrap command; a platform without a runner refuses the policy instead
-//! of running it without a boundary.
+//! A build selects one [`SandboxBackend`](crate::SandboxBackend) here. Linux
+//! turns a bounded policy into a bubblewrap command; a platform without a
+//! backend refuses the policy instead of running it without a boundary.
 
 #[cfg(target_os = "linux")]
 mod linux;
 
 use std::ffi::OsString;
 
+#[cfg(target_os = "linux")]
+use crate::SandboxBackend;
 use crate::{BoundedPolicy, SandboxUnavailable, WrappedArgv};
 
 /// The operating system this build targets.
@@ -59,14 +61,14 @@ impl std::fmt::Display for Platform {
     }
 }
 
-/// Turns a bounded policy into the argv this platform's runner executes.
+/// Turns a bounded policy into the argv this platform's backend executes.
 pub(super) fn wrap(
     argv: &[OsString],
     policy: &BoundedPolicy,
 ) -> Result<WrappedArgv, SandboxUnavailable> {
     #[cfg(target_os = "linux")]
     {
-        linux::wrap(argv, policy)
+        linux::Bwrap.wrap_argv(argv, policy)
     }
     #[cfg(not(target_os = "linux"))]
     {

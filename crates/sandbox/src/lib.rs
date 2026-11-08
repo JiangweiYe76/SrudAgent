@@ -6,8 +6,9 @@
 //!
 //! [`SandboxLevel::FullAccess`] maps to [`SandboxPolicy::Unrestricted`], which
 //! spawns the caller's argv as written. The bounded levels map to
-//! [`SandboxPolicy::Bounded`], which [`wrap_argv`] turns into a bubblewrap
-//! command on Linux. Network access is left as this machine has it.
+//! [`SandboxPolicy::Bounded`], which [`wrap_argv`] turns into a platform
+//! runner's command through the [`SandboxBackend`] the build selects.
+//! Network access is left as this machine has it.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -213,7 +214,29 @@ pub enum SandboxUnavailable {
     },
 }
 
+/// The argv boundary a platform backend implements.
+///
+/// One implementation per platform runner, selected at compile time by the
+/// [`wrap_argv`] dispatcher. The contract is the free function's contract:
+/// return the argv that runs inside the boundary, or fail closed.
+pub trait SandboxBackend {
+    /// Wraps `argv` in the boundary `policy` describes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxUnavailable`] when the boundary cannot be prepared.
+    /// The caller must fail closed, since running the raw argv here would
+    /// silently turn a bounded request into full access.
+    fn wrap_argv(
+        &self,
+        argv: &[OsString],
+        policy: &BoundedPolicy,
+    ) -> Result<WrappedArgv, SandboxUnavailable>;
+}
+
 /// Wraps `argv` in the boundary `policy` describes.
+///
+/// Dispatches to the [`SandboxBackend`] this build targets.
 ///
 /// # Errors
 ///
@@ -348,5 +371,36 @@ mod tests {
         ] {
             assert_eq!(SandboxLevel::from_id(level.id()), Some(level));
         }
+    }
+
+    /// A backend used only to pin the trait's shape, independent of any runner.
+    struct EchoBackend;
+
+    impl SandboxBackend for EchoBackend {
+        fn wrap_argv(
+            &self,
+            argv: &[OsString],
+            _policy: &BoundedPolicy,
+        ) -> Result<WrappedArgv, SandboxUnavailable> {
+            Ok(WrappedArgv {
+                argv: argv.to_vec(),
+                enforcement: Enforcement::Full,
+            })
+        }
+    }
+
+    #[test]
+    fn the_boundary_is_an_object_safe_trait() {
+        let backend: &dyn SandboxBackend = &EchoBackend;
+        let policy = BoundedPolicy {
+            mode: SandboxMode::ReadOnly,
+            writable_roots: Vec::new(),
+        };
+        let argv = vec![OsString::from("true")];
+        let wrapped = backend
+            .wrap_argv(&argv, &policy)
+            .expect("echo backend wraps");
+        assert_eq!(wrapped.argv, argv);
+        assert_eq!(wrapped.enforcement, Enforcement::Full);
     }
 }

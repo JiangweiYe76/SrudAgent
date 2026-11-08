@@ -1,22 +1,28 @@
-//! The Linux runner: a bubblewrap mount view over the caller's argv.
+//! The Linux backend: a bubblewrap mount view over the caller's argv.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::{BoundedPolicy, Enforcement, SandboxUnavailable, WrappedArgv};
+use crate::{BoundedPolicy, Enforcement, SandboxBackend, SandboxUnavailable, WrappedArgv};
 
-pub(super) fn wrap(
-    argv: &[OsString],
-    policy: &BoundedPolicy,
-) -> Result<WrappedArgv, SandboxUnavailable> {
-    let runner = find_bwrap().ok_or(SandboxUnavailable::RunnerMissing { program: "bwrap" })?;
-    let mut wrapped = Vec::with_capacity(argv.len() + policy.writable_roots.len() * 3 + 16);
-    wrapped.push(runner.into_os_string());
-    wrapped.extend(bwrap_args(policy, argv));
-    Ok(WrappedArgv {
-        argv: wrapped,
-        enforcement: Enforcement::Full,
-    })
+/// The bubblewrap backend.
+pub(super) struct Bwrap;
+
+impl SandboxBackend for Bwrap {
+    fn wrap_argv(
+        &self,
+        argv: &[OsString],
+        policy: &BoundedPolicy,
+    ) -> Result<WrappedArgv, SandboxUnavailable> {
+        let runner = find_bwrap().ok_or(SandboxUnavailable::RunnerMissing { program: "bwrap" })?;
+        let mut wrapped = Vec::with_capacity(argv.len() + policy.writable_roots.len() * 3 + 16);
+        wrapped.push(runner.into_os_string());
+        wrapped.extend(bwrap_args(policy, argv));
+        Ok(WrappedArgv {
+            argv: wrapped,
+            enforcement: Enforcement::Full,
+        })
+    }
 }
 
 /// The arguments after the runner name: the mount view, then the caller's argv.
