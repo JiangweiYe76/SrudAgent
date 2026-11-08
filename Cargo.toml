@@ -6,6 +6,7 @@ members = [
     "crates/desktop/src-tauri",
     "crates/protocol",
     "crates/sandbox",
+    "crates/sandbox-launcher",
     "crates/server",
 ]
 

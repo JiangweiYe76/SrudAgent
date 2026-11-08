@@ -1,15 +1,18 @@
 //! The platform boundary behind [`wrap_argv`](crate::wrap_argv).
 //!
 //! A build selects one [`SandboxBackend`](crate::SandboxBackend) here. Linux
-//! turns a bounded policy into a bubblewrap command; a platform without a
-//! backend refuses the policy instead of running it without a boundary.
+//! turns a bounded policy into a bubblewrap command; Windows hands it to a
+//! restricted-token launcher; a platform without a backend refuses the policy
+//! instead of running it without a boundary.
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "windows")]
+mod windows;
 
 use std::ffi::OsString;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::SandboxBackend;
 use crate::{BoundedPolicy, SandboxUnavailable, WrappedArgv};
 
@@ -70,7 +73,11 @@ pub(super) fn wrap(
     {
         linux::Bwrap.wrap_argv(argv, policy)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::WindowsBoundary.wrap_argv(argv, policy)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = (argv, policy);
         Err(SandboxUnavailable::UnsupportedPlatform {

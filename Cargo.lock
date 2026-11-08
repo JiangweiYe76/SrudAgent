@@ -4079,6 +4079,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "srud-sandbox-launcher"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "srud-server"
 version = "0.1.0"
 dependencies = [
