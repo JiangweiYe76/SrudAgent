@@ -314,18 +314,6 @@ async fn rpc_request(
     Ok(state.0.handle(payload).await)
 }
 
-/// The working directory new sessions are created with: the directory the
-/// app was launched from, falling back to the user's home directory, and to
-/// `.` when neither can be found.
-#[tauri::command]
-fn default_cwd() -> String {
-    std::env::current_dir()
-        .ok()
-        .or_else(config::user_home)
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| ".".to_owned())
-}
-
 /// An image read from disk, base64-encoded for the prompt.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -579,7 +567,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             rpc_request,
-            default_cwd,
             read_image_file,
             read_clipboard
         ])

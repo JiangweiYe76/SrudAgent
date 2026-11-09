@@ -126,7 +126,6 @@ async function boot(
   let created = 0;
   let loads = 0;
   mocks.invoke = async (cmd, args) => {
-    if (cmd === 'default_cwd') return '/work';
     if (cmd === 'rpc_request') {
       const payload = args!.payload as {
         method: string;

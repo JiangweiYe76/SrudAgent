@@ -383,10 +383,6 @@ export async function cancelTurn(sessionId: string): Promise<void> {
   await rpcRequest('session/cancel', { sessionId });
 }
 
-export function defaultCwd(): Promise<string> {
-  return invoke<string>('default_cwd');
-}
-
 // An image the host read from a path the clipboard named, base64-encoded.
 export interface ClipboardImage {
   mime: string;
