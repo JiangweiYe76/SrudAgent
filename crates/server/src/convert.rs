@@ -616,20 +616,23 @@ pub fn prompt_outcome(reason: TurnEndReason, error: Option<&str>) -> Result<Turn
 pub enum UnsupportedContent {
     /// An audio block, refused while `promptCapabilities.audio` is false.
     Audio,
-    /// Any other block the agent does not read, such as a resource or a link.
+    /// Any other block the agent does not read, such as an embedded resource.
     Other(&'static str),
 }
 
 /// The parts of a prompt the agent accepts.
 #[derive(Debug, Default)]
 pub struct PromptParts {
-    /// The text blocks, joined in the order they arrived.
+    /// The text blocks and resource links, joined in the order they arrived.
     pub text: String,
     /// The image blocks, in the order they arrived.
     pub images: Vec<srud_core::types::ImagePart>,
 }
 
 /// Splits a prompt into the text and images the agent accepts.
+///
+/// Resource links need no capability and carry no content, so they join the
+/// text as a Markdown reference the model can follow with its own tools.
 ///
 /// Returns an error naming the first block the agent cannot accept — dropping
 /// multimodal input silently would make the model answer a prompt the user
@@ -644,6 +647,14 @@ pub fn prompt_parts(blocks: &[ContentBlock]) -> Result<PromptParts, AcpError> {
                 }
                 parts.text.push_str(&content.text);
             }
+            ContentBlock::ResourceLink(content) => {
+                if !parts.text.is_empty() {
+                    parts.text.push('\n');
+                }
+                parts
+                    .text
+                    .push_str(&format!("[{}]({})", content.name, content.uri));
+            }
             ContentBlock::Image(content) => parts.images.push(srud_core::types::ImagePart {
                 mime: content.mime_type.clone(),
                 data: content.data.clone(),
@@ -652,7 +663,6 @@ pub fn prompt_parts(blocks: &[ContentBlock]) -> Result<PromptParts, AcpError> {
                 let kind = match block {
                     ContentBlock::Audio(_) => UnsupportedContent::Audio,
                     ContentBlock::Resource(_) => UnsupportedContent::Other("resource"),
-                    ContentBlock::ResourceLink(_) => UnsupportedContent::Other("resource_link"),
                     _ => UnsupportedContent::Other("unknown"),
                 };
                 return Err(AcpError::new(
@@ -1179,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_parts_accepts_text_and_images_and_rejects_audio() {
+    fn prompt_parts_accepts_text_images_and_resource_links_and_rejects_audio() {
         let blocks = vec![
             ContentBlock::Text(TextContent::new("hello")),
             ContentBlock::Image(srud_protocol::acp::ImageContent::new("d", "image/png")),
@@ -1192,6 +1202,19 @@ mod tests {
                 mime: "image/png".into(),
                 data: "d".into(),
             }]
+        );
+
+        let blocks = vec![
+            ContentBlock::Text(TextContent::new("look")),
+            ContentBlock::ResourceLink(srud_protocol::acp::ResourceLink::new(
+                "document.pdf",
+                "file:///home/user/document.pdf",
+            )),
+        ];
+        let parts = prompt_parts(&blocks).unwrap();
+        assert_eq!(
+            parts.text,
+            "look\n[document.pdf](file:///home/user/document.pdf)"
         );
 
         let blocks = vec![
