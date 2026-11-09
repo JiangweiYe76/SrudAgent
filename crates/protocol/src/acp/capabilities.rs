@@ -14,8 +14,8 @@
 //!   `loadSession` and `resume`, now that a session's log can rebuild it.
 //!   `loadSession` replays the conversation; `resume` restores it without
 //!   replaying.
-//! - The `_srud/unstable/*` extensions are **not advertised**: the runtime
-//!   does not implement fork, steer, or log reads.
+//! - The `_srud/unstable/*` extensions are **not advertised** in
+//!   `agentCapabilities._meta`; a client knows them by name or not at all.
 
 use crate::acp::{
     AgentCapabilities, BooleanConfigOptionCapabilities, ClientCapabilities,
