@@ -1009,16 +1009,22 @@ impl SessionManager {
     /// Every session this agent knows about, the live ones first and then the
     /// stored ones newest first.
     ///
+    /// A `cwd` keeps only the sessions working in that directory, which is how
+    /// a client lists the sessions of one workspace.
+    ///
     /// Read from disk as well as from memory, because a session outlives the run
     /// that created it: a client can only be shown a session it was told about,
     /// and a session nobody has opened since the last restart is on disk only. A
     /// live session is described from memory, where its title is the one just
     /// accepted rather than the one last written.
-    pub async fn list(&self) -> Vec<SessionInfo> {
+    pub async fn list(&self, cwd: Option<&Path>) -> Vec<SessionInfo> {
         let (mut all, live_ids) = {
             let sessions = self.sessions.lock().expect("session map lock poisoned");
             let live: Vec<SessionInfo> = sessions
                 .iter()
+                .filter(|(_, tracked)| {
+                    cwd.is_none_or(|dir| same_directory(tracked.session.cwd(), dir))
+                })
                 .map(|(id, tracked)| {
                     let mut info = SessionInfo::new(
                         SessionId::new(id.clone()),
@@ -1042,6 +1048,9 @@ impl SessionManager {
             // cannot find, so listing it would offer a client a session that
             // cannot be opened.
             if !names_session(&path, &summary.session_id) {
+                continue;
+            }
+            if cwd.is_some_and(|dir| !same_directory(&summary.cwd, dir)) {
                 continue;
             }
             if live_ids.contains(&*summary.session_id.0.to_string()) {
@@ -1446,7 +1455,7 @@ mod tests {
         let (manager, _env) = manager();
         let id = create(&manager).await;
         assert_eq!(manager.title(&id), None);
-        assert!(manager.list().await[0].title.is_none());
+        assert!(manager.list(None).await[0].title.is_none());
     }
 
     #[tokio::test]
@@ -1586,12 +1595,47 @@ mod tests {
         let (manager, _env) = manager();
         let named = create(&manager).await;
         manager.set_title(&named, "Named session").await.unwrap();
-        let listed = manager.list().await;
+        let listed = manager.list(None).await;
         let titled = listed
             .iter()
             .find(|info| info.session_id == named)
             .expect("the named session is listed");
         assert_eq!(titled.title.as_deref(), Some("Named session"));
+    }
+
+    #[tokio::test]
+    async fn list_keeps_only_the_sessions_of_the_named_directory() {
+        let (manager, _env) = manager();
+        let here = test_env::unique_dir("srud-listed-here");
+        let elsewhere = test_env::unique_dir("srud-listed-elsewhere");
+        let kept = manager
+            .create(Some(here.clone()), None)
+            .await
+            .expect("the directory is usable");
+        let dropped = manager
+            .create(Some(elsewhere), None)
+            .await
+            .expect("the directory is usable");
+
+        let listed: Vec<SessionId> = manager
+            .list(Some(&here))
+            .await
+            .into_iter()
+            .map(|info| info.session_id)
+            .collect();
+        assert_eq!(listed, vec![kept.clone()]);
+
+        // A session outliving this run is filtered by the directory its log
+        // records, not only the ones still in memory.
+        manager.forget(&kept);
+        manager.forget(&dropped);
+        let stored: Vec<SessionId> = manager
+            .list(Some(&here))
+            .await
+            .into_iter()
+            .map(|info| info.session_id)
+            .collect();
+        assert_eq!(stored, vec![kept]);
     }
 
     #[tokio::test]
@@ -1607,7 +1651,7 @@ mod tests {
             .unwrap();
         manager.remove(&named).await;
 
-        let listed = manager.list().await;
+        let listed = manager.list(None).await;
 
         assert!(
             listed.is_empty(),
@@ -1619,7 +1663,7 @@ mod tests {
         let second = create(&manager).await;
         manager.set_title(&second, "Still there").await.unwrap();
         manager.forget(&second);
-        let on_disk = manager.list().await;
+        let on_disk = manager.list(None).await;
         let found = on_disk
             .iter()
             .find(|info| info.session_id == second)
@@ -1649,7 +1693,7 @@ mod tests {
         .expect("the log can be renamed");
 
         assert!(
-            manager.list().await.is_empty(),
+            manager.list(None).await.is_empty(),
             "a log no filename carries the id for describes no session a client could open"
         );
         assert!(
@@ -1676,7 +1720,7 @@ mod tests {
         manager.forget(&newer);
 
         let listed: Vec<String> = manager
-            .list()
+            .list(None)
             .await
             .iter()
             .map(|info| info.session_id.to_string())
@@ -1693,7 +1737,7 @@ mod tests {
         let id = create(&manager).await;
         manager.set_title(&id, "Accepted").await.unwrap();
 
-        let listed = manager.list().await;
+        let listed = manager.list(None).await;
 
         assert_eq!(listed.len(), 1, "listed once, not once per source");
         assert_eq!(listed[0].title.as_deref(), Some("Accepted"));
@@ -1711,7 +1755,7 @@ mod tests {
         assert!(manager.is_empty(), "it takes no more turns");
         assert!(!manager.forget(&id), "and is not held a second time");
 
-        let listed = manager.list().await;
+        let listed = manager.list(None).await;
         assert_eq!(listed.len(), 1, "but it is still there to load");
         assert_eq!(listed[0].title.as_deref(), Some("Finished"));
     }
@@ -1728,7 +1772,7 @@ mod tests {
         assert!(manager.remove(&id).await);
 
         assert!(wait_until_gone(&cwd).await, "{cwd:?} went with the session");
-        assert!(manager.list().await.is_empty(), "and so does its log");
+        assert!(manager.list(None).await.is_empty(), "and so does its log");
     }
 
     #[tokio::test]
@@ -1757,7 +1801,7 @@ mod tests {
 
         assert!(manager.remove(&id).await);
 
-        assert!(manager.list().await.is_empty(), "the log went too");
+        assert!(manager.list(None).await.is_empty(), "the log went too");
     }
 
     #[tokio::test]
@@ -1766,7 +1810,7 @@ mod tests {
         let mut expected = [create(&manager).await, create(&manager).await];
         expected.sort_by_key(ToString::to_string);
 
-        let mut listed = manager.list().await;
+        let mut listed = manager.list(None).await;
         listed.sort_by_key(|info| info.session_id.to_string());
 
         let ids: Vec<String> = listed

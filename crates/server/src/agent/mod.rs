@@ -261,7 +261,7 @@ impl Agent {
             SESSION_CANCEL => self
                 .handle_cancel(params)
                 .map(|()| Value::Object(Default::default())),
-            SESSION_LIST => self.handle_list().await.map(serialize),
+            SESSION_LIST => self.handle_list(params).await.map(serialize),
             SESSION_CLOSE => self
                 .handle_close(params)
                 .await
