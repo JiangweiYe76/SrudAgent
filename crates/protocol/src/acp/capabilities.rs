@@ -10,17 +10,18 @@
 //! - Prompt input is text plus images: `image` is on because a turn carries
 //!   attached images alongside its text; `audio` and `embeddedContext` stay
 //!   off because a turn has no place for them.
-//! - Session lifecycle: `close` and `list` are on, and so are `loadSession`
-//!   and `resume`, now that a session's log can rebuild it. `loadSession`
-//!   replays the conversation; `resume` restores it without replaying.
+//! - Session lifecycle: `close`, `list` and `delete` are on, and so are
+//!   `loadSession` and `resume`, now that a session's log can rebuild it.
+//!   `loadSession` replays the conversation; `resume` restores it without
+//!   replaying.
 //! - The `_srud/unstable/*` extensions are **not advertised**: the runtime
 //!   does not implement fork, steer, or log reads.
 
 use crate::acp::{
     AgentCapabilities, BooleanConfigOptionCapabilities, ClientCapabilities,
     ClientSessionCapabilities, FileSystemCapabilities, McpCapabilities, PromptCapabilities,
-    SessionCapabilities, SessionCloseCapabilities, SessionListCapabilities,
-    SessionResumeCapabilities,
+    SessionCapabilities, SessionCloseCapabilities, SessionDeleteCapabilities,
+    SessionListCapabilities, SessionResumeCapabilities,
 };
 
 /// The `_srud/unstable/session/*` and `_srud/unstable/provider/*` extension
@@ -52,6 +53,7 @@ pub fn agent_capabilities() -> AgentCapabilities {
         .session_capabilities(
             SessionCapabilities::new()
                 .list(SessionListCapabilities::new())
+                .delete(SessionDeleteCapabilities::new())
                 .close(SessionCloseCapabilities::new())
                 .resume(SessionResumeCapabilities::new()),
         )
@@ -89,6 +91,7 @@ mod tests {
         assert_eq!(value["promptCapabilities"]["audio"], json!(false));
         assert_eq!(value["promptCapabilities"]["embeddedContext"], json!(false));
         assert!(value["sessionCapabilities"]["list"].is_object());
+        assert!(value["sessionCapabilities"]["delete"].is_object());
         assert!(value["sessionCapabilities"]["close"].is_object());
         assert!(value["sessionCapabilities"]["resume"].is_object());
         assert!(value["sessionCapabilities"]
