@@ -261,7 +261,7 @@ impl Agent {
             SESSION_CANCEL => self
                 .handle_cancel(params)
                 .map(|()| Value::Object(Default::default())),
-            SESSION_LIST => self.handle_list().await.map(serialize),
+            SESSION_LIST => self.handle_list(params).await.map(serialize),
             SESSION_CLOSE => self
                 .handle_close(params)
                 .await
@@ -297,18 +297,14 @@ impl Agent {
     }
 
     fn handle_initialize(&self, params: Value) -> Result<InitializeResponse, AcpError> {
-        let request: InitializeRequest = parse_params(params)?;
-        if request.protocol_version != ProtocolVersion::V1 {
-            return Err(AcpError::new(
-                INVALID_PARAMS,
-                format!(
-                    "unsupported protocol version {}; this agent speaks v1 only",
-                    request.protocol_version
-                ),
-            ));
-        }
+        // ACP negotiates the protocol version rather than refusing it: when a
+        // client asks for a version this build does not speak, the agent still
+        // answers with the latest one it supports and leaves the decision to
+        // continue to the client. Parsing is kept only to reject malformed
+        // params.
+        parse_params::<InitializeRequest>(params)?;
         self.initialized.store(true, Ordering::Release);
-        Ok(InitializeResponse::new(ProtocolVersion::V1)
+        Ok(InitializeResponse::new(ProtocolVersion::LATEST)
             .agent_capabilities(srud_protocol::acp::capabilities::agent_capabilities())
             .agent_info(Implementation::new("srud-agent", env!("CARGO_PKG_VERSION")))
             .auth_methods(vec![]))
@@ -403,9 +399,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wrong_protocol_version_is_invalid_params() {
+    async fn unsupported_protocol_version_negotiates_to_the_latest_supported() {
         let agent = agent(scripted(vec![]));
-        let error = error_of(
+        let result = result_of(
             agent
                 .handle(request(
                     INITIALIZE,
@@ -413,7 +409,18 @@ mod tests {
                 ))
                 .await,
         );
-        assert_eq!(i32::from(error.code), INVALID_PARAMS);
+        assert_eq!(result["protocolVersion"], json!(1));
+
+        // Negotiation still initialises the connection, so the next request is
+        // not refused as "initialize must be first".
+        result_of(
+            agent
+                .handle(request(
+                    SESSION_NEW,
+                    json!({ "cwd": "/", "mcpServers": [] }),
+                ))
+                .await,
+        );
     }
 
     #[tokio::test]

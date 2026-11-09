@@ -38,9 +38,9 @@ pub use acp_schema::v1::{
 // (see `crate::srud::methods`).
 pub use acp_schema::v1::{
     CancelNotification, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest,
-    DeleteSessionResponse, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
-    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ResumeSessionRequest,
-    ResumeSessionResponse, SessionId, SetSessionConfigOptionRequest,
+    DeleteSessionResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+    LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
+    ResumeSessionRequest, ResumeSessionResponse, SessionId, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse,
 };
 

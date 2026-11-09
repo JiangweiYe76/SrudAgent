@@ -9,10 +9,10 @@
 use super::{parse_params, session_not_found, Agent};
 use serde_json::Value;
 use srud_protocol::acp::{
-    AcpError, CloseSessionRequest, DeleteSessionRequest, ListSessionsResponse, NewSessionRequest,
-    NewSessionResponse, SessionId,
+    AcpError, CloseSessionRequest, DeleteSessionRequest, ListSessionsRequest, ListSessionsResponse,
+    NewSessionRequest, NewSessionResponse, SessionId,
 };
-use srud_protocol::error::{INTERNAL_ERROR, INVALID_REQUEST};
+use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST};
 use srud_protocol::srud::methods::{
     ForkSessionRequest, ForkSessionResponse, SetSessionTitleRequest, SetSessionTitleResponse,
 };
@@ -62,8 +62,21 @@ impl Agent {
         Ok(response)
     }
 
-    pub(super) async fn handle_list(&self) -> Result<ListSessionsResponse, AcpError> {
-        Ok(ListSessionsResponse::new(self.sessions.list().await))
+    pub(super) async fn handle_list(
+        &self,
+        params: Value,
+    ) -> Result<ListSessionsResponse, AcpError> {
+        let request: ListSessionsRequest = parse_params(params)?;
+        if request.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute()) {
+            return Err(AcpError::new(
+                INVALID_PARAMS,
+                "session/list cwd must be an absolute path",
+            ));
+        }
+        // This agent never issues a cursor, so a cursor names no page to resume.
+        Ok(ListSessionsResponse::new(
+            self.sessions.list(request.cwd.as_deref()).await,
+        ))
     }
 
     pub(super) async fn handle_close(&self, params: Value) -> Result<(), AcpError> {
@@ -187,7 +200,7 @@ mod tests {
         SESSION_PROMPT, SRUD_SESSION_FORK, SRUD_SESSION_SET_TITLE,
     };
     use srud_protocol::acp::{Response, SessionId};
-    use srud_protocol::error::{INVALID_REQUEST, SESSION_NOT_FOUND};
+    use srud_protocol::error::{INVALID_PARAMS, INVALID_REQUEST, SESSION_NOT_FOUND};
 
     #[tokio::test]
     async fn session_new_returns_an_opaque_id() {
@@ -224,6 +237,47 @@ mod tests {
             std::path::Path::new(cwd).is_dir(),
             "the workspace exists: {cwd}"
         );
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_the_directory_the_client_names() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let id = new_session(&agent).await;
+        let unfiltered = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
+        let cwd = unfiltered["sessions"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .find(|info| info["sessionId"] == json!(id.0.as_ref()))
+            .and_then(|info| info["cwd"].as_str())
+            .expect("the session reports a working directory")
+            .to_owned();
+
+        let filtered = result_of(
+            agent
+                .handle(request(SESSION_LIST, json!({ "cwd": cwd.clone() })))
+                .await,
+        );
+        let wanted = json!(cwd);
+        let sessions = filtered["sessions"].as_array().expect("a list");
+        assert!(
+            sessions.iter().all(|info| info["cwd"] == wanted),
+            "only the sessions of the named directory are listed"
+        );
+        assert!(
+            sessions
+                .iter()
+                .any(|info| info["sessionId"] == json!(id.0.as_ref())),
+            "the session it just made is listed"
+        );
+
+        let error = error_of(
+            agent
+                .handle(request(SESSION_LIST, json!({ "cwd": "relative/dir" })))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), INVALID_PARAMS);
     }
 
     #[tokio::test]
