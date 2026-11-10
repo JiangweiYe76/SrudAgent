@@ -273,8 +273,6 @@ beforeEach(() => {
   mocks.notifyCb = null;
   mocks.toast.success.mockClear();
   mocks.toast.error.mockClear();
-  // A remembered directory would otherwise carry over from the previous test.
-  localStorage.clear();
 });
 
 describe('sessionStore live path', () => {
@@ -743,6 +741,26 @@ describe('sessionStore live path', () => {
     expect(replacement.backendId).toBeNull();
     expect(useSessionStore.getState().activeId).toBe(replacement.id);
     expect(calls.filter((m) => m === 'session/new')).toHaveLength(1);
+  });
+
+  it('the replacement draft starts in the default workspace', async () => {
+    const { useSessionStore, active, prompt, waitForBackend } = await boot();
+    useSessionStore.getState().setWorkspace(active().id, '/work/project');
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().sessions[0].turns[0].endReason).toBe(
+        'completed',
+      );
+    });
+    // Deleting the only conversation leaves nothing that works in that
+    // directory, so the draft to type into must not keep the heading alive.
+    useSessionStore.getState().deleteSession(active().id);
+    await vi.waitFor(() => {
+      expect(useSessionStore.getState().sessions[0].backendId).toBeNull();
+    });
+    expect(useSessionStore.getState().sessions[0].cwd).toBe('');
   });
 
   it('keeps a session visible when the agent refuses the delete', async () => {

@@ -9,30 +9,6 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { isTauri } from './acp';
 import { t } from './i18n';
 
-/** Where the last choice is remembered, for the next new session. */
-const LAST_WORKSPACE_KEY = 'srud.workspace.last';
-
-/** The directory the next new session starts in, or empty for the default. */
-export function lastWorkspace(): string {
-  try {
-    return localStorage.getItem(LAST_WORKSPACE_KEY) ?? '';
-  } catch {
-    // Storage can be unavailable or full; a forgotten choice is not worth
-    // failing a session over.
-    return '';
-  }
-}
-
-/** Remembers a choice, with the empty string meaning the default workspace. */
-export function rememberWorkspace(path: string): void {
-  try {
-    if (path) localStorage.setItem(LAST_WORKSPACE_KEY, path);
-    else localStorage.removeItem(LAST_WORKSPACE_KEY);
-  } catch {
-    // See `lastWorkspace`.
-  }
-}
-
 /**
  * Opens the platform's directory picker.
  *

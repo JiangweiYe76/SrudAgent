@@ -17,7 +17,6 @@ import type {
 import { DEFAULT_SANDBOX_MODE } from './types';
 import { t } from './i18n';
 import { loadDrafts, saveDrafts } from './drafts';
-import { lastWorkspace, rememberWorkspace } from './workspace';
 import {
   draftModelOptions,
   draftThinkingOptions,
@@ -1143,7 +1142,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         // Nothing to go back to, so a draft to type into: with no session at all
         // there is nowhere to put what the user is about to say.
-        const draft = freshSession(lastWorkspace());
+        const draft = freshSession();
         set({ sessions: [draft], activeId: draft.id, initError: null });
       } catch (err) {
         set({ initError: String(err) });
@@ -1195,9 +1194,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const active = state.sessions.find((s) => s.id === state.activeId);
     // A new chat starts in the directory the session on screen works in, so a
     // conversation about one project does not silently drift to another. With
-    // nothing on screen, the last choice made stands in. A directory handed in
-    // from the sidebar wins over both.
-    const target = cwd ?? (active ? active.cwd : lastWorkspace());
+    // nothing on screen there is nothing to inherit, and the new chat gets the
+    // default workspace like any other draft. A directory handed in from the
+    // sidebar wins over both.
+    const target = cwd ?? (active ? active.cwd : '');
     if (
       active &&
       active.loaded &&
@@ -1219,7 +1219,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         sess.id === id ? { ...sess, cwd: path } : sess,
       ),
     }));
-    rememberWorkspace(path);
   },
 
   sendTurn: (userInput, target, images) => {
