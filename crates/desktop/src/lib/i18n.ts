@@ -19,6 +19,8 @@ const en = {
   'sidebar.deleteBusy': 'Stop the running turn before deleting this session.',
   'sidebar.streaming': 'Still replying…',
   'sidebar.unread': 'Unread reply',
+  'sidebar.created': 'Created {time}',
+  'sidebar.updated': 'Updated {time}',
 
   'skills.open': 'Skills',
   'skills.title': 'Skills',
@@ -51,11 +53,6 @@ const en = {
   'session.settingFailed': 'Could not change this setting.',
   'session.renameFailed': 'Could not rename the session.',
   'session.steerFailed': 'Could not send that message.',
-
-  'time.justNow': 'just now',
-  'time.minutesAgo': '{n} min ago',
-  'time.hoursAgo': '{n} h ago',
-  'time.daysAgo': '{n} d ago',
 
   'app.newSession': 'New session',
   'app.retry': 'Retry',
