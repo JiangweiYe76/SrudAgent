@@ -660,7 +660,7 @@ interface SessionState {
   setAttachments: (id: string, attachments: Attachment[]) => void;
   init: () => Promise<void>;
   select: (id: string) => void;
-  addSession: () => void;
+  addSession: (cwd?: string) => void;
   // Points a draft at a directory. A session that has already been created
   // keeps the one it was created with: ACP fixes `cwd` at setup.
   setWorkspace: (id: string, path: string) => void;
@@ -1185,18 +1185,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     startLoad(id, false);
   },
 
-  addSession: () => {
+  addSession: (cwd) => {
     // The session on screen already reads as "Start a new chat", so another
     // draft would only stack an identical empty row in the sidebar. `loaded`
     // guards the other way: a listed conversation not yet on screen has no
     // turns simply because it has not arrived, and that is not an empty chat.
     const state = get();
     const active = state.sessions.find((s) => s.id === state.activeId);
-    if (active && active.loaded && active.turns.length === 0) return;
     // A new chat starts in the directory the session on screen works in, so a
     // conversation about one project does not silently drift to another. With
-    // nothing on screen, the last choice made stands in.
-    const draft = freshSession(active ? active.cwd : lastWorkspace());
+    // nothing on screen, the last choice made stands in. A directory handed in
+    // from the sidebar wins over both.
+    const target = cwd ?? (active ? active.cwd : lastWorkspace());
+    if (
+      active &&
+      active.loaded &&
+      active.turns.length === 0 &&
+      active.cwd === target
+    )
+      return;
+    const draft = freshSession(target);
     set((s) => ({ sessions: [draft, ...s.sessions], activeId: draft.id }));
   },
 
@@ -1351,6 +1359,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                   ? {
                       ...sess,
                       backendId: created.sessionId,
+                      // The agent may have made the directory itself; what it
+                      // settled on is what the sidebar and header report.
+                      cwd: created.cwd || sess.cwd,
                       model: options.model,
                       thinking: options.thinking,
                       sandboxMode,

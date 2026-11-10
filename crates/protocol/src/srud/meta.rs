@@ -32,6 +32,13 @@ pub const RESERVED_TRACE_KEYS: &[&str] = &["traceparent", "tracestate", "baggage
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SrudMeta {
+    /// The directory the session ended up working in.
+    ///
+    /// A client may name one, and the agent makes one when it names none; which
+    /// of the two happened is the agent's to know, so it rides on the
+    /// `session/new` response for the client to report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// One session's notification sequence number.
     ///
     /// Every notification the session emits carries the next number, starting at
