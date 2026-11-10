@@ -57,3 +57,14 @@ export function workspaceName(path: string): string {
   const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
   return trimmed.slice(cut + 1) || trimmed;
 }
+
+/**
+ * Whether the path is a workspace the agent made, rather than one the user
+ * chose.
+ *
+ * The agent creates those directly under its own `workspaces` directory, one
+ * per session, each named after the session it belongs to.
+ */
+export function isAgentWorkspace(path: string): boolean {
+  return /(^|[\\/])workspaces[\\/][^\\/]+$/.test(path.replace(/[\\/]+$/, ''));
+}

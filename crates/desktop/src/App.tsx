@@ -217,7 +217,8 @@ function App() {
         deletingIds={deletingIds}
         unreadIds={unreadIds}
         onSelect={select}
-        onNew={addSession}
+        onNew={() => addSession()}
+        onNewInWorkspace={addSession}
         onRename={renameSession}
         onFork={forkSession}
         onDelete={deleteSession}

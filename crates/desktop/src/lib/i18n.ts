@@ -21,6 +21,7 @@ const en = {
   'sidebar.unread': 'Unread reply',
   'sidebar.created': 'Created {time}',
   'sidebar.updated': 'Updated {time}',
+  'sidebar.newSessionHere': 'New session here',
 
   'skills.open': 'Skills',
   'skills.title': 'Skills',

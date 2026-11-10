@@ -219,9 +219,9 @@ export interface Session {
   // then: clicks alone create neither a backend session nor a workspace
   // directory.
   backendId: string | null;
-  // The directory the session works in, as the agent reported it. Loadable
-  // sessions need it because ACP has the client confirm it; empty for a draft,
-  // which has no directory until the agent gives it one.
+  // The directory the session works in: a draft holds the one the user chose,
+  // when there is one, and a created session holds the one the agent reported.
+  // Loadable sessions need it because ACP has the client confirm it.
   cwd: string;
   // Whether the conversation is on screen. False for a session the agent listed
   // but this client has not loaded, so its turns are still to come.

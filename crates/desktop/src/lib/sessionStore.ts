@@ -985,9 +985,10 @@ function withoutDraft(
   return next;
 }
 
-// A session starts as a local draft: no backend session and no workspace
-// directory until the first message materializes it. The agent derives a title
-// from the first message and announces it over `session/update`.
+// A session starts as a local draft: no backend session, and only the directory
+// the user pointed it at, if any, until the first message materializes it. The
+// agent derives a title from the first message and announces it over
+// `session/update`.
 //
 // `cwd` is the directory the user chose, or empty for the workspace the agent
 // gives the session. The agent's own directory is not known until the session

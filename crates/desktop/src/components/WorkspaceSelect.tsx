@@ -10,7 +10,11 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { t } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
-import { pickWorkspace, workspaceName } from '@/lib/workspace';
+import {
+  isAgentWorkspace,
+  pickWorkspace,
+  workspaceName,
+} from '@/lib/workspace';
 
 interface WorkspaceSelectProps {
   /** The session's directory, or empty for the agent's own workspace. */
@@ -33,7 +37,8 @@ export function WorkspaceSelect({
   onChange,
 }: WorkspaceSelectProps) {
   const [open, setOpen] = useState(false);
-  const name = workspaceName(cwd);
+  const name =
+    !cwd || isAgentWorkspace(cwd) ? t('workspace.default') : workspaceName(cwd);
   const title = cwd || t('workspace.defaultHint');
 
   const choose = async () => {

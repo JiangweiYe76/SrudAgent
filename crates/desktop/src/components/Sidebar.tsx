@@ -12,7 +12,7 @@ import {
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { deleteWarning, displayTitle, isBusy } from '@/lib/sessionStore';
-import { workspaceName } from '@/lib/workspace';
+import { isAgentWorkspace, workspaceName } from '@/lib/workspace';
 import { toast } from 'sonner';
 import { DeleteSessionModal } from '@/components/DeleteSessionModal';
 import { RenameSessionModal } from '@/components/RenameSessionModal';
@@ -43,6 +43,8 @@ interface SidebarProps {
   unreadIds: string[];
   onSelect: (id: string) => void;
   onNew: () => void;
+  // Starts a draft in the given directory instead of the one on screen.
+  onNewInWorkspace: (cwd: string) => void;
   onRename: (id: string, title: string) => void;
   onFork: (id: string) => void;
   onDelete: (id: string) => void;
@@ -58,7 +60,10 @@ function formatDateTime(ts: number): string {
 }
 
 interface WorkspaceGroup {
-  /** The directory itself; empty for a draft that has not chosen one. */
+  /**
+   * The directory to group by; empty for the default group, which gathers
+   * agent-made workspaces and drafts that chose none.
+   */
   path: string;
   label: string;
   sessions: Session[];
@@ -66,30 +71,31 @@ interface WorkspaceGroup {
 
 // Sessions grouped by the directory they work in.
 //
-// The agent names a workspace it creates after the session it belongs to, which
-// is how one of those is told apart from a directory the user picked. Groups
-// keep the order their first session arrived in, so a conversation stays where
-// the list put it.
+// Every workspace the agent made counts as the default one: a session that chose
+// no directory gets one of its own, and they all belong together under that one
+// heading even though the directories differ. Groups are ordered by name and
+// nothing else, with the default group first: adding a session to one of them,
+// or working in it, must never move it.
 function workspaceGroups(sessions: Session[]): WorkspaceGroup[] {
   const byPath = new Map<string, Session[]>();
   for (const session of sessions) {
-    const members = byPath.get(session.cwd);
+    const picked = session.cwd && !isAgentWorkspace(session.cwd);
+    const key = picked ? session.cwd : '';
+    const members = byPath.get(key);
     if (members) members.push(session);
-    else byPath.set(session.cwd, [session]);
+    else byPath.set(key, [session]);
   }
-  return [...byPath.entries()].map(([path, members]) => ({
-    path,
-    label: workspaceLabel(path, members),
-    sessions: members,
-  }));
-}
-
-function workspaceLabel(path: string, members: Session[]): string {
-  if (!path) return t('workspace.default');
-  const name = workspaceName(path);
-  return members.some((s) => s.backendId === name)
-    ? t('workspace.default')
-    : name;
+  return [...byPath.entries()]
+    .map(([path, members]) => ({
+      path,
+      label: workspaceName(path),
+      sessions: members,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.path === '') - Number(a.path === '') ||
+        a.label.localeCompare(b.label),
+    );
 }
 
 // The per-session actions, behind one trigger so the row stays quiet. Sessions
@@ -254,6 +260,7 @@ export function Sidebar({
   unreadIds,
   onSelect,
   onNew,
+  onNewInWorkspace,
   onRename,
   onFork,
   onDelete,
@@ -311,12 +318,17 @@ export function Sidebar({
         <nav className="flex flex-1 flex-col gap-2 overflow-y-auto p-2">
           {groups.map((group) => (
             <div key={group.path} className="flex flex-col gap-0.5">
-              <div
-                title={group.path || undefined}
-                className="flex items-center gap-1.5 px-3 pt-1 pb-0.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
-              >
-                <FolderOpen className="h-3 w-3 shrink-0" />
-                <span className="truncate">{group.label}</span>
+              <div className="group flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] text-muted-foreground transition-colors hover:bg-item-hover">
+                <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{group.label}</span>
+                <button
+                  title={t('sidebar.newSessionHere')}
+                  aria-label={t('sidebar.newSessionHere')}
+                  onClick={() => onNewInWorkspace(group.path)}
+                  className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md opacity-0 transition-colors group-hover:opacity-100 hover:bg-item-hover hover:text-foreground focus-visible:opacity-100"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
               </div>
               {group.sessions.map((s) => {
                 const deleting = deletingSet.has(s.id);
