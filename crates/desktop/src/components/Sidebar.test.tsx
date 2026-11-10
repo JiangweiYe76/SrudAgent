@@ -61,7 +61,7 @@ function render(
 /** The session rows, in order. */
 function rows(): HTMLButtonElement[] {
   return Array.from(
-    container.querySelectorAll<HTMLButtonElement>('nav > button'),
+    container.querySelectorAll<HTMLButtonElement>('nav > div > button'),
   );
 }
 
@@ -182,5 +182,40 @@ describe('Sidebar fork action', () => {
     // Rename and delete are still there; only fork is held back.
     expect(menuItem('Rename session')).not.toBeNull();
     expect(menuItem('Delete session')).not.toBeNull();
+  });
+});
+
+describe('Sidebar workspaces', () => {
+  it('groups sessions under the directory they work in', () => {
+    mount();
+    render([
+      { ...session('s1'), cwd: '/work/alpha' },
+      session('s2'),
+      { ...session('s3'), cwd: '/work/alpha' },
+    ]);
+
+    const headings = Array.from(
+      container.querySelectorAll('nav > div > div'),
+    ).map((element) => element.textContent);
+    expect(headings).toEqual(['alpha', 'Default workspace']);
+
+    // Both sessions that work in the directory share its group.
+    expect(
+      container.querySelectorAll('nav > div:first-child > button'),
+    ).toHaveLength(2);
+  });
+
+  it('presents an agent-named directory as the default workspace', () => {
+    mount();
+    render([
+      {
+        ...session('s1'),
+        backendId: 'ws-1',
+        cwd: '/home/me/.srudagent/workspaces/ws-1',
+      },
+    ]);
+
+    expect(container.textContent).toContain('Default workspace');
+    expect(container.textContent).not.toContain('ws-1');
   });
 });

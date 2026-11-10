@@ -268,6 +268,8 @@ beforeEach(() => {
   mocks.notifyCb = null;
   mocks.toast.success.mockClear();
   mocks.toast.error.mockClear();
+  // A remembered directory would otherwise carry over from the previous test.
+  localStorage.clear();
 });
 
 describe('sessionStore live path', () => {
@@ -310,6 +312,45 @@ describe('sessionStore live path', () => {
     // The screen is an empty chat again, so the next click changes nothing.
     useSessionStore.getState().addSession();
     expect(useSessionStore.getState().sessions).toHaveLength(2);
+  });
+
+  it('opens a new chat in the directory the session on screen works in', async () => {
+    const { useSessionStore, active, waitForBackend } = await boot();
+    useSessionStore.getState().setWorkspace(active().id, '/work/project');
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useSessionStore.getState().addSession();
+    expect(useSessionStore.getState().sessions[0].cwd).toBe('/work/project');
+  });
+
+  it('passes the chosen directory to session/new', async () => {
+    const { useSessionStore, active, requested, waitForBackend } = await boot();
+    useSessionStore.getState().setWorkspace(active().id, '/work/project');
+    expect(active().cwd).toBe('/work/project');
+
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const params = requested.find((r) => r.method === 'session/new')!.params;
+    expect(params).toMatchObject({ cwd: '/work/project' });
+  });
+
+  it('leaves the directory empty when none was chosen', async () => {
+    const { useSessionStore, requested, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const params = requested.find((r) => r.method === 'session/new')!.params;
+    expect(params).toMatchObject({ cwd: '' });
+  });
+
+  it('keeps the directory of a session that has been spoken in', async () => {
+    const { useSessionStore, active, waitForBackend } = await boot();
+    const id = active().id;
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useSessionStore.getState().setWorkspace(id, '/elsewhere');
+    expect(active().cwd).toBe('');
   });
 
   it('the first message materializes the backend before prompting', async () => {

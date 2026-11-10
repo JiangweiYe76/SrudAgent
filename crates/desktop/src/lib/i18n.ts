@@ -60,6 +60,13 @@ const en = {
   'app.newSession': 'New session',
   'app.retry': 'Retry',
 
+  'workspace.default': 'Default workspace',
+  'workspace.defaultHint':
+    'No folder chosen: the agent gives this session a workspace of its own.',
+  'workspace.choose': 'Choose folder…',
+  'workspace.useDefault': 'Use default workspace',
+  'workspace.pickFailed': 'Could not choose a folder.',
+
   'sandbox.fullAccess': 'Full access',
   'sandbox.workspaceWrite': 'Workspace write',
   'sandbox.fullAccessHint':

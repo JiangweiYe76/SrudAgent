@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import {
+  FolderOpen,
   GitFork,
   Loader2,
   MoreHorizontal,
@@ -11,6 +12,7 @@ import {
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { deleteWarning, displayTitle, isBusy } from '@/lib/sessionStore';
+import { workspaceName } from '@/lib/workspace';
 import { toast } from 'sonner';
 import { DeleteSessionModal } from '@/components/DeleteSessionModal';
 import { RenameSessionModal } from '@/components/RenameSessionModal';
@@ -48,6 +50,41 @@ function formatTime(ts: number): string {
   const hours = Math.floor(mins / 60);
   if (hours < 24) return t('time.hoursAgo', { n: hours });
   return t('time.daysAgo', { n: Math.floor(hours / 24) });
+}
+
+interface WorkspaceGroup {
+  /** The directory itself; empty for a draft that has not chosen one. */
+  path: string;
+  label: string;
+  sessions: Session[];
+}
+
+// Sessions grouped by the directory they work in.
+//
+// The agent names a workspace it creates after the session it belongs to, which
+// is how one of those is told apart from a directory the user picked. Groups
+// keep the order their first session arrived in, so a conversation stays where
+// the list put it.
+function workspaceGroups(sessions: Session[]): WorkspaceGroup[] {
+  const byPath = new Map<string, Session[]>();
+  for (const session of sessions) {
+    const members = byPath.get(session.cwd);
+    if (members) members.push(session);
+    else byPath.set(session.cwd, [session]);
+  }
+  return [...byPath.entries()].map(([path, members]) => ({
+    path,
+    label: workspaceLabel(path, members),
+    sessions: members,
+  }));
+}
+
+function workspaceLabel(path: string, members: Session[]): string {
+  if (!path) return t('workspace.default');
+  const name = workspaceName(path);
+  return members.some((s) => s.backendId === name)
+    ? t('workspace.default')
+    : name;
 }
 
 // The per-session actions, behind one trigger so the row stays quiet. Sessions
@@ -214,10 +251,12 @@ export function Sidebar({
     ? sessions.find((s) => s.id === deletingId)
     : undefined;
   const deleteTurns = deleteWarning(deleteTarget);
-  // A draft has no workspace yet, so the modal falls back to user-wide skills.
+  // A draft may already point at a directory, so its project skills are listed
+  // before the first message is sent.
   const skillsCwd = sessions.find((s) => s.id === activeId)?.cwd ?? '';
   const deletingSet = useMemo(() => new Set(deletingIds), [deletingIds]);
   const unreadSet = useMemo(() => new Set(unreadIds), [unreadIds]);
+  const groups = useMemo(() => workspaceGroups(sessions), [sessions]);
 
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-muted">
@@ -246,28 +285,39 @@ export function Sidebar({
           {t('skills.open')}
         </button>
       </div>
-      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
-        {sessions.map((s) => {
-          const deleting = deletingSet.has(s.id);
-          // Streaming outranks unread: a session that is still replying has
-          // nothing finished to catch up on yet.
-          const streaming = !deleting && isBusy(s);
-          const unread = !deleting && !streaming && unreadSet.has(s.id);
-          return (
-            <SessionRow
-              key={s.id}
-              session={s}
-              active={s.id === activeId}
-              deleting={deleting}
-              streaming={streaming}
-              unread={unread}
-              onSelect={onSelect}
-              onFork={onFork}
-              onRequestRename={setRenamingId}
-              onRequestDelete={setDeletingId}
-            />
-          );
-        })}
+      <nav className="flex flex-1 flex-col gap-2 overflow-y-auto p-2">
+        {groups.map((group) => (
+          <div key={group.path} className="flex flex-col gap-0.5">
+            <div
+              title={group.path || undefined}
+              className="flex items-center gap-1.5 px-3 pt-1 pb-0.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
+            >
+              <FolderOpen className="h-3 w-3 shrink-0" />
+              <span className="truncate">{group.label}</span>
+            </div>
+            {group.sessions.map((s) => {
+              const deleting = deletingSet.has(s.id);
+              // Streaming outranks unread: a session that is still replying has
+              // nothing finished to catch up on yet.
+              const streaming = !deleting && isBusy(s);
+              const unread = !deleting && !streaming && unreadSet.has(s.id);
+              return (
+                <SessionRow
+                  key={s.id}
+                  session={s}
+                  active={s.id === activeId}
+                  deleting={deleting}
+                  streaming={streaming}
+                  unread={unread}
+                  onSelect={onSelect}
+                  onFork={onFork}
+                  onRequestRename={setRenamingId}
+                  onRequestDelete={setDeletingId}
+                />
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
       <RenameSessionModal
