@@ -129,8 +129,10 @@ export async function initialize(): Promise<Json> {
 // Sending the empty string is SrudAgent's way of saying otherwise.
 export async function newSession(cwd: string): Promise<NewSession> {
   const result = await rpcRequest('session/new', { cwd, mcpServers: [] });
+  const srud = (result._meta as { srud?: { cwd?: unknown } } | undefined)?.srud;
   return {
     sessionId: String(result.sessionId),
+    cwd: typeof srud?.cwd === 'string' ? srud.cwd : '',
     ...parseSessionOptions(result.configOptions),
     sandboxMode: parseSandboxModeState(result.modes),
   };
@@ -139,6 +141,8 @@ export async function newSession(cwd: string): Promise<NewSession> {
 // A session the agent created, and the selectors it came with.
 export interface NewSession extends SessionOptions {
   sessionId: string;
+  /** The directory the session ended up in, named by the user or made by the agent. */
+  cwd: string;
   sandboxMode: SandboxModeOptions | null;
 }
 

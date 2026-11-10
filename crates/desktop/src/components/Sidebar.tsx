@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import {
+  FolderOpen,
   GitFork,
   Loader2,
   MoreHorizontal,
@@ -11,10 +12,17 @@ import {
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { deleteWarning, displayTitle, isBusy } from '@/lib/sessionStore';
+import { isAgentWorkspace, workspaceName } from '@/lib/workspace';
 import { toast } from 'sonner';
 import { DeleteSessionModal } from '@/components/DeleteSessionModal';
 import { RenameSessionModal } from '@/components/RenameSessionModal';
 import { SkillsModal } from '@/components/SkillsModal';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -35,19 +43,59 @@ interface SidebarProps {
   unreadIds: string[];
   onSelect: (id: string) => void;
   onNew: () => void;
+  // Starts a draft in the given directory instead of the one on screen.
+  onNewInWorkspace: (cwd: string) => void;
   onRename: (id: string, title: string) => void;
   onFork: (id: string) => void;
   onDelete: (id: string) => void;
 }
 
-function formatTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return t('time.justNow');
-  if (mins < 60) return t('time.minutesAgo', { n: mins });
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return t('time.hoursAgo', { n: hours });
-  return t('time.daysAgo', { n: Math.floor(hours / 24) });
+// Absolute time for the details a hover reveals: a relative label says how long
+// ago, not when.
+function formatDateTime(ts: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(ts);
+}
+
+interface WorkspaceGroup {
+  /**
+   * The directory to group by; empty for the default group, which gathers
+   * agent-made workspaces and drafts that chose none.
+   */
+  path: string;
+  label: string;
+  sessions: Session[];
+}
+
+// Sessions grouped by the directory they work in.
+//
+// Every workspace the agent made counts as the default one: a session that chose
+// no directory gets one of its own, and they all belong together under that one
+// heading even though the directories differ. Groups are ordered by name and
+// nothing else, with the default group first: adding a session to one of them,
+// or working in it, must never move it.
+function workspaceGroups(sessions: Session[]): WorkspaceGroup[] {
+  const byPath = new Map<string, Session[]>();
+  for (const session of sessions) {
+    const picked = session.cwd && !isAgentWorkspace(session.cwd);
+    const key = picked ? session.cwd : '';
+    const members = byPath.get(key);
+    if (members) members.push(session);
+    else byPath.set(key, [session]);
+  }
+  return [...byPath.entries()]
+    .map(([path, members]) => ({
+      path,
+      label: workspaceName(path),
+      sessions: members,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.path === '') - Number(a.path === '') ||
+        a.label.localeCompare(b.label),
+    );
 }
 
 // The per-session actions, behind one trigger so the row stays quiet. Sessions
@@ -127,64 +175,81 @@ const SessionRow = memo(function SessionRow({
   onRequestDelete,
 }: SessionRowProps) {
   return (
-    <button
-      className={`group flex cursor-pointer items-center gap-1 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-item-hover ${
-        active ? 'bg-item-hover' : ''
-      } ${deleting ? 'opacity-60' : ''}`}
-      onClick={() => {
-        if (!deleting) onSelect(session.id);
-      }}
-      aria-disabled={deleting || undefined}
-    >
-      {/* The title and its timestamp stack; the actions centre against
-          both lines rather than sitting on the title alone. */}
-      <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
-        <span className="w-full truncate text-[13px]">
-          {displayTitle(session)}
-        </span>
-        <span className="text-[11px] text-muted-foreground">
-          {formatTime(session.updatedAt)}
-        </span>
-      </span>
-      {(streaming || unread) && (
-        // Deliberately no `role="status"`: that is the deleting
-        // spinner's contract, and tests read it as such. The state
-        // travels in the title instead.
-        <span
-          title={streaming ? t('sidebar.streaming') : t('sidebar.unread')}
-          className={`h-2 w-2 shrink-0 rounded-full ${
-            streaming ? 'animate-presence-dot bg-accent' : 'bg-success'
-          }`}
-        />
-      )}
-      {/* A session on its way out keeps its row until the agent agrees, dimmed
-          and with a spinner where the actions were: firing delete again would
-          stack a second request on the first. */}
-      {deleting ? (
-        <span
-          role="status"
-          aria-label={t('sidebar.deleting')}
-          title={t('sidebar.deleting')}
-          className="flex shrink-0 items-center justify-center p-1"
-        >
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-        </span>
-      ) : (
-        <SessionActions
-          onRename={() => onRequestRename(session.id)}
-          onFork={
-            session.backendId && !streaming ? () => onFork(session.id) : null
-          }
-          onDelete={() => {
-            if (isBusy(session)) {
-              toast.error(t('sidebar.deleteBusy'));
-              return;
-            }
-            onRequestDelete(session.id);
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          className={`group flex cursor-pointer items-center gap-1 rounded-lg px-3 py-2 text-left transition-colors hover:bg-item-hover ${
+            active ? 'bg-item-hover' : ''
+          } ${deleting ? 'opacity-60' : ''}`}
+          onClick={() => {
+            if (!deleting) onSelect(session.id);
           }}
-        />
-      )}
-    </button>
+          aria-disabled={deleting || undefined}
+        >
+          {/* A single line keeps the list short; the details of when and where
+              are one hover away. */}
+          <span className="min-w-0 flex-1 truncate text-[13px]">
+            {displayTitle(session)}
+          </span>
+          {(streaming || unread) && (
+            // Deliberately no `role="status"`: that is the deleting
+            // spinner's contract, and tests read it as such. The state
+            // travels in the title instead.
+            <span
+              title={streaming ? t('sidebar.streaming') : t('sidebar.unread')}
+              className={`h-2 w-2 shrink-0 rounded-full ${
+                streaming ? 'animate-presence-dot bg-accent' : 'bg-success'
+              }`}
+            />
+          )}
+          {/* A session on its way out keeps its row until the agent agrees,
+              dimmed and with a spinner where the actions were: firing delete
+              again would stack a second request on the first. */}
+          {deleting ? (
+            <span
+              role="status"
+              aria-label={t('sidebar.deleting')}
+              title={t('sidebar.deleting')}
+              className="flex shrink-0 items-center justify-center p-1"
+            >
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+            </span>
+          ) : (
+            <SessionActions
+              onRename={() => onRequestRename(session.id)}
+              onFork={
+                session.backendId && !streaming
+                  ? () => onFork(session.id)
+                  : null
+              }
+              onDelete={() => {
+                if (isBusy(session)) {
+                  toast.error(t('sidebar.deleteBusy'));
+                  return;
+                }
+                onRequestDelete(session.id);
+              }}
+            />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" align="start" className="max-w-[300px]">
+        <div className="flex flex-col gap-1">
+          <span className="text-[13px] font-medium">
+            {displayTitle(session)}
+          </span>
+          <span className="break-all text-[11px] text-muted-foreground">
+            {session.cwd || t('workspace.default')}
+          </span>
+          <span className="text-[11px] text-muted-foreground">
+            {t('sidebar.created', { time: formatDateTime(session.createdAt) })}
+          </span>
+          <span className="text-[11px] text-muted-foreground">
+            {t('sidebar.updated', { time: formatDateTime(session.updatedAt) })}
+          </span>
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 });
 
@@ -195,6 +260,7 @@ export function Sidebar({
   unreadIds,
   onSelect,
   onNew,
+  onNewInWorkspace,
   onRename,
   onFork,
   onDelete,
@@ -214,10 +280,12 @@ export function Sidebar({
     ? sessions.find((s) => s.id === deletingId)
     : undefined;
   const deleteTurns = deleteWarning(deleteTarget);
-  // A draft has no workspace yet, so the modal falls back to user-wide skills.
+  // A draft may already point at a directory, so its project skills are listed
+  // before the first message is sent.
   const skillsCwd = sessions.find((s) => s.id === activeId)?.cwd ?? '';
   const deletingSet = useMemo(() => new Set(deletingIds), [deletingIds]);
   const unreadSet = useMemo(() => new Set(unreadIds), [unreadIds]);
+  const groups = useMemo(() => workspaceGroups(sessions), [sessions]);
 
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-muted">
@@ -246,29 +314,47 @@ export function Sidebar({
           {t('skills.open')}
         </button>
       </div>
-      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
-        {sessions.map((s) => {
-          const deleting = deletingSet.has(s.id);
-          // Streaming outranks unread: a session that is still replying has
-          // nothing finished to catch up on yet.
-          const streaming = !deleting && isBusy(s);
-          const unread = !deleting && !streaming && unreadSet.has(s.id);
-          return (
-            <SessionRow
-              key={s.id}
-              session={s}
-              active={s.id === activeId}
-              deleting={deleting}
-              streaming={streaming}
-              unread={unread}
-              onSelect={onSelect}
-              onFork={onFork}
-              onRequestRename={setRenamingId}
-              onRequestDelete={setDeletingId}
-            />
-          );
-        })}
-      </nav>
+      <TooltipProvider delayDuration={400}>
+        <nav className="flex flex-1 flex-col gap-2 overflow-y-auto p-2">
+          {groups.map((group) => (
+            <div key={group.path} className="flex flex-col gap-0.5">
+              <div className="group flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] text-muted-foreground transition-colors hover:bg-item-hover">
+                <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{group.label}</span>
+                <button
+                  title={t('sidebar.newSessionHere')}
+                  aria-label={t('sidebar.newSessionHere')}
+                  onClick={() => onNewInWorkspace(group.path)}
+                  className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md opacity-0 transition-colors group-hover:opacity-100 hover:bg-item-hover hover:text-foreground focus-visible:opacity-100"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {group.sessions.map((s) => {
+                const deleting = deletingSet.has(s.id);
+                // Streaming outranks unread: a session that is still replying has
+                // nothing finished to catch up on yet.
+                const streaming = !deleting && isBusy(s);
+                const unread = !deleting && !streaming && unreadSet.has(s.id);
+                return (
+                  <SessionRow
+                    key={s.id}
+                    session={s}
+                    active={s.id === activeId}
+                    deleting={deleting}
+                    streaming={streaming}
+                    unread={unread}
+                    onSelect={onSelect}
+                    onFork={onFork}
+                    onRequestRename={setRenamingId}
+                    onRequestDelete={setDeletingId}
+                  />
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+      </TooltipProvider>
 
       <RenameSessionModal
         open={renameTarget !== undefined}

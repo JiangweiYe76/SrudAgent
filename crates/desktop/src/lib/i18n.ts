@@ -19,6 +19,9 @@ const en = {
   'sidebar.deleteBusy': 'Stop the running turn before deleting this session.',
   'sidebar.streaming': 'Still replying…',
   'sidebar.unread': 'Unread reply',
+  'sidebar.created': 'Created {time}',
+  'sidebar.updated': 'Updated {time}',
+  'sidebar.newSessionHere': 'New session here',
 
   'skills.open': 'Skills',
   'skills.title': 'Skills',
@@ -52,13 +55,15 @@ const en = {
   'session.renameFailed': 'Could not rename the session.',
   'session.steerFailed': 'Could not send that message.',
 
-  'time.justNow': 'just now',
-  'time.minutesAgo': '{n} min ago',
-  'time.hoursAgo': '{n} h ago',
-  'time.daysAgo': '{n} d ago',
-
   'app.newSession': 'New session',
   'app.retry': 'Retry',
+
+  'workspace.default': 'Default workspace',
+  'workspace.defaultHint':
+    'No folder chosen: the agent gives this session a workspace of its own.',
+  'workspace.choose': 'Choose folder…',
+  'workspace.useDefault': 'Use default workspace',
+  'workspace.pickFailed': 'Could not choose a folder.',
 
   'sandbox.fullAccess': 'Full access',
   'sandbox.workspaceWrite': 'Workspace write',

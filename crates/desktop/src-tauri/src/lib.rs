@@ -540,6 +540,9 @@ pub fn run() {
         // `tel`, so the check is enforced here rather than only in the webview —
         // which matters because the text being rendered is model output.
         .plugin(tauri_plugin_opener::init())
+        // The workspace selector opens the platform's own directory picker: a
+        // path a webview could only guess at, chosen by the user.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // One store shared by the panel commands and the agent: an edit
             // lands in the same lock the next session resolves against, so a

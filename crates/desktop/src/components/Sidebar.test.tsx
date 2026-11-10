@@ -40,6 +40,7 @@ function render(
   deletingIds: string[] = [],
   unreadIds: string[] = [],
   onFork: (id: string) => void = () => {},
+  onNewInWorkspace: (cwd: string) => void = () => {},
 ): void {
   act(() => {
     root.render(
@@ -50,6 +51,7 @@ function render(
         unreadIds={unreadIds}
         onSelect={() => {}}
         onNew={() => {}}
+        onNewInWorkspace={onNewInWorkspace}
         onRename={() => {}}
         onFork={onFork}
         onDelete={() => {}}
@@ -61,7 +63,7 @@ function render(
 /** The session rows, in order. */
 function rows(): HTMLButtonElement[] {
   return Array.from(
-    container.querySelectorAll<HTMLButtonElement>('nav > button'),
+    container.querySelectorAll<HTMLButtonElement>('nav > div > button'),
   );
 }
 
@@ -182,5 +184,90 @@ describe('Sidebar fork action', () => {
     // Rename and delete are still there; only fork is held back.
     expect(menuItem('Rename session')).not.toBeNull();
     expect(menuItem('Delete session')).not.toBeNull();
+  });
+});
+
+describe('Sidebar workspaces', () => {
+  it('groups sessions under the directory they work in', () => {
+    mount();
+    render([
+      { ...session('s1'), cwd: '/work/alpha' },
+      session('s2'),
+      { ...session('s3'), cwd: '/work/alpha' },
+    ]);
+
+    const headings = Array.from(
+      container.querySelectorAll('nav > div > div'),
+    ).map((element) => element.textContent);
+    expect(headings).toEqual(['Default workspace', 'alpha']);
+
+    // Both sessions that work in the directory share its group.
+    expect(
+      container.querySelectorAll('nav > div:nth-child(2) > button'),
+    ).toHaveLength(2);
+  });
+
+  it('gathers every workspace the agent made under one default group', () => {
+    mount();
+    render([
+      {
+        ...session('s1'),
+        cwd: '/home/me/.srudagent/workspaces/ws-1',
+      },
+      {
+        ...session('s2'),
+        cwd: '/home/me/.srudagent/workspaces/ws-2',
+      },
+    ]);
+
+    const headings = Array.from(
+      container.querySelectorAll('nav > div > div'),
+    ).map((element) => element.textContent);
+    expect(headings).toEqual(['Default workspace']);
+    expect(container.querySelectorAll('nav > div > button')).toHaveLength(2);
+  });
+
+  it('orders groups by name so a new session cannot move one', () => {
+    mount();
+    const base = Date.UTC(2026, 0, 1);
+    const alpha = { ...session('a1'), cwd: '/work/alpha', createdAt: base };
+    const beta = {
+      ...session('b1'),
+      cwd: '/work/beta',
+      createdAt: base + 1000,
+    };
+    // A fresh draft sits first in the store, as it would after a click.
+    const fresh = {
+      ...session('a2'),
+      cwd: '/work/alpha',
+      createdAt: base + 2000,
+    };
+    render([fresh, beta, alpha]);
+
+    const headings = Array.from(
+      container.querySelectorAll('nav > div > div'),
+    ).map((element) => element.textContent);
+    expect(headings).toEqual(['alpha', 'beta']);
+  });
+
+  it('starts a session in the group directory from its hover action', () => {
+    mount();
+    let picked: string | null = null;
+    render(
+      [{ ...session('s1'), cwd: '/work/alpha' }],
+      [],
+      [],
+      () => {},
+      (cwd) => {
+        picked = cwd;
+      },
+    );
+
+    const add = container.querySelector<HTMLButtonElement>(
+      '[aria-label="New session here"]',
+    );
+    expect(add).not.toBeNull();
+    act(() => add!.click());
+    expect(picked).toBe('/work/alpha');
   });
 });

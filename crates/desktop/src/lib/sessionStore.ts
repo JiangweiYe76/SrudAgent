@@ -17,6 +17,7 @@ import type {
 import { DEFAULT_SANDBOX_MODE } from './types';
 import { t } from './i18n';
 import { loadDrafts, saveDrafts } from './drafts';
+import { lastWorkspace, rememberWorkspace } from './workspace';
 import {
   draftModelOptions,
   draftThinkingOptions,
@@ -659,7 +660,10 @@ interface SessionState {
   setAttachments: (id: string, attachments: Attachment[]) => void;
   init: () => Promise<void>;
   select: (id: string) => void;
-  addSession: () => void;
+  addSession: (cwd?: string) => void;
+  // Points a draft at a directory. A session that has already been created
+  // keeps the one it was created with: ACP fixes `cwd` at setup.
+  setWorkspace: (id: string, path: string) => void;
   // `sessionId` names the conversation to run in; the visible box leaves it
   // out and the active session is used. Images are sent with the text and
   // cannot be queued: a turn already running takes text only.
@@ -946,6 +950,13 @@ export function isBusy(session: Session | undefined): boolean {
   return session.turns[session.turns.length - 1].endReason === undefined;
 }
 
+// Whether a session's directory can still be changed. Only a draft with nothing
+// said in it can move: ACP fixes `cwd` when the agent creates the session, and
+// a recorded turn means the agent has already been asked to work there.
+export function canChooseWorkspace(session: Session | undefined): boolean {
+  return !!session && !session.backendId && session.turns.length === 0;
+}
+
 // The key a session's draft is filed under: the backend id once the session
 // has one, its local id until then.
 function draftKeyOf(sessions: Session[], id: string): string {
@@ -974,15 +985,20 @@ function withoutDraft(
   return next;
 }
 
-// A session starts as a local draft: no backend session and no workspace
-// directory until the first message materializes it. The agent derives a title
-// from the first message and announces it over `session/update`.
-function freshSession(): Session {
+// A session starts as a local draft: no backend session, and only the directory
+// the user pointed it at, if any, until the first message materializes it. The
+// agent derives a title from the first message and announces it over
+// `session/update`.
+//
+// `cwd` is the directory the user chose, or empty for the workspace the agent
+// gives the session. The agent's own directory is not known until the session
+// exists, so a draft makes do with the choice it was handed.
+function freshSession(cwd = ''): Session {
   const now = Date.now();
   return {
     id: uid('s'),
     backendId: null,
-    cwd: '',
+    cwd,
     loaded: true,
     title: null,
     model: null,
@@ -1127,7 +1143,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         // Nothing to go back to, so a draft to type into: with no session at all
         // there is nowhere to put what the user is about to say.
-        const draft = freshSession();
+        const draft = freshSession(lastWorkspace());
         set({ sessions: [draft], activeId: draft.id, initError: null });
       } catch (err) {
         set({ initError: String(err) });
@@ -1170,16 +1186,40 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     startLoad(id, false);
   },
 
-  addSession: () => {
+  addSession: (cwd) => {
     // The session on screen already reads as "Start a new chat", so another
     // draft would only stack an identical empty row in the sidebar. `loaded`
     // guards the other way: a listed conversation not yet on screen has no
     // turns simply because it has not arrived, and that is not an empty chat.
     const state = get();
     const active = state.sessions.find((s) => s.id === state.activeId);
-    if (active && active.loaded && active.turns.length === 0) return;
-    const draft = freshSession();
+    // A new chat starts in the directory the session on screen works in, so a
+    // conversation about one project does not silently drift to another. With
+    // nothing on screen, the last choice made stands in. A directory handed in
+    // from the sidebar wins over both.
+    const target = cwd ?? (active ? active.cwd : lastWorkspace());
+    if (
+      active &&
+      active.loaded &&
+      active.turns.length === 0 &&
+      active.cwd === target
+    )
+      return;
+    const draft = freshSession(target);
     set((s) => ({ sessions: [draft, ...s.sessions], activeId: draft.id }));
+  },
+
+  setWorkspace: (id, path) => {
+    const session = get().sessions.find((s) => s.id === id);
+    // Once the agent has created the session its directory is part of it, and a
+    // turn already recorded means the agent has been asked to work there.
+    if (!session || session.backendId || session.turns.length > 0) return;
+    set((s) => ({
+      sessions: s.sessions.map((sess) =>
+        sess.id === id ? { ...sess, cwd: path } : sess,
+      ),
+    }));
+    rememberWorkspace(path);
   },
 
   sendTurn: (userInput, target, images) => {
@@ -1232,10 +1272,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         get().sessions.find((s) => s.id === sessionId)?.backendId ?? null;
       if (!backendId) {
         try {
-          // No working directory chosen yet: the app has no directory picker,
-          // so the session is created with an empty one and the agent gives it
-          // a workspace of its own under the configuration directory.
-          const created = await newSession('');
+          // The directory the user chose, or empty for one of the agent's own:
+          // in the latter case the agent gives the session a workspace under its
+          // configuration directory.
+          const created = await newSession(session.cwd);
           // A draft's model and thinking choices take effect on the session it
           // becomes. A switch needs a session id, and this is the first moment
           // there is one: answering the first prompt on the defaults instead
@@ -1320,6 +1360,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                   ? {
                       ...sess,
                       backendId: created.sessionId,
+                      // The agent may have made the directory itself; what it
+                      // settled on is what the sidebar and header report.
+                      cwd: created.cwd || sess.cwd,
                       model: options.model,
                       thinking: options.thinking,
                       sandboxMode,
@@ -1640,7 +1683,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const created: Session = info
           ? listedSession(info, Date.now())
           : // The list did not name it yet; its history is still worth opening.
-            { ...freshSession(), backendId, loaded: false };
+            { ...freshSession(session.cwd), backendId, loaded: false };
         set((s) => {
           // Beside the source rather than at the top: the fork continues that
           // conversation rather than starting one of its own.

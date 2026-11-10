@@ -6,6 +6,7 @@ import { MessageList, type MessageListHandle } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 import { ModelSelect } from './components/ModelSelect';
 import { ThinkingSelect } from './components/ThinkingSelect';
+import { WorkspaceSelect } from './components/WorkspaceSelect';
 import { FullAccessModal } from './components/FullAccessModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AppErrorBar } from './components/AppErrorBar';
@@ -13,6 +14,7 @@ import { Button } from './components/ui/button';
 import {
   useSessionStore,
   attachmentsFor,
+  canChooseWorkspace,
   displayTitle,
   draftFor,
   isBusy,
@@ -52,6 +54,7 @@ function App() {
   const renameSession = useSessionStore((s) => s.renameSession);
   const forkSession = useSessionStore((s) => s.forkSession);
   const deleteSession = useSessionStore((s) => s.deleteSession);
+  const setWorkspace = useSessionStore((s) => s.setWorkspace);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
   const [hiddenInitError, setHiddenInitError] = useState<string | null>(null);
@@ -214,7 +217,8 @@ function App() {
         deletingIds={deletingIds}
         unreadIds={unreadIds}
         onSelect={select}
-        onNew={addSession}
+        onNew={() => addSession()}
+        onNewInWorkspace={addSession}
         onRename={renameSession}
         onFork={forkSession}
         onDelete={deleteSession}
@@ -240,6 +244,16 @@ function App() {
               disabled={reopening}
               onSelect={setThinking}
             />
+            {/* The directory this session works in. A draft can still change
+                it; once the agent creates the session its `cwd` is fixed. */}
+            {active && (
+              <WorkspaceSelect
+                cwd={active.cwd}
+                editable={canChooseWorkspace(active)}
+                disabled={reopening}
+                onChange={(path) => setWorkspace(active.id, path)}
+              />
+            )}
             <Button
               variant="ghost"
               size="icon"

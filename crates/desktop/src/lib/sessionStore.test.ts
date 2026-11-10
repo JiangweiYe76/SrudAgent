@@ -108,6 +108,8 @@ async function boot(
     // The `modes` the agent hangs on each reply.
     newModes?: unknown;
     loadModes?: unknown;
+    // The directory the agent reports on `session/new`, under `_meta.srud.cwd`.
+    newCwd?: string;
   } = {},
 ) {
   vi.resetModules();
@@ -151,6 +153,9 @@ async function boot(
             ...(options.newModes === undefined
               ? {}
               : { modes: options.newModes }),
+            ...(options.newCwd === undefined
+              ? {}
+              : { _meta: { srud: { cwd: options.newCwd } } }),
           });
         case 'session/prompt':
           return prompt.promise.then((r) => reply(payload.id, r));
@@ -268,6 +273,8 @@ beforeEach(() => {
   mocks.notifyCb = null;
   mocks.toast.success.mockClear();
   mocks.toast.error.mockClear();
+  // A remembered directory would otherwise carry over from the previous test.
+  localStorage.clear();
 });
 
 describe('sessionStore live path', () => {
@@ -312,6 +319,56 @@ describe('sessionStore live path', () => {
     expect(useSessionStore.getState().sessions).toHaveLength(2);
   });
 
+  it('opens a new chat in the directory the session on screen works in', async () => {
+    const { useSessionStore, active, waitForBackend } = await boot();
+    useSessionStore.getState().setWorkspace(active().id, '/work/project');
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useSessionStore.getState().addSession();
+    expect(useSessionStore.getState().sessions[0].cwd).toBe('/work/project');
+  });
+
+  it('opens a new chat in a workspace handed in from the sidebar', async () => {
+    const { useSessionStore, active } = await boot();
+    useSessionStore.getState().setWorkspace(active().id, '/work/project');
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
+
+    // The empty draft on screen is in another directory, so this opens a row.
+    useSessionStore.getState().addSession('/work/other');
+    expect(useSessionStore.getState().sessions).toHaveLength(2);
+    expect(useSessionStore.getState().sessions[0].cwd).toBe('/work/other');
+  });
+
+  it('passes the chosen directory to session/new', async () => {
+    const { useSessionStore, active, requested, waitForBackend } = await boot();
+    useSessionStore.getState().setWorkspace(active().id, '/work/project');
+    expect(active().cwd).toBe('/work/project');
+
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const params = requested.find((r) => r.method === 'session/new')!.params;
+    expect(params).toMatchObject({ cwd: '/work/project' });
+  });
+
+  it('leaves the directory empty when none was chosen', async () => {
+    const { useSessionStore, requested, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const params = requested.find((r) => r.method === 'session/new')!.params;
+    expect(params).toMatchObject({ cwd: '' });
+  });
+
+  it('keeps the directory of a session that has been spoken in', async () => {
+    const { useSessionStore, active, waitForBackend } = await boot();
+    const id = active().id;
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useSessionStore.getState().setWorkspace(id, '/elsewhere');
+    expect(active().cwd).toBe('');
+  });
+
   it('the first message materializes the backend before prompting', async () => {
     const { useSessionStore, active, calls, waitForBackend } = await boot();
     useSessionStore.getState().sendTurn('hi');
@@ -324,6 +381,16 @@ describe('sessionStore live path', () => {
     expect(calls.indexOf('session/new')).toBeLessThan(
       calls.indexOf('session/prompt'),
     );
+  });
+
+  it('takes the directory the agent made for the session', async () => {
+    const { useSessionStore, active, waitForBackend } = await boot({
+      newCwd: '/home/me/.srudagent/workspaces/S1',
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    expect(active().cwd).toBe('/home/me/.srudagent/workspaces/S1');
   });
 
   it('a turn that ends off screen marks the session unread until it is opened', async () => {

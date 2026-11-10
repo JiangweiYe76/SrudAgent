@@ -13,6 +13,7 @@ use srud_protocol::acp::{
     NewSessionRequest, NewSessionResponse, SessionId,
 };
 use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST};
+use srud_protocol::srud::meta::SrudMeta;
 use srud_protocol::srud::methods::{
     ForkSessionRequest, ForkSessionResponse, SetSessionTitleRequest, SetSessionTitleResponse,
 };
@@ -58,6 +59,20 @@ impl Agent {
         }
         if let Some(modes) = self.mode_state(&session_id) {
             response = response.modes(modes);
+        }
+        // The client named a directory or the agent made one for it; which of
+        // the two happened is only known here, so the path travels back with the
+        // new session rather than being guessed at on the client side.
+        if let Some(cwd) = self
+            .sessions
+            .get(&session_id)
+            .map(|session| session.cwd().to_string_lossy().into_owned())
+        {
+            let srud = SrudMeta {
+                cwd: Some(cwd),
+                ..Default::default()
+            };
+            response = response.meta(srud.to_meta());
         }
         Ok(response)
     }
@@ -236,6 +251,24 @@ mod tests {
         assert!(
             std::path::Path::new(cwd).is_dir(),
             "the workspace exists: {cwd}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_new_reports_the_directory_it_settled_on() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let reply = result_of(
+            agent
+                .handle(request(SESSION_NEW, json!({ "cwd": "", "mcpServers": [] })))
+                .await,
+        );
+        let cwd = reply["_meta"]["srud"]["cwd"]
+            .as_str()
+            .expect("the agent reports the directory it settled on");
+        assert!(
+            cwd.ends_with(reply["sessionId"].as_str().expect("an id")),
+            "the workspace is named by the session id: {cwd}"
         );
     }
 
