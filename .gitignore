@@ -15,10 +15,6 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Tauri
-crates/desktop/src-tauri/gen/
-crates/desktop/src-tauri/target/
-
 # Environment & secrets
 .env
 .env.*
