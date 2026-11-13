@@ -239,15 +239,232 @@ function ThoughtBlock({
   );
 }
 
+interface TurnViewProps {
+  turn: Turn;
+  // Only the last finished turn can be asked again.
+  regenerable: boolean;
+  onRegenerate?: (turn: Turn) => void;
+  // Opening a block is a reading gesture, so following stops while it grows.
+  onUserToggle: () => void;
+  onPreview: (image: Attachment) => void;
+}
+
+// One turn of the transcript. The store replaces only the turn an update names,
+// so every other turn keeps its object and memo skips it as new tokens arrive.
+const TurnView = memo(function TurnView({
+  turn,
+  regenerable,
+  onRegenerate,
+  onUserToggle,
+  onPreview,
+}: TurnViewProps) {
+  const lastText = turn.steps[turn.steps.length - 1]?.assistantText ?? '';
+  // Whether there is anything to copy or time-stamp. A turn can carry
+  // only the question, or nothing at all — both are what a re-answer
+  // leaves behind in the log — and neither has an answer of its own to
+  // put a meta row under.
+  const hasOutput = lastText !== '' || turn.steps.length > 0;
+  const retry =
+    regenerable && onRegenerate ? () => onRegenerate(turn) : undefined;
+
+  // Off-screen turns skip layout and paint; the remembered size stops
+  // the scrollbar from jumping while they are placeholders.
+  return (
+    <div className="flex flex-col gap-3 [content-visibility:auto] [contain-intrinsic-size:auto_600px]">
+      {/* Each user message right-aligns inside the full column width:
+            the block stays stretched, so the bubble's `max-w-[80%]`
+            resolves against the column instead of against a
+            shrink-to-fit parent — which would pin the bubble to 80% of
+            its own meta row and wrap short messages. */}
+      <div className="flex flex-col items-end gap-2">
+        <div className="group flex w-full flex-col items-end gap-1">
+          {turn.images && turn.images.length > 0 && (
+            <div className="flex max-w-[80%] flex-wrap justify-end gap-2">
+              {turn.images.map((image) => (
+                <button
+                  key={image.id}
+                  type="button"
+                  onClick={() => onPreview(image)}
+                  title={t('chat.image.preview')}
+                  aria-label={t('chat.image.preview')}
+                  className="h-24 w-24 cursor-zoom-in overflow-hidden rounded-lg border border-border"
+                >
+                  <img
+                    src={`data:${image.mime};base64,${image.data}`}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+          {/* The bubble and its hover meta belong together: a turn
+                that carries no question of its own — the one a re-answer
+                left the answer on — has nothing for either to show. */}
+          {turn.userInput && (
+            <>
+              <MessageContextMenu text={turn.userInput}>
+                <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
+                  {turn.userInput}
+                </div>
+              </MessageContextMenu>
+              <MetaRow
+                text={turn.userInput}
+                ts={turn.createdAt}
+                className="opacity-0 transition-opacity group-hover:opacity-100"
+              />
+            </>
+          )}
+        </div>
+        {/* A steered message is known per turn, not per step: the store
+              does not record which step was running when it arrived, so
+              the group is drawn after the turn's own input and before
+              its steps, and its meta carries the turn's start time. */}
+        {(turn.steeredInputs ?? []).map((text, index) => (
+          <div
+            key={index}
+            className="group flex w-full flex-col items-end gap-1"
+          >
+            <MessageContextMenu text={text}>
+              <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
+                {text}
+              </div>
+            </MessageContextMenu>
+            <MetaRow
+              text={text}
+              ts={turn.createdAt}
+              className="opacity-0 transition-opacity group-hover:opacity-100"
+            />
+          </div>
+        ))}
+      </div>
+      {turn.steps.map((step) => (
+        <div key={step.id} className="flex flex-col gap-2">
+          {step.thought && (
+            <ThoughtBlock
+              thought={step.thought}
+              live={isThinking(turn, step)}
+              onUserToggle={onUserToggle}
+            />
+          )}
+          {step.assistantText && (
+            <MessageContextMenu text={step.assistantText}>
+              <div>
+                <Markdown streaming={turn.endReason === undefined}>
+                  {step.assistantText}
+                </Markdown>
+              </div>
+            </MessageContextMenu>
+          )}
+          {step.toolCalls.map((tc) => (
+            /* A call that reports file changes opens on them: the diff
+                 is what the call did, and a reader should not have to
+                 dig for it. */
+            <Collapsible
+              key={tc.id}
+              defaultOpen={(tc.diffs?.length ?? 0) > 0}
+              onOpenChange={onUserToggle}
+            >
+              <div className="rounded-lg border border-border bg-muted text-[12.5px]">
+                <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
+                  <Wrench className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="font-mono shrink-0 text-foreground">
+                    {tc.title ?? tc.name}
+                  </span>
+                  {/* The same mark the thinking header uses, and in the same
+                        place: a spacer, then the dots against the chevron.
+                        A call whose arguments are a whole file is most of
+                        the wait, and there is nothing to show for it until
+                        they land. */}
+                  {tc.pending ? (
+                    <>
+                      <span className="flex-1" />
+                      <ThinkingDots />
+                    </>
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                      {tc.args}
+                    </span>
+                  )}
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
+                </CollapsibleTrigger>
+                {/* Both sides, because the collapsed row shows the arguments and
+                      nothing else: a reader who opens a call to see what
+                      came back finds only what went in. The two payloads
+                      are both JSON and look alike, so each is labelled. */}
+                {/* What changed first, then the raw payloads of how. */}
+                <CollapsibleContent className="flex max-h-[min(28rem,50dvh)] flex-col gap-3 overflow-y-auto overscroll-contain border-t border-border px-3 py-2">
+                  {tc.diffs?.map((diff, i) => (
+                    <DiffBlock key={`${i}-${diff.path}`} diff={diff} />
+                  ))}
+                  <JsonBlock label={t('toolCall.input')} value={tc.args} />
+                  <JsonBlock
+                    label={t('toolCall.output')}
+                    value={tc.result ?? ''}
+                    fallback={t('toolCall.noResult')}
+                    isError={tc.isError}
+                  />
+                </CollapsibleContent>
+              </div>
+            </Collapsible>
+          ))}
+        </div>
+      ))}
+      {/* The wait for the model's first token, marked with the same dots the
+            thinking header uses rather than a second spinner. Once anything has
+            arrived the content itself is the progress indicator. */}
+      {awaitingFirstToken(turn) && (
+        <div
+          className="flex items-center py-1"
+          role="status"
+          aria-label={t('turn.awaitingReply')}
+        >
+          <ThinkingDots />
+        </div>
+      )}
+      {/* The failure belongs to this turn, so it sits where the answer
+            would have been rather than above the whole conversation. */}
+      {turn.endReason === 'error' && (
+        <TurnErrorNotice error={turn.error} onRetry={retry} />
+      )}
+      {/* A turn with nothing to show still gets its row when it can be
+            asked again: an answer that came back empty is the one most
+            worth retrying, and hiding the control would leave no way to.
+            A failed turn is the exception: its notice owns retry and
+            details, so a second row would only repeat them. */}
+      {turn.endReason !== undefined &&
+        turn.endReason !== 'error' &&
+        (hasOutput || regenerable) && (
+          <div className="flex items-center justify-between">
+            <MetaRow
+              text={lastText}
+              ts={turn.endedAt ?? turn.createdAt}
+              onRegenerate={retry}
+            />
+            {turn.endReason !== 'completed' && (
+              <div
+                className={`text-xs ${
+                  turn.endReason === 'blocked'
+                    ? 'text-warning'
+                    : 'text-muted-foreground'
+                }`}
+              >
+                {t('turn.ended', { reason: turn.endReason })}
+              </div>
+            )}
+          </div>
+        )}
+    </div>
+  );
+});
+
 // How near the bottom still counts as following. A reader a few pixels short of
 // the end has not scrolled away, and must not be treated as if they had.
 const STICK_SLOP = 32;
 
-// Memoised because `App` re-renders on every store write — a rename, another
-// session's streaming, a batched replay flush — and re-drawing the transcript
-// each time is what makes a long conversation expensive to keep on screen.
-// Nothing here is read from outside its props, so the same `turns` reference
-// means there is nothing new to draw.
+// Memoised so a write that leaves this session's turns alone does not redraw
+// the transcript. Nothing here is read from outside its props, so the same
+// `turns` reference means there is nothing new to draw.
 export const MessageList = memo(function MessageList({
   turns,
   reopening,
@@ -272,6 +489,10 @@ export const MessageList = memo(function MessageList({
       onFollowingChange?.(next);
     },
     [onFollowingChange],
+  );
+  const onUserToggle = useCallback(
+    () => reportFollowing(false),
+    [reportFollowing],
   );
 
   // Whether the reader is at the bottom, tracked from their scrolling rather than
@@ -386,222 +607,20 @@ export const MessageList = memo(function MessageList({
         className="mx-auto flex w-full max-w-[900px] flex-col gap-4 p-[20px_32px_0]"
         style={{ paddingBottom: bottomInset }}
       >
-        {turns.map((turn, index) => {
-          const lastText =
-            turn.steps[turn.steps.length - 1]?.assistantText ?? '';
-          // Whether there is anything to copy or time-stamp. A turn can carry
-          // only the question, or nothing at all — both are what a re-answer
-          // leaves behind in the log — and neither has an answer of its own to
-          // put a meta row under.
-          const hasOutput = lastText !== '' || turn.steps.length > 0;
-          // A turn can be asked again once it has ended with nothing running
-          // after it. That covers a failed one too: the failure is the answer
-          // to replace, not a reason the question is gone.
-          const regenerable =
-            onRegenerate !== undefined &&
-            turn.endReason !== undefined &&
-            index === turns.length - 1;
-          // Off-screen turns skip layout and paint; the remembered size stops
-          // the scrollbar from jumping while they are placeholders.
-          return (
-            <div
-              key={turn.id}
-              className="flex flex-col gap-3 [content-visibility:auto] [contain-intrinsic-size:auto_600px]"
-            >
-              {/* Each user message right-aligns inside the full column width:
-                  the block stays stretched, so the bubble's `max-w-[80%]`
-                  resolves against the column instead of against a
-                  shrink-to-fit parent — which would pin the bubble to 80% of
-                  its own meta row and wrap short messages. */}
-              <div className="flex flex-col items-end gap-2">
-                <div className="group flex w-full flex-col items-end gap-1">
-                  {turn.images && turn.images.length > 0 && (
-                    <div className="flex max-w-[80%] flex-wrap justify-end gap-2">
-                      {turn.images.map((image) => (
-                        <button
-                          key={image.id}
-                          type="button"
-                          onClick={() => setPreview(image)}
-                          title={t('chat.image.preview')}
-                          aria-label={t('chat.image.preview')}
-                          className="h-24 w-24 cursor-zoom-in overflow-hidden rounded-lg border border-border"
-                        >
-                          <img
-                            src={`data:${image.mime};base64,${image.data}`}
-                            alt=""
-                            className="h-full w-full object-cover"
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {/* The bubble and its hover meta belong together: a turn
-                      that carries no question of its own — the one a re-answer
-                      left the answer on — has nothing for either to show. */}
-                  {turn.userInput && (
-                    <>
-                      <MessageContextMenu text={turn.userInput}>
-                        <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
-                          {turn.userInput}
-                        </div>
-                      </MessageContextMenu>
-                      <MetaRow
-                        text={turn.userInput}
-                        ts={turn.createdAt}
-                        className="opacity-0 transition-opacity group-hover:opacity-100"
-                      />
-                    </>
-                  )}
-                </div>
-                {/* A steered message is known per turn, not per step: the store
-                    does not record which step was running when it arrived, so
-                    the group is drawn after the turn's own input and before
-                    its steps, and its meta carries the turn's start time. */}
-                {(turn.steeredInputs ?? []).map((text, index) => (
-                  <div
-                    key={index}
-                    className="group flex w-full flex-col items-end gap-1"
-                  >
-                    <MessageContextMenu text={text}>
-                      <div className="max-w-[80%] rounded-xl bg-user-bubble px-3.5 py-2.5 text-sm leading-normal break-words whitespace-pre-wrap">
-                        {text}
-                      </div>
-                    </MessageContextMenu>
-                    <MetaRow
-                      text={text}
-                      ts={turn.createdAt}
-                      className="opacity-0 transition-opacity group-hover:opacity-100"
-                    />
-                  </div>
-                ))}
-              </div>
-              {turn.steps.map((step) => (
-                <div key={step.id} className="flex flex-col gap-2">
-                  {step.thought && (
-                    <ThoughtBlock
-                      thought={step.thought}
-                      live={isThinking(turn, step)}
-                      onUserToggle={() => reportFollowing(false)}
-                    />
-                  )}
-                  {step.assistantText && (
-                    <MessageContextMenu text={step.assistantText}>
-                      <div>
-                        <Markdown streaming={turn.endReason === undefined}>
-                          {step.assistantText}
-                        </Markdown>
-                      </div>
-                    </MessageContextMenu>
-                  )}
-                  {step.toolCalls.map((tc) => (
-                    /* A call that reports file changes opens on them: the diff
-                       is what the call did, and a reader should not have to
-                       dig for it. */
-                    <Collapsible
-                      key={tc.id}
-                      defaultOpen={(tc.diffs?.length ?? 0) > 0}
-                      onOpenChange={() => reportFollowing(false)}
-                    >
-                      <div className="rounded-lg border border-border bg-muted text-[12.5px]">
-                        <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
-                          <Wrench className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="font-mono shrink-0 text-foreground">
-                            {tc.title ?? tc.name}
-                          </span>
-                          {/* The same mark the thinking header uses, and in the same
-                              place: a spacer, then the dots against the chevron.
-                              A call whose arguments are a whole file is most of
-                              the wait, and there is nothing to show for it until
-                              they land. */}
-                          {tc.pending ? (
-                            <>
-                              <span className="flex-1" />
-                              <ThinkingDots />
-                            </>
-                          ) : (
-                            <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                              {tc.args}
-                            </span>
-                          )}
-                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
-                        </CollapsibleTrigger>
-                        {/* Both sides, because the collapsed row shows the arguments and
-                            nothing else: a reader who opens a call to see what
-                            came back finds only what went in. The two payloads
-                            are both JSON and look alike, so each is labelled. */}
-                        {/* What changed first, then the raw payloads of how. */}
-                        <CollapsibleContent className="flex max-h-[min(28rem,50dvh)] flex-col gap-3 overflow-y-auto overscroll-contain border-t border-border px-3 py-2">
-                          {tc.diffs?.map((diff, i) => (
-                            <DiffBlock key={`${i}-${diff.path}`} diff={diff} />
-                          ))}
-                          <JsonBlock
-                            label={t('toolCall.input')}
-                            value={tc.args}
-                          />
-                          <JsonBlock
-                            label={t('toolCall.output')}
-                            value={tc.result ?? ''}
-                            fallback={t('toolCall.noResult')}
-                            isError={tc.isError}
-                          />
-                        </CollapsibleContent>
-                      </div>
-                    </Collapsible>
-                  ))}
-                </div>
-              ))}
-              {/* The wait for the model's first token, marked with the same dots the
-                  thinking header uses rather than a second spinner. Once anything has
-                  arrived the content itself is the progress indicator. */}
-              {awaitingFirstToken(turn) && (
-                <div
-                  className="flex items-center py-1"
-                  role="status"
-                  aria-label={t('turn.awaitingReply')}
-                >
-                  <ThinkingDots />
-                </div>
-              )}
-              {/* The failure belongs to this turn, so it sits where the answer
-                  would have been rather than above the whole conversation. */}
-              {turn.endReason === 'error' && (
-                <TurnErrorNotice
-                  error={turn.error}
-                  onRetry={regenerable ? () => onRegenerate(turn) : undefined}
-                />
-              )}
-              {/* A turn with nothing to show still gets its row when it can be
-                  asked again: an answer that came back empty is the one most
-                  worth retrying, and hiding the control would leave no way to.
-                  A failed turn is the exception: its notice owns retry and
-                  details, so a second row would only repeat them. */}
-              {turn.endReason !== undefined &&
-                turn.endReason !== 'error' &&
-                (hasOutput || regenerable) && (
-                  <div className="flex items-center justify-between">
-                    <MetaRow
-                      text={lastText}
-                      ts={turn.endedAt ?? turn.createdAt}
-                      onRegenerate={
-                        regenerable ? () => onRegenerate(turn) : undefined
-                      }
-                    />
-                    {turn.endReason !== 'completed' && (
-                      <div
-                        className={`text-xs ${
-                          turn.endReason === 'blocked'
-                            ? 'text-warning'
-                            : 'text-muted-foreground'
-                        }`}
-                      >
-                        {t('turn.ended', { reason: turn.endReason })}
-                      </div>
-                    )}
-                  </div>
-                )}
-            </div>
-          );
-        })}
+        {turns.map((turn, index) => (
+          <TurnView
+            key={turn.id}
+            turn={turn}
+            regenerable={
+              onRegenerate !== undefined &&
+              turn.endReason !== undefined &&
+              index === turns.length - 1
+            }
+            onRegenerate={onRegenerate}
+            onUserToggle={onUserToggle}
+            onPreview={setPreview}
+          />
+        ))}
       </div>
       <Modal
         open={preview !== null}

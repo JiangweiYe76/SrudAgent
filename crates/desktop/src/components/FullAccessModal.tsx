@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { t } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
 import { Modal, ModalContent } from '@/components/ui/modal';
@@ -14,7 +15,7 @@ interface FullAccessModalProps {
  * The three points are what a person needs to decide: where the mode applies,
  * what it allows, and how to leave it.
  */
-export function FullAccessModal({
+export const FullAccessModal = memo(function FullAccessModal({
   open,
   onClose,
   onConfirm,
@@ -40,4 +41,4 @@ export function FullAccessModal({
       </ModalContent>
     </Modal>
   );
-}
+});
