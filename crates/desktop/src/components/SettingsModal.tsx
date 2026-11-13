@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import {
   Boxes,
   Info,
@@ -53,7 +53,10 @@ const TITLES: Record<Section, Parameters<typeof t>[0]> = {
   about: 'settings.about',
 };
 
-export function SettingsModal({ open, onClose }: SettingsModalProps) {
+export const SettingsModal = memo(function SettingsModal({
+  open,
+  onClose,
+}: SettingsModalProps) {
   const mode = useThemeStore((s) => s.mode);
   const setMode = useThemeStore((s) => s.setMode);
   const level = useZoomStore((s) => s.level);
@@ -170,4 +173,4 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       </ModalContent>
     </Modal>
   );
-}
+});

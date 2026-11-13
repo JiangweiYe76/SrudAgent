@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent } from 'react';
+import { memo, useEffect, useRef, useState, type ClipboardEvent } from 'react';
 
 import {
   ArrowDown,
@@ -72,7 +72,7 @@ interface DraftSelection {
   text: string;
 }
 
-export function ChatInput({
+export const ChatInput = memo(function ChatInput({
   value,
   onValueChange,
   attachments,
@@ -557,7 +557,7 @@ export function ChatInput({
       )}
     </div>
   );
-}
+});
 
 function imageSrc(image: Attachment): string {
   return `data:${image.mime};base64,${image.data}`;

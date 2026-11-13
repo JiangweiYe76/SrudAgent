@@ -253,7 +253,7 @@ const SessionRow = memo(function SessionRow({
   );
 });
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   sessions,
   activeId,
   deletingIds,
@@ -381,4 +381,4 @@ export function Sidebar({
       />
     </aside>
   );
-}
+});

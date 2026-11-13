@@ -30,17 +30,16 @@ import { actionForEvent, useShortcutStore } from './lib/shortcuts';
 import { suppressSelectAll, suppressWebviewContextMenu } from './lib/webview';
 import { preserveMarkdownWhenCopying } from './lib/markdownSource';
 import type { Provider } from './lib/acp';
-import type { UsageState } from './lib/types';
+import type { Attachment, UsageState } from './lib/types';
 import { DEFAULT_SANDBOX_MODE } from './lib/types';
 import { t } from './lib/i18n';
 import './styles.css';
 
 function App() {
-  const sessions = useSessionStore((s) => s.sessions);
   const activeId = useSessionStore((s) => s.activeId);
-  const deletingIds = useSessionStore((s) => s.deletingIds);
-  const unreadIds = useSessionStore((s) => s.unreadIds);
-  const select = useSessionStore((s) => s.select);
+  const active = useSessionStore((s) =>
+    s.sessions.find((session) => session.id === s.activeId),
+  );
   const addSession = useSessionStore((s) => s.addSession);
   const sendTurn = useSessionStore((s) => s.sendTurn);
   const queueFollowup = useSessionStore((s) => s.queueFollowup);
@@ -51,9 +50,6 @@ function App() {
   const setModel = useSessionStore((s) => s.setModel);
   const setThinking = useSessionStore((s) => s.setThinking);
   const setSandboxMode = useSessionStore((s) => s.setSandboxMode);
-  const renameSession = useSessionStore((s) => s.renameSession);
-  const forkSession = useSessionStore((s) => s.forkSession);
-  const deleteSession = useSessionStore((s) => s.deleteSession);
   const setWorkspace = useSessionStore((s) => s.setWorkspace);
   const init = useSessionStore((s) => s.init);
   const initError = useSessionStore((s) => s.initError);
@@ -141,8 +137,6 @@ function App() {
     void useProviderStore.getState().load();
   }, []);
 
-  const active = sessions.find((s) => s.id === activeId);
-
   // A draft has no agent session, so it has no selector of its own yet. The
   // provider catalog is what the agent would build one from, and showing it now
   // is how the user can see — and choose — the model the first message will run
@@ -181,48 +175,82 @@ function App() {
 
   // Full access removes the OS boundary, so entering it is confirmed first.
   // Switching back needs no confirmation.
-  const chooseSandboxMode = (mode: string) => {
-    if (mode === 'full-access' && sandboxMode.currentValue !== 'full-access') {
-      setFullAccessOpen(true);
-      return;
-    }
-    setSandboxMode(mode);
-  };
+  const chooseSandboxMode = useCallback(
+    (mode: string) => {
+      if (
+        mode === 'full-access' &&
+        sandboxMode.currentValue !== 'full-access'
+      ) {
+        setFullAccessOpen(true);
+        return;
+      }
+      setSandboxMode(mode);
+    },
+    [sandboxMode, setSandboxMode],
+  );
 
   // The ring shows context pressure from the moment the session names a model,
   // not only after the first report: the window comes from the catalog, and
   // occupancy reads as zero until the agent says otherwise. Once reports
   // arrive they speak for themselves, window included.
   const modelRef = active?.model?.currentValue || defaultModel || '';
-  const windowSize = contextWindowOf(providers, modelRef);
-  const usage: UsageState | undefined =
-    active?.usage ??
-    (windowSize
-      ? {
-          used: 0,
-          size: windowSize,
-          inputTokens: 0,
-          outputTokens: 0,
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
-          reasoningOutputTokens: 0,
-        }
-      : undefined);
+  const windowSize = useMemo(
+    () => contextWindowOf(providers, modelRef),
+    [providers, modelRef],
+  );
+  const usage = useMemo<UsageState | undefined>(
+    () =>
+      active?.usage ??
+      (windowSize
+        ? {
+            used: 0,
+            size: windowSize,
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            reasoningOutputTokens: 0,
+          }
+        : undefined),
+    [active?.usage, windowSize],
+  );
+
+  const onDraftChange = useCallback(
+    (text: string) => setDraft(activeId, text),
+    [setDraft, activeId],
+  );
+  const onAttachmentsChange = useCallback(
+    (images: Attachment[]) => setAttachments(activeId, images),
+    [setAttachments, activeId],
+  );
+  const onSend = useCallback(
+    (text: string, images: Attachment[]) => sendTurn(text, undefined, images),
+    [sendTurn],
+  );
+  const activeWorkspaceId = active?.id;
+  const onWorkspaceChange = useCallback(
+    (path: string) => {
+      if (activeWorkspaceId) setWorkspace(activeWorkspaceId, path);
+    },
+    [setWorkspace, activeWorkspaceId],
+  );
+  const onSettingsClose = useCallback(() => setSettingsOpen(false), []);
+  const onFullAccessClose = useCallback(() => setFullAccessOpen(false), []);
+  const onFullAccessConfirm = useCallback(() => {
+    setSandboxMode('full-access');
+    setFullAccessOpen(false);
+  }, [setSandboxMode]);
+  const onInitRetry = useCallback(() => {
+    setHiddenInitError(null);
+    void init();
+  }, [init]);
+  const onInitDismiss = useCallback(() => {
+    setHiddenInitError(initError);
+  }, [initError]);
 
   return (
     <div className="flex h-full">
-      <Sidebar
-        sessions={sessions}
-        activeId={activeId}
-        deletingIds={deletingIds}
-        unreadIds={unreadIds}
-        onSelect={select}
-        onNew={() => addSession()}
-        onNewInWorkspace={addSession}
-        onRename={renameSession}
-        onFork={forkSession}
-        onDelete={deleteSession}
-      />
+      <ConnectedSidebar />
       <main className="relative flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-5 text-sm font-medium">
           <span className="truncate">
@@ -251,7 +279,7 @@ function App() {
                 cwd={active.cwd}
                 editable={canChooseWorkspace(active)}
                 disabled={reopening}
-                onChange={(path) => setWorkspace(active.id, path)}
+                onChange={onWorkspaceChange}
               />
             )}
             <Button
@@ -270,11 +298,8 @@ function App() {
         {initError && hiddenInitError !== initError && (
           <AppErrorBar
             message={initError}
-            onRetry={() => {
-              setHiddenInitError(null);
-              void init();
-            }}
-            onDismiss={() => setHiddenInitError(initError)}
+            onRetry={onInitRetry}
+            onDismiss={onInitDismiss}
           />
         )}
         <MessageList
@@ -291,10 +316,10 @@ function App() {
             nothing until one is open. */}
         <ChatInput
           value={draft}
-          onValueChange={(text) => setDraft(activeId, text)}
+          onValueChange={onDraftChange}
           attachments={attachments}
-          onAttachmentsChange={(images) => setAttachments(activeId, images)}
-          onSend={(text, images) => sendTurn(text, undefined, images)}
+          onAttachmentsChange={onAttachmentsChange}
+          onSend={onSend}
           onQueue={queueFollowup}
           followups={active?.followups}
           onSteerFollowup={steerFollowup}
@@ -309,17 +334,11 @@ function App() {
           onScrollToBottom={scrollToBottom}
         />
       </main>
-      <SettingsModal
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-      />
+      <SettingsModal open={settingsOpen} onClose={onSettingsClose} />
       <FullAccessModal
         open={fullAccessOpen}
-        onClose={() => setFullAccessOpen(false)}
-        onConfirm={() => {
-          setSandboxMode('full-access');
-          setFullAccessOpen(false);
-        }}
+        onClose={onFullAccessClose}
+        onConfirm={onFullAccessConfirm}
       />
       <Toaster theme={theme} position="top-center" />
     </div>
@@ -339,6 +358,37 @@ function contextWindowOf(
   const provider = providers.find((p) => p.id === reference.slice(0, slash));
   return provider?.models.find((m) => m.id === reference.slice(slash + 1))
     ?.contextWindow;
+}
+
+// The list is the only component subscribed to the whole session list. Keeping
+// that subscription here leaves the conversation, the composer and the dialogs
+// out of writes to sessions that are not on screen.
+function ConnectedSidebar() {
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeId = useSessionStore((s) => s.activeId);
+  const deletingIds = useSessionStore((s) => s.deletingIds);
+  const unreadIds = useSessionStore((s) => s.unreadIds);
+  const select = useSessionStore((s) => s.select);
+  const addSession = useSessionStore((s) => s.addSession);
+  const renameSession = useSessionStore((s) => s.renameSession);
+  const forkSession = useSessionStore((s) => s.forkSession);
+  const deleteSession = useSessionStore((s) => s.deleteSession);
+  const onNew = useCallback(() => addSession(), [addSession]);
+
+  return (
+    <Sidebar
+      sessions={sessions}
+      activeId={activeId}
+      deletingIds={deletingIds}
+      unreadIds={unreadIds}
+      onSelect={select}
+      onNew={onNew}
+      onNewInWorkspace={addSession}
+      onRename={renameSession}
+      onFork={forkSession}
+      onDelete={deleteSession}
+    />
+  );
 }
 
 export default App;
