@@ -7,7 +7,9 @@ use crate::test_env::{self, Guard};
 use futures::{stream, StreamExt};
 use serde_json::json;
 use srud_core::client::{ModelEvent, ModelRequest, ModelStream};
-use srud_protocol::acp::methods::SRUD_SESSION_ROLLOUT_READ;
+use srud_protocol::acp::methods::{
+    INITIALIZE, SESSION_NEW, SESSION_PROMPT, SESSION_SET_CONFIG_OPTION, SRUD_SESSION_ROLLOUT_READ,
+};
 use srud_protocol::acp::AGENT_METHOD_NAMES;
 use srud_protocol::transport::tauri::RpcRequest;
 use tokio_util::sync::CancellationToken;

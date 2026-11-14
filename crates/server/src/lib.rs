@@ -41,7 +41,7 @@ pub mod providers;
 mod sessions;
 mod tools;
 
-pub use agent::{Agent, ModelProviders, RpcReply};
+pub use agent::{Agent, MethodFuture, MethodHandler, MethodTable, ModelProviders, RpcReply};
 pub use providers::{Model, ModelFactory, Provider, ProviderError, ProviderStore, Providers};
 pub use sessions::{CreateError, SessionManager};
 pub use tools::standard_tools;

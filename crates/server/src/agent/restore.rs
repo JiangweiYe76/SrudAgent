@@ -148,7 +148,7 @@ mod tests {
     use crate::test_env::{self, Guard};
     use serde_json::json;
     use srud_core::client::{ModelEvent, TokenUsage};
-    use srud_protocol::acp::methods::{SESSION_LOAD, SESSION_RESUME};
+    use srud_protocol::acp::methods::{SESSION_LOAD, SESSION_PROMPT, SESSION_RESUME};
     use srud_protocol::error::{INVALID_PARAMS, SESSION_NOT_FOUND};
 
     #[tokio::test]
