@@ -193,7 +193,6 @@ const en = {
   'providers.field.apiKey.new': 'Stored on this machine, readable only by you.',
   'providers.models.manage': 'Manage models',
   'providers.models.title': 'Models of {name}',
-  'providers.models.of': '{id}',
   'providers.model.add': 'Add model',
   'providers.model.empty':
     'Nothing yet. Without a model this provider cannot be used.',
