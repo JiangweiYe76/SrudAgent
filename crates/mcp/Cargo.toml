@@ -1,0 +1,27 @@
+[package]
+name = "srud-mcp"
+version.workspace = true
+edition.workspace = true
+description = "MCP client: connects stdio and Streamable HTTP servers and exposes the tools they declare."
+
+[dependencies]
+rmcp = { version = "3.10", default-features = false, features = [
+    "client",
+    "reqwest",
+    "transport-child-process",
+    "transport-streamable-http-client",
+    "transport-streamable-http-client-reqwest",
+] }
+http = "1"
+srud-core = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-util = { workspace = true }
+
+[lints]
+workspace = true

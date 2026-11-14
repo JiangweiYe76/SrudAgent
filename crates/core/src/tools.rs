@@ -314,6 +314,25 @@ impl ToolRegistry {
         self.tools.contains_key(name)
     }
 
+    /// Creates a registry holding these tools alongside the ones already here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DuplicateTool`] naming the first tool whose name is taken,
+    /// either here or by an earlier entry of `extra`.
+    pub fn with_tools<I>(&self, extra: I) -> Result<Self, DuplicateTool>
+    where
+        I: IntoIterator<Item = Arc<dyn Tool>>,
+    {
+        let mut merged = Self {
+            tools: self.tools.clone(),
+        };
+        for tool in extra {
+            merged.register(tool)?;
+        }
+        Ok(merged)
+    }
+
     /// Returns how many tools are registered.
     #[must_use]
     pub fn len(&self) -> usize {
