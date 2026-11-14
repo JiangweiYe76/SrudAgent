@@ -5,9 +5,11 @@ import {
   Loader2,
   MoreHorizontal,
   Pencil,
+  Plug,
   Plus,
   Sparkles,
   Trash2,
+  type LucideIcon,
 } from 'lucide-react';
 import type { Session } from '@/lib/types';
 import { t } from '@/lib/i18n';
@@ -16,6 +18,7 @@ import { isAgentWorkspace, workspaceName } from '@/lib/workspace';
 import { toast } from 'sonner';
 import { DeleteSessionModal } from '@/components/DeleteSessionModal';
 import { RenameSessionModal } from '@/components/RenameSessionModal';
+import { McpModal } from '@/components/McpModal';
 import { SkillsModal } from '@/components/SkillsModal';
 import {
   Tooltip,
@@ -253,6 +256,29 @@ const SessionRow = memo(function SessionRow({
   );
 });
 
+// One row in the strip above the conversations: a surface of the app that is a
+// dialog rather than a session.
+function RailButton({
+  Icon,
+  label,
+  onClick,
+}: {
+  Icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-item-hover hover:text-foreground"
+      onClick={onClick}
+      aria-haspopup="dialog"
+    >
+      <Icon className="h-4 w-4 shrink-0" />
+      {label}
+    </button>
+  );
+}
+
 export const Sidebar = memo(function Sidebar({
   sessions,
   activeId,
@@ -270,6 +296,7 @@ export const Sidebar = memo(function Sidebar({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
 
   // Read from `sessions` on every render, so a session closed while a dialog is
   // open resolves to undefined instead of acting on one that is gone.
@@ -304,15 +331,17 @@ export const Sidebar = memo(function Sidebar({
           <Plus className="h-4 w-4" />
         </Button>
       </div>
-      <div className="shrink-0 border-b border-border p-2">
-        <button
-          className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-item-hover hover:text-foreground"
+      <div className="flex shrink-0 flex-col gap-0.5 border-b border-border p-2">
+        <RailButton
+          Icon={Sparkles}
+          label={t('skills.open')}
           onClick={() => setSkillsOpen(true)}
-          aria-haspopup="dialog"
-        >
-          <Sparkles className="h-4 w-4 shrink-0" />
-          {t('skills.open')}
-        </button>
+        />
+        <RailButton
+          Icon={Plug}
+          label={t('mcp.open')}
+          onClick={() => setMcpOpen(true)}
+        />
       </div>
       <TooltipProvider delayDuration={400}>
         <nav className="flex flex-1 flex-col gap-2 overflow-y-auto p-2">
@@ -374,6 +403,7 @@ export const Sidebar = memo(function Sidebar({
           setDeletingId(null);
         }}
       />
+      <McpModal open={mcpOpen} onClose={() => setMcpOpen(false)} />
       <SkillsModal
         open={skillsOpen}
         cwd={skillsCwd}

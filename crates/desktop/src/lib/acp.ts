@@ -14,6 +14,12 @@ import type {
   TurnEndReason,
 } from './types';
 import { THINKING_LEVELS } from './types';
+import {
+  asSessionServers,
+  type McpCatalog,
+  type McpServerSpec,
+  type McpToolInfo,
+} from './mcpServers';
 
 export type Json = Record<string, unknown>;
 
@@ -127,8 +133,18 @@ export async function initialize(): Promise<Json> {
 // directory and requires the agent to use it:
 // https://agentclientprotocol.com/protocol/session-setup#working-directory
 // Sending the empty string is SrudAgent's way of saying otherwise.
-export async function newSession(cwd: string): Promise<NewSession> {
-  const result = await rpcRequest('session/new', { cwd, mcpServers: [] });
+export async function newSession(
+  cwd: string,
+  servers?: McpServerSpec[],
+): Promise<NewSession> {
+  // A session that names no server is one with the agent's own set; a list
+  // that is empty is one with none. The first is what a user opening a new
+  // conversation gets, the second is what a client that has chosen nothing
+  // sends.
+  const result = await rpcRequest('session/new', {
+    cwd,
+    mcpServers: asSessionServers(servers ?? (await listMcpServers())),
+  });
   const srud = (result._meta as { srud?: { cwd?: unknown } } | undefined)?.srud;
   return {
     sessionId: String(result.sessionId),
@@ -309,10 +325,12 @@ export async function loadSession(
   sessionId: string,
   cwd = '',
 ): Promise<LoadedSession> {
+  // The log records what was spawned but not how to spawn it again, so a
+  // load is given the same servers as a new session would be.
   const result = await rpcRequest('session/load', {
     sessionId,
     cwd,
-    mcpServers: [],
+    mcpServers: asSessionServers(await listMcpServers()),
   });
   return {
     ...parseSessionOptions(result.configOptions),
@@ -780,4 +798,53 @@ export async function setDefaultModel(model: string): Promise<ProviderCatalog> {
   return parseCatalog(
     await rpcRequest('_srud/unstable/provider/set_default', { model }),
   );
+}
+
+// The MCP servers this app's sessions run with.
+//
+// ACP carries the list per session, and the agent keeps it between sessions
+// in `mcp.json` under its configuration directory. The list is the client's
+// to hold: a session opened with no server is one with the agent's own set,
+// and a session opened with an empty list is one with none.
+
+async function rpcMcp<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<T> {
+  return (await rpcRequest(method, params)) as T;
+}
+
+/** The configured servers, in the order the file lists them. */
+export async function listMcpServers(): Promise<McpServerSpec[]> {
+  return (await rpcMcp<McpCatalog>('_srud/unstable/mcp/list')).servers;
+}
+
+/** Adds a server, or replaces the one with the same name. */
+export async function saveMcpServer(
+  server: McpServerSpec,
+): Promise<McpCatalog> {
+  return rpcMcp<McpCatalog>('_srud/unstable/mcp/set', { server });
+}
+
+/** Removes a server by name. */
+export async function deleteMcpServer(name: string): Promise<McpCatalog> {
+  return rpcMcp<McpCatalog>('_srud/unstable/mcp/delete', { name });
+}
+
+/** Adds or replaces several servers at once. */
+export async function importMcpServers(
+  servers: McpServerSpec[],
+): Promise<{ servers: McpServerSpec[]; added: string[]; replaced: string[] }> {
+  return rpcMcp('_srud/unstable/mcp/import', { servers });
+}
+
+/** The tools one server declares. The server is probed and closed at once. */
+export async function listMcpTools(
+  server: McpServerSpec,
+): Promise<McpToolInfo[]> {
+  return (
+    await rpcMcp<{ tools: McpToolInfo[] }>('_srud/unstable/mcp/tools', {
+      server,
+    })
+  ).tools;
 }

@@ -271,3 +271,21 @@ describe('Sidebar workspaces', () => {
     expect(picked).toBe('/work/alpha');
   });
 });
+
+describe('the strip above the conversations', () => {
+  it('opens the MCP servers dialog from its row', () => {
+    mount();
+    render([session('s1')]);
+
+    const entry = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((b) => b.textContent?.trim() === 'MCP servers');
+    expect(entry).not.toBeUndefined();
+
+    act(() => entry!.click());
+
+    // The dialog is its own layer on the page, and the panel inside it is the
+    // surface that configures a server.
+    expect(document.body.textContent).toContain('Add server');
+  });
+});
