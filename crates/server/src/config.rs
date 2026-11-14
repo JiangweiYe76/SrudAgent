@@ -5,7 +5,7 @@
 //! `.srudagent` inside the user's home. It is created at startup, and holds a
 //! `workspaces/` directory of one workspace per session.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Names the configuration directory outright, overriding the default.
 pub const HOME_VAR: &str = "SRUD_HOME";
@@ -101,6 +101,27 @@ pub fn ensure() -> Result<PathBuf, ConfigError> {
 /// put it under.
 pub fn providers_path() -> Result<PathBuf, ConfigError> {
     Ok(home().ok_or(ConfigError::NoHome)?.join(PROVIDERS_FILE))
+}
+
+/// Makes a file readable only by its owner.
+///
+/// For the files that carry something a reader should not have: provider keys,
+/// and whatever else is written to the configuration directory for the user
+/// alone to read.
+#[cfg(unix)]
+pub(crate) fn restrict(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+/// Makes a file readable only by its owner.
+///
+/// Nothing to do off unix: the platform carries this in the parent directory's
+/// ACL rather than in a mode bit.
+#[cfg(not(unix))]
+pub(crate) fn restrict(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Reads a variable as a path, treating blank as unset.
