@@ -69,6 +69,7 @@ use srud_protocol::error::{INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SE
 use crate::events::{EventHub, TurnSink};
 use crate::providers::{ModelFactory, ProviderStore};
 use crate::sessions::SessionManager;
+mod mcp;
 mod methods;
 mod mode;
 mod model;
@@ -370,6 +371,16 @@ mod tests {
         assert_eq!(result["agentCapabilities"]["loadSession"], json!(true));
         assert!(result["agentCapabilities"]["sessionCapabilities"]["list"].is_object());
         assert!(result["agentCapabilities"]["sessionCapabilities"]["resume"].is_object());
+        // stdio is never declared, HTTP is, and what is not served is stated as
+        // false instead of omitted.
+        assert_eq!(
+            result["agentCapabilities"]["mcpCapabilities"]["http"],
+            json!(true)
+        );
+        assert_eq!(
+            result["agentCapabilities"]["mcpCapabilities"]["sse"],
+            json!(false)
+        );
         assert!(result.get("authMethods").is_some());
     }
 

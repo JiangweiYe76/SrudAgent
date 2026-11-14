@@ -30,6 +30,7 @@ use srud_core::session::Session;
 use srud_core::session_event::SessionEvent;
 use srud_core::session_log::{RecordError, SessionLog};
 use srud_core::session_store::{Loaded, SessionLogWriter};
+use srud_core::tools::ToolRegistry;
 use srud_protocol::acp::{SessionId, SessionInfo};
 
 use crate::config;
@@ -65,6 +66,11 @@ struct Tracked {
     /// model's default when it declares thinking, and re-projected when the
     /// model changes.
     thinking: Option<String>,
+    /// The tools this session runs with, when its MCP servers contributed any.
+    ///
+    /// Held here rather than in the agent so a session's connections are dropped
+    /// with it: closing or deleting the session closes what it opened.
+    tools: Option<Arc<ToolRegistry>>,
 }
 
 /// The workspace for a session that named no directory of its own.
@@ -461,6 +467,7 @@ impl SessionManager {
                     title: None,
                     model,
                     thinking,
+                    tools: None,
                 },
             );
         Ok(id)
@@ -543,6 +550,7 @@ impl SessionManager {
                     title: loaded.title.clone(),
                     model: loaded.model.clone(),
                     thinking: loaded.thinking.clone(),
+                    tools: None,
                 },
             );
         Ok(loaded)
@@ -656,6 +664,7 @@ impl SessionManager {
                     title,
                     model: loaded.model.clone(),
                     thinking: loaded.thinking.clone(),
+                    tools: None,
                 },
             );
         Ok(wire_id)
@@ -896,6 +905,39 @@ impl SessionManager {
             .expect("session map lock poisoned")
             .get(id.0.as_ref())
             .map(|tracked| Arc::clone(&tracked.session))
+    }
+
+    /// Sets the tools this session runs with, returning whether it exists.
+    ///
+    /// Called with the agent's own set plus what the session's MCP servers
+    /// declared. Replacing the set drops the previous one, which closes the
+    /// connections it was holding.
+    pub fn set_tools(&self, id: &SessionId, tools: Arc<ToolRegistry>) -> bool {
+        match self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get_mut(id.0.as_ref())
+        {
+            Some(tracked) => {
+                tracked.tools = Some(tools);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The tools this session runs with, when its MCP servers contributed any.
+    ///
+    /// `None` is a session that attached no servers: it runs on the agent's own
+    /// set, which is not this registry's to hand out.
+    #[must_use]
+    pub fn tools(&self, id: &SessionId) -> Option<Arc<ToolRegistry>> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .and_then(|tracked| tracked.tools.clone())
     }
 
     /// Drops a session from memory, keeping its log, and returns whether it was held.

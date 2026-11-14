@@ -6,6 +6,7 @@ description = "ACP v1 agent service: JSON-RPC dispatch over the core runtime, tr
 
 [dependencies]
 srud-core = { workspace = true }
+srud-mcp = { workspace = true }
 srud-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

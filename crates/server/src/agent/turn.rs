@@ -69,6 +69,10 @@ impl Agent {
         self.name_from_first_prompt(&request.session_id, &parts.text)
             .await;
 
+        // Resolved once, before the turn starts: a `session/load` that lands
+        // while this turn runs replaces the session's set, and the turn keeps
+        // the one it was asked to run with.
+        let tools = self.tools_for(&request.session_id);
         let result = srud_core::turn::run_turn(
             &session,
             srud_core::types::TurnInput {
@@ -76,7 +80,7 @@ impl Agent {
                 images: parts.images,
             },
             client.as_ref(),
-            self.tools.as_ref(),
+            tools.as_ref(),
             log.as_ref(),
             &sink,
         )
@@ -253,12 +257,13 @@ impl Agent {
         // itself, because it is the answer that is leaving, not the one starting.
         sink.broadcast(latest, srud_core::Event::TurnDiscarded { turn_id: latest });
 
+        let tools = self.tools_for(&request.session_id);
         let result = srud_core::run_turn_after(
             &session,
             opened.input,
             Some(opened.mark),
             client.as_ref(),
-            self.tools.as_ref(),
+            tools.as_ref(),
             log.as_ref(),
             &sink,
         )

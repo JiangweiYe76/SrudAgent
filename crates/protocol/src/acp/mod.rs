@@ -60,6 +60,11 @@ pub use acp_schema::v1::{
     EmbeddedResourceResource, ImageContent, ResourceLink, Role, TextContent, TextResourceContents,
 };
 
+// MCP servers a client asks the agent to connect for a session. `McpCapabilities`
+// above says which transports are on offer; `stdio` is the one every agent must
+// support, so it is never declared.
+pub use acp_schema::v1::{McpServer, McpServerStdio};
+
 // Tool calls.
 pub use acp_schema::v1::{
     Content as ToolCallContentBlock, Diff as ToolCallDiff, Terminal as ToolCallTerminal, ToolCall,

@@ -50,6 +50,28 @@ impl Agent {
                     format!("could not create the session workspace: {err}"),
                 )
             })?;
+        // Read back rather than guessed at: the agent may have settled on a
+        // workspace of its own instead of the directory the client named, and
+        // the servers start where the session works.
+        let cwd = self
+            .sessions
+            .get(&session_id)
+            .map(|session| session.cwd().to_path_buf())
+            .ok_or_else(|| {
+                AcpError::new(INTERNAL_ERROR, "the session it created is not registered")
+            })?;
+        // Connected before the session is announced, so a client told the session
+        // is ready can rely on the tools it asked for. A server that cannot be
+        // reached fails the call, and the session it would have belonged to is
+        // dropped with it — a session without those tools was never what was
+        // asked for.
+        if let Err(err) = self
+            .attach_mcp_servers(&session_id, &cwd, &request.mcp_servers)
+            .await
+        {
+            self.sessions.remove(&session_id).await;
+            return Err(err);
+        }
         let mut response = NewSessionResponse::new(session_id.clone());
         // Offered to a client that may render it, and ignored by one that does
         // not know the category — which is the whole reason it travels here
@@ -63,18 +85,11 @@ impl Agent {
         // The client named a directory or the agent made one for it; which of
         // the two happened is only known here, so the path travels back with the
         // new session rather than being guessed at on the client side.
-        if let Some(cwd) = self
-            .sessions
-            .get(&session_id)
-            .map(|session| session.cwd().to_string_lossy().into_owned())
-        {
-            let srud = SrudMeta {
-                cwd: Some(cwd),
-                ..Default::default()
-            };
-            response = response.meta(srud.to_meta());
-        }
-        Ok(response)
+        let srud = SrudMeta {
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        Ok(response.meta(srud.to_meta()))
     }
 
     pub(super) async fn handle_list(
