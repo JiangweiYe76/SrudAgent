@@ -14,15 +14,7 @@
 // model list must not carry the save out of view, and the model form's way
 // back must not depend on where the scroll has got to.
 import { useState } from 'react';
-import {
-  ArrowLeft,
-  Image,
-  Layers,
-  Music,
-  Plus,
-  Trash2,
-  Video,
-} from 'lucide-react';
+import { ArrowLeft, Image, Music, Plus, Trash2, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Field, TextInput } from '@/components/ui/field';
 import { PasswordInput } from '@/components/ui/password-input';
@@ -284,11 +276,6 @@ export function ProviderDetail({
                 ))}
               </ul>
             )}
-
-            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <Layers className="h-3.5 w-3.5" />
-              {t('providers.models.of', { id: draft.id })}
-            </span>
           </div>
         )}
       </div>
