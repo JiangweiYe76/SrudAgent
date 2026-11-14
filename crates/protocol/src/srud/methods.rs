@@ -596,6 +596,68 @@ pub struct SetDefaultProviderResponse {
     pub meta: Option<Meta>,
 }
 
+/// One name and value of an MCP server: an environment variable, or a header.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpEntry {
+    /// The variable or header name.
+    pub name: String,
+    /// Its value.
+    pub value: String,
+}
+
+/// A configured MCP server, as a client reads and writes one.
+///
+/// Tagged by transport because the two carry different fields: a server the
+/// agent starts has a command and arguments, one it dials has a URL. The tag is
+/// the client's own — ACP's `mcpServers` entries are shaped differently, and
+/// [`McpServerSpec`] is not sent to the agent as a session request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum McpServerSpec {
+    /// Started as a child process and spoken to over its standard streams.
+    Stdio {
+        /// The name this server is stored under, and the prefix of its tools.
+        name: String,
+        /// The program to start.
+        command: String,
+        /// Its command-line arguments.
+        #[serde(default)]
+        args: Vec<String>,
+        /// Variables set for the process.
+        #[serde(default)]
+        env: Vec<McpEntry>,
+    },
+    /// Reached at an endpoint over Streamable HTTP.
+    Http {
+        /// The name this server is stored under, and the prefix of its tools.
+        name: String,
+        /// The endpoint.
+        url: String,
+        /// Headers sent with every request.
+        #[serde(default)]
+        headers: Vec<McpEntry>,
+    },
+}
+
+impl McpServerSpec {
+    /// The name this server is stored under.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Stdio { name, .. } | Self::Http { name, .. } => name,
+        }
+    }
+}
+
+/// Every configured MCP server, in the order the file lists them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCatalog {
+    /// The servers.
+    pub servers: Vec<McpServerSpec>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

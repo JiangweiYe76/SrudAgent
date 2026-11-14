@@ -25,6 +25,12 @@ const DIR_NAME: &str = ".srudagent";
 /// the user may edit by hand, unlike the session logs beside it.
 pub const PROVIDERS_FILE: &str = "providers.json";
 
+/// The file MCP servers are configured in.
+///
+/// Beside the provider file and for the same reason: it is the user's to edit,
+/// so what it holds is what they put there, not an internal record.
+pub const MCP_FILE: &str = "mcp.json";
+
 /// Why the configuration directory could not be established.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -101,6 +107,19 @@ pub fn ensure() -> Result<PathBuf, ConfigError> {
 /// put it under.
 pub fn providers_path() -> Result<PathBuf, ConfigError> {
     Ok(home().ok_or(ConfigError::NoHome)?.join(PROVIDERS_FILE))
+}
+
+/// The MCP server configuration file, whether or not it exists yet.
+///
+/// Not created here either: a file with no servers in it and no file at all
+/// mean the same thing to the agent, and only one of them looks edited.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoHome`] when there is no configuration directory to
+/// put it under.
+pub fn mcp_path() -> Result<PathBuf, ConfigError> {
+    Ok(home().ok_or(ConfigError::NoHome)?.join(MCP_FILE))
 }
 
 /// Makes a file readable only by its owner.
