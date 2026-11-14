@@ -84,3 +84,18 @@ pub const SRUD_PROVIDER_SET: &str = "_srud/unstable/provider/set";
 pub const SRUD_PROVIDER_DELETE: &str = "_srud/unstable/provider/delete";
 /// Client -> agent: choose the model new sessions start from.
 pub const SRUD_PROVIDER_SET_DEFAULT: &str = "_srud/unstable/provider/set_default";
+
+// MCP server administration. ACP carries the servers a *session* runs with in
+// `session/new` and `session/load`; these methods are where they are kept
+// between sessions.
+
+/// Client -> agent: list the configured MCP servers.
+pub const SRUD_MCP_LIST: &str = "_srud/unstable/mcp/list";
+/// Client -> agent: add an MCP server, or replace the one with the same name.
+pub const SRUD_MCP_SET: &str = "_srud/unstable/mcp/set";
+/// Client -> agent: remove an MCP server.
+pub const SRUD_MCP_DELETE: &str = "_srud/unstable/mcp/delete";
+/// Client -> agent: add or replace several MCP servers at once.
+pub const SRUD_MCP_IMPORT: &str = "_srud/unstable/mcp/import";
+/// Client -> agent: what one configured server declares.
+pub const SRUD_MCP_TOOLS: &str = "_srud/unstable/mcp/tools";

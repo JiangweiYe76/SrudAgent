@@ -13,7 +13,7 @@ mod error;
 mod tools;
 mod transport;
 
-pub use client::Client;
+pub use client::{Client, ToolInfo};
 pub use error::McpError;
 pub use tools::{connect_tools, TOOL_PREFIX};
 pub use transport::{HttpEndpoint, ServerCommand, Transport};

@@ -8,6 +8,15 @@ use rmcp::ServiceExt;
 use crate::error::McpError;
 use crate::transport::Transport;
 
+/// One tool a server declares, as a client can describe it without calling it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolInfo {
+    /// The name the server knows the tool by.
+    pub name: String,
+    /// What the server says the tool does, empty when it says nothing.
+    pub description: String,
+}
+
 /// A client connection to one MCP server.
 ///
 /// Dropping it closes the connection; a server this client started itself is
@@ -51,6 +60,30 @@ impl Client {
             .list_all_tools()
             .await
             .map_err(McpError::Request)
+    }
+
+    /// Lists what the server declares, as names and sentences.
+    ///
+    /// For a caller that shows a server rather than calls it: the schema a tool
+    /// declares is not carried here, because nothing this build displays reads
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::list_tools`].
+    pub async fn tool_info(&self) -> Result<Vec<ToolInfo>, McpError> {
+        Ok(self
+            .list_tools()
+            .await?
+            .into_iter()
+            .map(|tool| ToolInfo {
+                name: tool.name.into_owned(),
+                description: tool
+                    .description
+                    .map(|description| description.into_owned())
+                    .unwrap_or_default(),
+            })
+            .collect())
     }
 
     /// Runs one of the server's tools.
