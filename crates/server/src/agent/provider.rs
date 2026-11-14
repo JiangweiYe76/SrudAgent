@@ -115,7 +115,16 @@ fn provider_rejected(err: ProviderError) -> AcpError {
             INTERNAL_ERROR
         }
     };
-    AcpError::new(code, err.to_string())
+    let error = AcpError::new(code, err.to_string());
+    // The rule travels with the sentence, so a client that knows it can say it
+    // in its own words instead of printing English the user did not write.
+    match err.kind() {
+        Some(kind) => error.data(serde_json::json!({
+            "kind": kind,
+            "params": err.params(),
+        })),
+        None => error,
+    }
 }
 
 #[cfg(test)]

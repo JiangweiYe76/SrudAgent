@@ -72,6 +72,38 @@ export function TextInput({
   );
 }
 
+/** The multi-line control that fills a [`Field`], for something to paste. */
+export function TextArea({
+  value,
+  onChange,
+  placeholder,
+  disabled,
+  rows = 10,
+  className,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  disabled?: boolean;
+  rows?: number;
+  className?: string;
+}) {
+  return (
+    <textarea
+      value={value}
+      placeholder={placeholder}
+      disabled={disabled}
+      rows={rows}
+      spellCheck={false}
+      onChange={(event) => onChange(event.target.value)}
+      className={cn(
+        'w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 font-mono text-[12px] leading-relaxed outline-none focus-visible:border-accent disabled:opacity-60',
+        className,
+      )}
+    />
+  );
+}
+
 export interface ToggleOption<T extends string> {
   value: T;
   label: string;

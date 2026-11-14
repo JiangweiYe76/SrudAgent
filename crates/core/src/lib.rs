@@ -42,7 +42,7 @@ pub use session_store::{
 pub use tools::{
     DuplicateTool, Tool, ToolContext, ToolDefinition, ToolError, ToolOutcome, ToolRegistry,
 };
-pub use turn::{run_turn, run_turn_after, TurnError, TurnResult};
+pub use turn::{run_turn, run_turn_after, run_turn_with, TurnError, TurnOptions, TurnResult};
 pub use types::{
     Event, EventSink, Op, ResponseItem, Role, SessionId, TurnEndReason, TurnId, TurnInput,
 };

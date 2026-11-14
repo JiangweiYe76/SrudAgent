@@ -30,6 +30,11 @@
 //! | `_srud/unstable/provider/set` | add or replace a provider             |
 //! | `_srud/unstable/provider/delete` | remove a provider                   |
 //! | `_srud/unstable/provider/set_default` | choose new sessions' model     |
+//! | `_srud/unstable/mcp/list` | list the configured MCP servers            |
+//! | `_srud/unstable/mcp/set` | add or replace an MCP server                |
+//! | `_srud/unstable/mcp/delete` | remove an MCP server                     |
+//! | `_srud/unstable/mcp/import` | add or replace several at once           |
+//! | `_srud/unstable/mcp/tools` | list what one server declares             |
 //!
 //! Everything else — `authenticate` and the remaining `_srud/unstable/*`
 //! extensions — answers `METHOD_NOT_FOUND`, matching what the advertised
@@ -67,8 +72,11 @@ use srud_protocol::acp::{
 use srud_protocol::error::{INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_NOT_FOUND};
 
 use crate::events::{EventHub, TurnSink};
+use crate::mcp_config::McpStore;
 use crate::providers::{ModelFactory, ProviderStore};
 use crate::sessions::SessionManager;
+mod mcp;
+mod mcp_admin;
 mod methods;
 mod mode;
 mod model;
@@ -127,6 +135,9 @@ pub struct Agent {
     model: Option<Arc<dyn ModelClient>>,
     /// The configurable providers, when the host supplied them.
     providers: Option<ModelProviders>,
+    /// The MCP servers a client reads and writes through
+    /// `_srud/unstable/mcp/*`, when the host supplied a file for them.
+    mcp: Option<Arc<McpStore>>,
     tools: Arc<ToolRegistry>,
     sessions: Arc<SessionManager>,
     hub: EventHub,
@@ -183,6 +194,7 @@ impl Agent {
         Self {
             model,
             providers,
+            mcp: None,
             tools,
             sessions: Arc::new(SessionManager::new()),
             hub: EventHub::new(),
@@ -192,6 +204,17 @@ impl Agent {
             prompt_gate: tokio::sync::RwLock::new(()),
             methods,
         }
+    }
+
+    /// Gives the agent the MCP server file its `_srud/unstable/mcp/*` methods
+    /// read and write.
+    ///
+    /// An agent without one answers those methods with `METHOD_NOT_FOUND`, which
+    /// is what a host that keeps no such file should say.
+    #[must_use]
+    pub fn with_mcp_store(mut self, store: Arc<McpStore>) -> Self {
+        self.mcp = Some(store);
+        self
     }
 
     /// Subscribes to the outgoing `session/update` notifications.
@@ -370,6 +393,16 @@ mod tests {
         assert_eq!(result["agentCapabilities"]["loadSession"], json!(true));
         assert!(result["agentCapabilities"]["sessionCapabilities"]["list"].is_object());
         assert!(result["agentCapabilities"]["sessionCapabilities"]["resume"].is_object());
+        // stdio is never declared, HTTP is, and what is not served is stated as
+        // false instead of omitted.
+        assert_eq!(
+            result["agentCapabilities"]["mcpCapabilities"]["http"],
+            json!(true)
+        );
+        assert_eq!(
+            result["agentCapabilities"]["mcpCapabilities"]["sse"],
+            json!(false)
+        );
         assert!(result.get("authMethods").is_some());
     }
 

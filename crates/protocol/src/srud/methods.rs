@@ -596,6 +596,209 @@ pub struct SetDefaultProviderResponse {
     pub meta: Option<Meta>,
 }
 
+/// One name and value of an MCP server: an environment variable, or a header.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpEntry {
+    /// The variable or header name.
+    pub name: String,
+    /// Its value.
+    pub value: String,
+}
+
+/// A configured MCP server, as a client reads and writes one.
+///
+/// Tagged by transport because the two carry different fields: a server the
+/// agent starts has a command and arguments, one it dials has a URL. The tag is
+/// the client's own — ACP's `mcpServers` entries are shaped differently, and
+/// [`McpServerSpec`] is not sent to the agent as a session request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum McpServerSpec {
+    /// Started as a child process and spoken to over its standard streams.
+    Stdio {
+        /// The name this server is stored under, and the prefix of its tools.
+        name: String,
+        /// The program to start.
+        command: String,
+        /// Its command-line arguments.
+        #[serde(default)]
+        args: Vec<String>,
+        /// Variables set for the process.
+        #[serde(default)]
+        env: Vec<McpEntry>,
+    },
+    /// Reached at an endpoint over Streamable HTTP.
+    Http {
+        /// The name this server is stored under, and the prefix of its tools.
+        name: String,
+        /// The endpoint.
+        url: String,
+        /// Headers sent with every request.
+        #[serde(default)]
+        headers: Vec<McpEntry>,
+    },
+}
+
+impl McpServerSpec {
+    /// The name this server is stored under.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Stdio { name, .. } | Self::Http { name, .. } => name,
+        }
+    }
+}
+
+/// Every configured MCP server, in the order the file lists them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCatalog {
+    /// The servers.
+    pub servers: Vec<McpServerSpec>,
+}
+
+/// Client -> agent: `_srud/unstable/mcp/list`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMcpServersRequest {
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Response to [`ListMcpServersRequest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMcpServersResponse {
+    /// The servers.
+    #[serde(flatten)]
+    pub catalog: McpCatalog,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Client -> agent: `_srud/unstable/mcp/set`.
+///
+/// Adds a server, or replaces the one whose name it carries — one method for
+/// both because the difference is only whether the name was already there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMcpServerRequest {
+    /// The server to store.
+    pub server: McpServerSpec,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Response to [`SetMcpServerRequest`].
+///
+/// Carries the whole catalog rather than an acknowledgement, so a client renders
+/// the result of its own edit without asking again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMcpServerResponse {
+    /// The servers.
+    #[serde(flatten)]
+    pub catalog: McpCatalog,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Client -> agent: `_srud/unstable/mcp/delete`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteMcpServerRequest {
+    /// The name of the server to remove.
+    pub name: String,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Response to [`DeleteMcpServerRequest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteMcpServerResponse {
+    /// The servers that remain.
+    #[serde(flatten)]
+    pub catalog: McpCatalog,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Client -> agent: `_srud/unstable/mcp/import`.
+///
+/// One call for a whole pasted configuration, rather than one per server: a
+/// paste that names something the agent refuses leaves the file as it was, and
+/// a reader of the file never sees half of an import.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportMcpServersRequest {
+    /// The servers to store, in the order they should be listed.
+    pub servers: Vec<McpServerSpec>,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Response to [`ImportMcpServersRequest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportMcpServersResponse {
+    /// The servers.
+    #[serde(flatten)]
+    pub catalog: McpCatalog,
+    /// The names it added.
+    pub added: Vec<String>,
+    /// The names it replaced, as they were stored.
+    pub replaced: Vec<String>,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// One tool a server declares, as a client lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolInfo {
+    /// The name the server knows the tool by, before the `mcp__<server>__`
+    /// prefix a session's tools carry.
+    pub name: String,
+    /// What the server says the tool does, empty when it says nothing.
+    pub description: String,
+}
+
+/// Client -> agent: `_srud/unstable/mcp/tools`.
+///
+/// Carries the server rather than its name, so a configuration can be tried
+/// before it is saved — the question "what does this give me" is asked while
+/// typing the command as often as after.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMcpToolsRequest {
+    /// The server to connect to.
+    pub server: McpServerSpec,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Response to [`ListMcpToolsRequest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMcpToolsResponse {
+    /// The tools, in the order the server declared them.
+    pub tools: Vec<McpToolInfo>,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

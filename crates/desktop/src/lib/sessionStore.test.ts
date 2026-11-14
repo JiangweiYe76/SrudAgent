@@ -142,6 +142,10 @@ async function boot(
             protocolVersion: 1,
             agentCapabilities: {},
           });
+        case '_srud/unstable/mcp/list':
+          // Every session is opened with the servers the agent is configured
+          // with, so the fake backend answers the question too.
+          return reply(payload.id, { servers: [] });
         case 'session/new':
           // Distinct ids so a test can tell a fallback session from the first.
           created += 1;

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // The module reaches the agent through the Tauri IPC bridge, which does not
 // exist in a test process; the mock stands in for it. The parsing under test is
@@ -7,18 +7,48 @@ import { describe, it, expect, vi } from 'vitest';
 //
 // The bridge answers whatever the current test parked in `bridge.reply`, so a
 // test can drive one call to the agent and read what the parser made of it.
-const bridge = vi.hoisted(() => ({ reply: {} as Record<string, unknown> }));
+const bridge = vi.hoisted(() => ({
+  reply: {} as Record<string, unknown>,
+  // Answers one method differently from the parked reply, for a call that
+  // reaches for something else on its way — a session asking for the configured
+  // MCP servers, say.
+  byMethod: {} as Record<string, unknown>,
+  last: null as null | { method: string; params: Record<string, unknown> },
+}));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (_cmd: string, args?: unknown) => {
-    const { id } = (args as { payload: { id: number } }).payload;
-    return { jsonrpc: '2.0', id, result: bridge.reply };
+    const payload = (
+      args as {
+        payload: {
+          id: number;
+          method: string;
+          params: Record<string, unknown>;
+        };
+      }
+    ).payload;
+    bridge.last = { method: payload.method, params: payload.params };
+    return {
+      jsonrpc: '2.0',
+      id: payload.id,
+      result: bridge.byMethod[payload.method] ?? bridge.reply,
+    };
   },
 }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 
+// Each test parks its own replies; one left from the test before would answer a
+// call nobody made.
+beforeEach(() => {
+  bridge.byMethod = {
+    '_srud/unstable/mcp/list': { servers: [] },
+  };
+});
+
 import {
+  listMcpServers,
   listProviders,
   loadSession,
+  newSession,
   parseModelOptions,
   parseThinkingOptions,
   UNAVAILABLE_GROUP,
@@ -312,6 +342,128 @@ describe('loadSession', () => {
   it('reports no turn ends when the response carries none', async () => {
     bridge.reply = {};
     expect((await loadSession('S1')).turns).toEqual([]);
+  });
+});
+
+describe('the MCP servers a session is given', () => {
+  it('travel with a new session, stdio untagged', async () => {
+    bridge.reply = { sessionId: 'S1' };
+
+    await newSession('', [
+      {
+        transport: 'stdio',
+        name: 'docs',
+        command: 'run',
+        args: ['--root'],
+        env: [],
+      },
+    ]);
+
+    expect(bridge.last?.method).toBe('session/new');
+    expect(bridge.last?.params.mcpServers).toEqual([
+      { name: 'docs', command: 'run', args: ['--root'], env: [] },
+    ]);
+  });
+
+  it('travel with a new session, http tagged', async () => {
+    bridge.reply = { sessionId: 'S1' };
+
+    await newSession('', [
+      {
+        transport: 'http',
+        name: 'remote',
+        url: 'https://mcp.example/v1',
+        headers: [],
+      },
+    ]);
+
+    expect(bridge.last?.params.mcpServers).toEqual([
+      {
+        type: 'http',
+        name: 'remote',
+        url: 'https://mcp.example/v1',
+        headers: [],
+      },
+    ]);
+  });
+
+  it('are the configured list when a session names none', async () => {
+    bridge.byMethod['_srud/unstable/mcp/list'] = {
+      servers: [
+        {
+          transport: 'stdio',
+          name: 'docs',
+          command: 'run',
+          args: [],
+          env: [],
+        },
+      ],
+    };
+    bridge.reply = { sessionId: 'S1' };
+
+    await newSession('');
+
+    expect(bridge.last?.params.mcpServers).toEqual([
+      { name: 'docs', command: 'run', args: [], env: [] },
+    ]);
+  });
+
+  it('are the configured list when a session is loaded', async () => {
+    bridge.byMethod['_srud/unstable/mcp/list'] = {
+      servers: [
+        {
+          transport: 'http',
+          name: 'remote',
+          url: 'https://mcp.example/v1',
+          headers: [],
+        },
+      ],
+    };
+    bridge.reply = {};
+
+    await loadSession('S1');
+
+    expect(bridge.last?.params.mcpServers).toEqual([
+      {
+        type: 'http',
+        name: 'remote',
+        url: 'https://mcp.example/v1',
+        headers: [],
+      },
+    ]);
+  });
+
+  it('are none when a client sends an empty list', async () => {
+    bridge.reply = { sessionId: 'S1' };
+
+    await newSession('', []);
+
+    expect(bridge.last?.params.mcpServers).toEqual([]);
+  });
+
+  it('reads the configured list', async () => {
+    bridge.byMethod['_srud/unstable/mcp/list'] = {
+      servers: [
+        {
+          transport: 'stdio',
+          name: 'docs',
+          command: 'run',
+          args: [],
+          env: [],
+        },
+      ],
+    };
+
+    const servers = await listMcpServers();
+    expect(servers).toEqual([
+      {
+        transport: 'stdio',
+        name: 'docs',
+        command: 'run',
+        args: [],
+        env: [],
+      },
+    ]);
   });
 });
 

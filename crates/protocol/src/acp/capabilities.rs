@@ -49,7 +49,10 @@ pub fn agent_capabilities() -> AgentCapabilities {
                 .audio(false)
                 .embedded_context(false),
         )
-        .mcp_capabilities(McpCapabilities::new())
+        // stdio is the transport every agent must serve, so it is never declared;
+        // HTTP is the one beyond the baseline this build implements. SSE and ACP
+        // stay false while neither is served.
+        .mcp_capabilities(McpCapabilities::new().http(true))
         .session_capabilities(
             SessionCapabilities::new()
                 .list(SessionListCapabilities::new())

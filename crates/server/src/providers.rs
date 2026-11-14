@@ -1093,25 +1093,11 @@ fn write(path: &Path, providers: &Providers) -> Result<(), ProviderError> {
 }
 
 /// Makes a file readable only by its owner.
-#[cfg(unix)]
 fn restrict(path: &Path) -> Result<(), ProviderError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
-        ProviderError::Io {
-            path: path.to_path_buf(),
-            source,
-        }
+    config::restrict(path).map_err(|source| ProviderError::Io {
+        path: path.to_path_buf(),
+        source,
     })
-}
-
-/// Makes a file readable only by its owner.
-///
-/// Nothing to do off unix: the platform carries this in the parent directory's
-/// ACL rather than in a mode bit.
-#[cfg(not(unix))]
-fn restrict(_path: &Path) -> Result<(), ProviderError> {
-    Ok(())
 }
 
 #[cfg(test)]

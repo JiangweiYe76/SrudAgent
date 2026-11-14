@@ -5,7 +5,7 @@
 //! `.srudagent` inside the user's home. It is created at startup, and holds a
 //! `workspaces/` directory of one workspace per session.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Names the configuration directory outright, overriding the default.
 pub const HOME_VAR: &str = "SRUD_HOME";
@@ -24,6 +24,12 @@ const DIR_NAME: &str = ".srudagent";
 /// Named for what it holds rather than for the code that reads it: it is a file
 /// the user may edit by hand, unlike the session logs beside it.
 pub const PROVIDERS_FILE: &str = "providers.json";
+
+/// The file MCP servers are configured in.
+///
+/// Beside the provider file and for the same reason: it is the user's to edit,
+/// so what it holds is what they put there, not an internal record.
+pub const MCP_FILE: &str = "mcp.json";
 
 /// Why the configuration directory could not be established.
 #[derive(Debug, thiserror::Error)]
@@ -101,6 +107,40 @@ pub fn ensure() -> Result<PathBuf, ConfigError> {
 /// put it under.
 pub fn providers_path() -> Result<PathBuf, ConfigError> {
     Ok(home().ok_or(ConfigError::NoHome)?.join(PROVIDERS_FILE))
+}
+
+/// The MCP server configuration file, whether or not it exists yet.
+///
+/// Not created here either: a file with no servers in it and no file at all
+/// mean the same thing to the agent, and only one of them looks edited.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoHome`] when there is no configuration directory to
+/// put it under.
+pub fn mcp_path() -> Result<PathBuf, ConfigError> {
+    Ok(home().ok_or(ConfigError::NoHome)?.join(MCP_FILE))
+}
+
+/// Makes a file readable only by its owner.
+///
+/// For the files that carry something a reader should not have: provider keys,
+/// and whatever else is written to the configuration directory for the user
+/// alone to read.
+#[cfg(unix)]
+pub(crate) fn restrict(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+/// Makes a file readable only by its owner.
+///
+/// Nothing to do off unix: the platform carries this in the parent directory's
+/// ACL rather than in a mode bit.
+#[cfg(not(unix))]
+pub(crate) fn restrict(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Reads a variable as a path, treating blank as unset.

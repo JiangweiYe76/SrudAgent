@@ -30,6 +30,7 @@ use srud_core::session::Session;
 use srud_core::session_event::SessionEvent;
 use srud_core::session_log::{RecordError, SessionLog};
 use srud_core::session_store::{Loaded, SessionLogWriter};
+use srud_core::tools::ToolRegistry;
 use srud_protocol::acp::{SessionId, SessionInfo};
 
 use crate::config;
@@ -44,6 +45,27 @@ const WORKSPACES_DIR: &str = "workspaces";
 /// record of what happened: a session's log outlives its workspace, and a
 /// workspace is removed when the session is.
 const SESSIONS_DIR: &str = "sessions";
+
+/// What a session's MCP servers contributed.
+///
+/// Kept as one value rather than two fields so the tools and the notes about
+/// them cannot come from different connections: a reload replaces both or
+/// neither.
+pub struct McpSession {
+    /// The tools the session runs with: the agent's own set plus what its
+    /// servers declare.
+    pub tools: Arc<ToolRegistry>,
+    /// How each server asks to be used, in the order the client named them.
+    pub instructions: Vec<McpInstructions>,
+}
+
+/// One server's usage notes, as the handshake returned them.
+pub struct McpInstructions {
+    /// The name the client gave the server.
+    pub server: String,
+    /// The text the server sent in `initialize`.
+    pub text: String,
+}
 
 /// A tracked session: the runtime handle plus the wire-level context.
 struct Tracked {
@@ -65,6 +87,12 @@ struct Tracked {
     /// model's default when it declares thinking, and re-projected when the
     /// model changes.
     thinking: Option<String>,
+    /// What this session's MCP servers contributed, when they contributed
+    /// anything.
+    ///
+    /// Held here rather than in the agent so a session's connections are dropped
+    /// with it: closing or deleting the session closes what it opened.
+    mcp: Option<Arc<McpSession>>,
 }
 
 /// The workspace for a session that named no directory of its own.
@@ -461,6 +489,7 @@ impl SessionManager {
                     title: None,
                     model,
                     thinking,
+                    mcp: None,
                 },
             );
         Ok(id)
@@ -543,6 +572,7 @@ impl SessionManager {
                     title: loaded.title.clone(),
                     model: loaded.model.clone(),
                     thinking: loaded.thinking.clone(),
+                    mcp: None,
                 },
             );
         Ok(loaded)
@@ -656,6 +686,7 @@ impl SessionManager {
                     title,
                     model: loaded.model.clone(),
                     thinking: loaded.thinking.clone(),
+                    mcp: None,
                 },
             );
         Ok(wire_id)
@@ -896,6 +927,50 @@ impl SessionManager {
             .expect("session map lock poisoned")
             .get(id.0.as_ref())
             .map(|tracked| Arc::clone(&tracked.session))
+    }
+
+    /// Sets what this session's MCP servers contribute, returning whether it
+    /// exists.
+    ///
+    /// Called with the agent's own tools plus what the session's servers
+    /// declared. Replacing the value drops the previous one, which closes the
+    /// connections it was holding.
+    pub fn set_mcp(&self, id: &SessionId, mcp: Arc<McpSession>) -> bool {
+        match self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get_mut(id.0.as_ref())
+        {
+            Some(tracked) => {
+                tracked.mcp = Some(mcp);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// What this session's MCP servers contributed, when they contributed
+    /// anything.
+    ///
+    /// `None` is a session that attached no servers: it runs on the agent's own
+    /// set, and has nothing extra to say about it.
+    #[must_use]
+    pub fn mcp(&self, id: &SessionId) -> Option<Arc<McpSession>> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .and_then(|tracked| tracked.mcp.clone())
+    }
+
+    /// The tools this session runs with, when its MCP servers contributed any.
+    ///
+    /// `None` is a session that attached no servers: it runs on the agent's own
+    /// set, which is not this registry's to hand out.
+    #[must_use]
+    pub fn tools(&self, id: &SessionId) -> Option<Arc<ToolRegistry>> {
+        self.mcp(id).map(|mcp| Arc::clone(&mcp.tools))
     }
 
     /// Drops a session from memory, keeping its log, and returns whether it was held.

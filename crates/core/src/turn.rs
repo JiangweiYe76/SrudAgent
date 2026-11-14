@@ -442,16 +442,22 @@ pub async fn run_turn(
     log: &dyn SessionLog,
     sink: &dyn EventSink,
 ) -> Result<TurnResult, TurnError> {
-    run_turn_after(session, input, None, client, tools, log, sink).await
+    run_turn_with(
+        session,
+        input,
+        TurnOptions::default(),
+        client,
+        tools,
+        log,
+        sink,
+    )
+    .await
 }
 
 /// Runs one turn, optionally answering a message already in the history.
 ///
-/// `opening` is a [`crate::SessionState::len`] the previous turn recorded once
-/// its input was in the history. `Some` says the message this turn answers is
-/// already there: nothing is recorded for the input — no user message and no
-/// images — because the turn before it wrote those, and writing them again would
-/// put the same words in the conversation twice.
+/// `opening` means what it does in [`TurnOptions`]: `Some` answers a message
+/// the previous turn already put in the history.
 ///
 /// # Errors
 ///
@@ -465,6 +471,50 @@ pub async fn run_turn_after(
     log: &dyn SessionLog,
     sink: &dyn EventSink,
 ) -> Result<TurnResult, TurnError> {
+    let options = TurnOptions {
+        opening,
+        ..TurnOptions::default()
+    };
+    run_turn_with(session, input, options, client, tools, log, sink).await
+}
+
+/// How a turn answers, and what it is told beyond its own input.
+///
+/// `opening` is a [`crate::SessionState::len`] the previous turn recorded once
+/// its input was in the history. `Some` says the message this turn answers is
+/// already there: nothing is recorded for the input — no user message and no
+/// images — because the turn before it wrote those, and writing them again would
+/// put the same words in the conversation twice.
+///
+/// `sections` join the system instruction after the blocks the runtime builds
+/// for itself, such as the skill catalog: they describe configuration that is
+/// not history, so they belong with the other blocks rather than in the turn's
+/// input.
+#[derive(Clone, Copy, Default)]
+pub struct TurnOptions<'a> {
+    /// The history mark this turn answers, when its input is already recorded.
+    pub opening: Option<usize>,
+    /// Blocks the caller adds to the system instruction.
+    pub sections: &'a [prompt::Section],
+}
+
+/// Runs one turn with the options the caller chooses.
+///
+/// # Errors
+///
+/// As [`run_turn`].
+pub async fn run_turn_with(
+    session: &Session,
+    input: TurnInput,
+    options: TurnOptions<'_>,
+    client: &dyn ModelClient,
+    tools: &ToolRegistry,
+    log: &dyn SessionLog,
+    sink: &dyn EventSink,
+) -> Result<TurnResult, TurnError> {
+    let sections = options.sections;
+    let opening = options.opening;
+
     let turn_id = TurnId::new();
     let guard = session.begin_turn().ok_or(TurnError::Busy)?;
     let cancel = guard.cancellation();
@@ -485,13 +535,16 @@ pub async fn run_turn_after(
     // model-visible skill is advertised by name and description, never its body.
     // Discovered where the session works, so a workspace's `.srud/skills` takes
     // part from its first turn.
-    let mut sections = prompt::default_sections();
+    let mut blocks = prompt::default_sections();
     let catalog = crate::skills::render_catalog(&crate::skills::discover(&crate::skills::roots(
         journal.session().cwd(),
     )));
     if !catalog.is_empty() {
-        sections.push(prompt::Section::new("Skills", catalog));
+        blocks.push(prompt::Section::new("Skills", catalog));
     }
+    // Blocks the caller supplied come last: what a session's own configuration
+    // says belongs after what the runtime says for every session.
+    blocks.extend_from_slice(sections);
 
     // Written once, above every turn. Emptiness is the test for whether this is
     // the first: nothing is recorded before the turn's own opening, so an empty
@@ -504,7 +557,7 @@ pub async fn run_turn_after(
     // holds what that message opened with, instruction and context block included.
     if journal.session().state().is_empty() {
         journal
-            .record_system(&prompt::render_instructions(&sections))
+            .record_system(&prompt::render_instructions(&blocks))
             .await
             .map_err(TurnError::Unrecordable)?;
     }
@@ -524,7 +577,7 @@ pub async fn run_turn_after(
         return Err(TurnError::Unrecordable(err));
     }
 
-    let failure = drive(&journal, client, tools, &cancel, &sections, &sandbox).await;
+    let failure = drive(&journal, client, tools, &cancel, &blocks, &sandbox).await;
 
     // The end is announced even when it could not be recorded. A log one record
     // short is recoverable; a turn left open on the wire is not, because the

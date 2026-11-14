@@ -8,6 +8,7 @@ use serde_json::Value;
 use srud_protocol::acp::methods::{
     INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_LOAD,
     SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SESSION_SET_MODE,
+    SRUD_MCP_DELETE, SRUD_MCP_IMPORT, SRUD_MCP_LIST, SRUD_MCP_SET, SRUD_MCP_TOOLS,
     SRUD_PROVIDER_DELETE, SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT,
     SRUD_SESSION_FORK, SRUD_SESSION_REGENERATE, SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
     SRUD_SKILLS_LIST, SRUD_SKILLS_READ,
@@ -133,6 +134,17 @@ impl MethodTable {
             SRUD_PROVIDER_SET_DEFAULT,
             |agent, params| agent.handle_provider_set_default(params)
         );
+        register!(table, mcp_list, SRUD_MCP_LIST, |agent, params| agent
+            .handle_mcp_list(params));
+        register!(table, mcp_set, SRUD_MCP_SET, |agent, params| agent
+            .handle_mcp_set(params));
+        register!(table, mcp_delete, SRUD_MCP_DELETE, |agent, params| agent
+            .handle_mcp_delete(params));
+        register!(table, mcp_import, SRUD_MCP_IMPORT, |agent, params| agent
+            .handle_mcp_import(params));
+        register!(table, mcp_tools, SRUD_MCP_TOOLS, |agent, params| agent
+            .handle_mcp_tools(params)
+            .await);
         table
     }
 

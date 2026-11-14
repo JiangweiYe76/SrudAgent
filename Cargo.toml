@@ -4,6 +4,7 @@ members = [
     "crates/client",
     "crates/core",
     "crates/desktop/src-tauri",
+    "crates/mcp",
     "crates/protocol",
     "crates/sandbox",
     "crates/sandbox-launcher",
@@ -17,6 +18,7 @@ edition = "2021"
 [workspace.dependencies]
 srud-core = { path = "crates/core" }
 srud-client = { path = "crates/client" }
+srud-mcp = { path = "crates/mcp" }
 srud-protocol = { path = "crates/protocol" }
 srud-sandbox = { path = "crates/sandbox" }
 srud-server = { path = "crates/server" }
