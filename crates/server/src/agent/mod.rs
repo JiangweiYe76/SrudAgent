@@ -21,6 +21,9 @@
 //! | `session/set_config_option` | choose the model a session runs on          |
 //! | `session/set_mode` | choose the session's sandbox mode                   |
 //! | `_srud/unstable/session/set_title` | rename a session               |
+//! | `_srud/unstable/session/fork` | branch a session at its current point   |
+//! | `_srud/unstable/session/steer` | inject input into an in-flight turn    |
+//! | `_srud/unstable/session/regenerate` | rerun the latest finished turn     |
 //! | `_srud/unstable/skills/list` | list skills visible from a cwd          |
 //! | `_srud/unstable/skills/read` | read one skill's metadata and body       |
 //! | `_srud/unstable/provider/list` | list providers, with keys masked      |
@@ -55,24 +58,18 @@ use serde_json::Value;
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
 use srud_core::tools::ToolRegistry;
-use srud_protocol::acp::methods::{
-    INITIALIZE, SESSION_CANCEL, SESSION_CLOSE, SESSION_DELETE, SESSION_LIST, SESSION_LOAD,
-    SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SESSION_SET_MODE,
-    SRUD_PROVIDER_DELETE, SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT,
-    SRUD_SESSION_FORK, SRUD_SESSION_REGENERATE, SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
-    SRUD_SKILLS_LIST, SRUD_SKILLS_READ,
-};
+use srud_protocol::acp::methods::INITIALIZE;
 use srud_protocol::acp::{
-    AcpError, CloseSessionResponse, DeleteSessionResponse, Implementation, InitializeRequest,
-    InitializeResponse, JsonRpcMessage, MaybeUndefined, Notification, ProtocolVersion, Request,
-    RequestId, Response, SessionId, SessionInfoUpdate, SessionNotification, SessionUpdate,
-    CLIENT_METHOD_NAMES,
+    AcpError, Implementation, InitializeRequest, InitializeResponse, JsonRpcMessage,
+    MaybeUndefined, Notification, ProtocolVersion, Request, RequestId, Response, SessionId,
+    SessionInfoUpdate, SessionNotification, SessionUpdate, CLIENT_METHOD_NAMES,
 };
 use srud_protocol::error::{INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, SESSION_NOT_FOUND};
 
 use crate::events::{EventHub, TurnSink};
 use crate::providers::{ModelFactory, ProviderStore};
 use crate::sessions::SessionManager;
+mod methods;
 mod mode;
 mod model;
 mod provider;
@@ -82,6 +79,8 @@ mod skills;
 #[cfg(test)]
 mod support;
 mod turn;
+
+pub use methods::{MethodFuture, MethodHandler, MethodTable};
 
 /// The JSON-RPC reply to one `rpc_request` envelope.
 pub type RpcReply = JsonRpcMessage<Response<Value>>;
@@ -142,6 +141,7 @@ pub struct Agent {
     /// The write side can be taken only once every in-flight prompt has left,
     /// so a successful probe means every turn has settled.
     prompt_gate: tokio::sync::RwLock<()>,
+    methods: MethodTable,
 }
 
 impl Agent {
@@ -152,17 +152,7 @@ impl Agent {
     /// `session/set_config_option` answers `METHOD_NOT_FOUND`.
     #[must_use]
     pub fn new(model: Arc<dyn ModelClient>, tools: Arc<ToolRegistry>) -> Self {
-        Self {
-            model: Some(model),
-            providers: None,
-            tools,
-            sessions: Arc::new(SessionManager::new()),
-            hub: EventHub::new(),
-            active_sinks: Mutex::new(HashMap::new()),
-            initialized: AtomicBool::new(false),
-            shutting_down: AtomicBool::new(false),
-            prompt_gate: tokio::sync::RwLock::new(()),
-        }
+        Self::with_method_table(Some(model), tools, None, MethodTable::builtin())
     }
 
     /// Creates an agent that resolves each session's model from a provider file.
@@ -178,9 +168,21 @@ impl Agent {
         tools: Arc<ToolRegistry>,
         providers: ModelProviders,
     ) -> Self {
+        Self::with_method_table(model, tools, Some(providers), MethodTable::builtin())
+    }
+
+    /// Creates an agent whose method table the caller supplies, so a host can
+    /// answer methods this build does not implement.
+    #[must_use]
+    pub fn with_method_table(
+        model: Option<Arc<dyn ModelClient>>,
+        tools: Arc<ToolRegistry>,
+        providers: Option<ModelProviders>,
+        methods: MethodTable,
+    ) -> Self {
         Self {
             model,
-            providers: Some(providers),
+            providers,
             tools,
             sessions: Arc::new(SessionManager::new()),
             hub: EventHub::new(),
@@ -188,6 +190,7 @@ impl Agent {
             initialized: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
             prompt_gate: tokio::sync::RwLock::new(()),
+            methods,
         }
     }
 
@@ -252,39 +255,11 @@ impl Agent {
             );
         }
 
-        let outcome = match method {
-            INITIALIZE => self.handle_initialize(params).map(serialize),
-            SESSION_NEW => self.handle_new_session(params).await.map(serialize),
-            SESSION_LOAD => self.handle_load(params).await.map(serialize),
-            SESSION_RESUME => self.handle_resume(params).await.map(serialize),
-            SESSION_PROMPT => self.handle_prompt(params).await.map(serialize),
-            SESSION_CANCEL => self
-                .handle_cancel(params)
-                .map(|()| Value::Object(Default::default())),
-            SESSION_LIST => self.handle_list(params).await.map(serialize),
-            SESSION_CLOSE => self
-                .handle_close(params)
-                .await
-                .map(|()| serialize(CloseSessionResponse::new())),
-            SESSION_DELETE => self
-                .handle_delete(params)
-                .await
-                .map(|()| serialize(DeleteSessionResponse::new())),
-            SESSION_SET_CONFIG_OPTION => self.handle_set_config_option(params).await.map(serialize),
-            SESSION_SET_MODE => self.handle_set_mode(params).await.map(serialize),
-            SRUD_SESSION_SET_TITLE => self.handle_set_title(params).await.map(serialize),
-            SRUD_SESSION_FORK => self.handle_fork(params).await.map(serialize),
-            SRUD_SESSION_STEER => self.handle_steer(params).await.map(serialize),
-            SRUD_SESSION_REGENERATE => self.handle_regenerate(params).await.map(serialize),
-            SRUD_SKILLS_LIST => self.handle_skills_list(params),
-            SRUD_SKILLS_READ => self.handle_skill_read(params),
-            SRUD_PROVIDER_LIST => self.handle_provider_list(params),
-            SRUD_PROVIDER_SET => self.handle_provider_set(params),
-            SRUD_PROVIDER_DELETE => self.handle_provider_delete(params),
-            SRUD_PROVIDER_SET_DEFAULT => self.handle_provider_set_default(params),
+        let outcome = match self.methods.get(method) {
+            Some(handler) => (*handler)(self, params).await,
             // Known-but-unimplemented methods get the same treatment as
             // unknown ones: the capabilities never advertised them.
-            _ => Err(AcpError::new(
+            None => Err(AcpError::new(
                 METHOD_NOT_FOUND,
                 format!("method `{method}` is not supported"),
             )),
@@ -445,6 +420,29 @@ mod tests {
                 .await,
         );
         assert_eq!(i32::from(error.code), INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn a_method_table_can_add_a_method() {
+        fn custom<'a>(_agent: &'a Agent, _params: Value) -> MethodFuture<'a> {
+            Box::pin(async { Ok(json!({ "custom": true })) })
+        }
+
+        let mut methods = MethodTable::builtin();
+        methods.insert("example/custom", custom);
+        let agent = Agent::with_method_table(
+            Some(scripted(vec![])),
+            Arc::new(ToolRegistry::new()),
+            None,
+            methods,
+        );
+        initialize(&agent).await;
+
+        let result = result_of(agent.handle(request("example/custom", json!({}))).await);
+        assert_eq!(result, json!({ "custom": true }));
+
+        let error = error_of(agent.handle(request("example/missing", json!({}))).await);
+        assert_eq!(i32::from(error.code), METHOD_NOT_FOUND);
     }
 
     #[test]
