@@ -634,6 +634,17 @@ pub async fn run_turn_with(
     })
 }
 
+/// Records one context block and announces it.
+///
+/// The announcement carries the block's own text so a consumer can show it where
+/// it was recorded; nothing is announced ahead of the record that holds it.
+async fn record_context(journal: &Journal<'_>, block: ResponseItem) -> Result<(), RecordError> {
+    let event = context::text_of(&block).map(|text| Event::ContextBlock {
+        content: text.to_owned(),
+    });
+    journal.record(None, block, event).await
+}
+
 /// A turn's opening: the record that starts it, then what the user said.
 ///
 /// The turn's own record is announced as well as written. It has no
@@ -665,16 +676,12 @@ async fn open(
     // began rather than the time of the turn being answered. No event is emitted
     // for it: it is context, not something the user said.
     if journal.session().state().is_empty() {
-        journal
-            .record(None, context::item(journal.session().cwd()), None)
-            .await?;
+        record_context(journal, context::item(journal.session().cwd())).await?;
     } else if !changes.is_empty() {
         // What the settled instruction no longer describes is recorded ahead of
         // the input it applies to, and only when something moved: a block saying
         // nothing would be read for nothing.
-        journal
-            .record(None, context::update_item(changes), None)
-            .await?;
+        record_context(journal, context::update_item(changes)).await?;
     }
 
     // A steer the previous turn never got to — it was interrupted or failed

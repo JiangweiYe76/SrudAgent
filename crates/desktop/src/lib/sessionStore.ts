@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { toast } from 'sonner';
 import type {
   Attachment,
+  ContextBlock,
   ModelOptions,
   SandboxModeOptions,
   Session,
@@ -194,6 +195,19 @@ function stepIndexOf(params: Json): number | null {
 function turnIdOf(params: Json): string | null {
   const id = srudMeta(params).turnId;
   return typeof id === 'string' ? id : null;
+}
+
+// The tags the agent opens one of its own context blocks with. They arrive as
+// user messages because that is what they are in history; the tag is what tells
+// them apart from something the user typed.
+const CONTEXT_OPEN = '<env-context>';
+const CONTEXT_UPDATE_OPEN = '<env-context-update>';
+
+// Which context block a user message is, when it is one.
+function contextKindOf(text: string): ContextBlock['kind'] | null {
+  if (text.startsWith(CONTEXT_OPEN)) return 'context';
+  if (text.startsWith(CONTEXT_UPDATE_OPEN)) return 'update';
+  return null;
 }
 
 // The number an update was assigned in its session's stream, when the agent
@@ -452,16 +466,24 @@ function applyUpdate(
       turn.images = [...(turn.images ?? []), userImage];
     }
     if (userText !== null) {
-      // A user message is not a step — steps are what the agent did — so it
-      // settles the turn's text and nothing else. That text is what fills in a
-      // turn which came from the log; a turn this client opened already knows
-      // it, because it is what was sent.
-      // A steered message is a new user input arriving mid-turn. Text matching
-      // what the turn already holds is the sent message coming back, so it
-      // changes nothing; anything else is a steer and becomes its own bubble.
-      if (!turn.userInput) {
+      const context = contextKindOf(userText);
+      if (context !== null) {
+        // A block the agent wrote is its own card, not input: it was not said by
+        // the user, so it must fill neither a bubble nor a steer slot.
+        turn.contextBlocks = [
+          ...(turn.contextBlocks ?? []),
+          { kind: context, text: userText },
+        ];
+      } else if (!turn.userInput) {
+        // A user message is not a step — steps are what the agent did — so it
+        // settles the turn's text and nothing else. That text is what fills in a
+        // turn which came from the log; a turn this client opened already knows
+        // it, because it is what was sent.
         turn.userInput = userText;
       } else if (userText !== turn.userInput) {
+        // A steered message is a new user input arriving mid-turn. Text matching
+        // what the turn already holds is the sent message coming back, so it
+        // changes nothing; anything else is a steer and becomes its own bubble.
         turn.steeredInputs = [...(turn.steeredInputs ?? []), userText];
       }
     }

@@ -12,11 +12,12 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Info,
   Loader2,
   RotateCcw,
   Wrench,
 } from 'lucide-react';
-import type { Attachment, Step, Turn } from '@/lib/types';
+import type { Attachment, ContextBlock, Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
 import { Markdown } from '@/components/Markdown';
 import { JsonBlock } from '@/components/JsonBlock';
@@ -239,6 +240,98 @@ function ThoughtBlock({
   );
 }
 
+// One row of a context block, as the card shows it.
+interface ContextRow {
+  label: string;
+  value: string;
+}
+
+// Reads a block back into rows. The block is the agent's own rendering, so its
+// tags are the contract; a value carrying notes keeps only its name.
+function contextRows(block: ContextBlock): ContextRow[] {
+  if (block.kind === 'context') {
+    const cwd = /<cwd>([\s\S]*?)<\/cwd>/.exec(block.text)?.[1]?.trim();
+    const date = /<date>([\s\S]*?)<\/date>/.exec(block.text)?.[1]?.trim();
+    const rows: ContextRow[] = [];
+    if (cwd) rows.push({ label: t('context.workspace'), value: cwd });
+    if (date) rows.push({ label: t('context.time'), value: date });
+    return rows;
+  }
+
+  const rows: ContextRow[] = [];
+  const tags =
+    /<(date|skill-added|skill-removed|server-added|server-removed)>([\s\S]*?)<\/\1>/g;
+  for (const match of block.text.matchAll(tags)) {
+    const [, tag, raw] = match;
+    // A date is the whole value; a name is what precedes the first colon,
+    // since the notes follow it.
+    const value =
+      tag === 'date' ? raw.trim() : raw.split('\n')[0].split(':')[0].trim();
+    if (!value) continue;
+    if (tag === 'date') rows.push({ label: t('context.time'), value });
+    else if (tag === 'skill-added')
+      rows.push({ label: t('context.skillAdded'), value });
+    else if (tag === 'skill-removed')
+      rows.push({ label: t('context.skillRemoved'), value });
+    else if (tag === 'server-added')
+      rows.push({ label: t('context.serverAdded'), value });
+    else if (tag === 'server-removed')
+      rows.push({ label: t('context.serverRemoved'), value });
+  }
+  return rows;
+}
+
+// One of the agent's own context blocks: where and when the session runs, or
+// what has changed since it was told. Not something the user said, so it reads
+// as an aside folded above the turn rather than as input.
+function ContextBlockCard({
+  block,
+  onUserToggle,
+}: {
+  block: ContextBlock;
+  onUserToggle: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rows = contextRows(block);
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        onUserToggle();
+      }}
+    >
+      <div className="rounded-lg border border-border bg-muted text-[12.5px]">
+        <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left">
+          <Info className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="text-muted-foreground">
+            {block.kind === 'update'
+              ? t('context.updateTitle')
+              : t('context.title')}
+          </span>
+          <span className="flex-1" />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <dl className="max-h-[min(20rem,40dvh)] overflow-y-auto overscroll-contain border-t border-border px-3 py-2 text-[12px]">
+            {rows.map((row, index) => (
+              <div key={index} className="flex gap-3 py-0.5">
+                <dt className="w-24 shrink-0 text-muted-foreground/70">
+                  {row.label}
+                </dt>
+                <dd className="min-w-0 truncate font-mono text-muted-foreground">
+                  {row.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
 interface TurnViewProps {
   turn: Turn;
   // Only the last finished turn can be asked again.
@@ -271,6 +364,13 @@ const TurnView = memo(function TurnView({
   // the scrollbar from jumping while they are placeholders.
   return (
     <div className="flex flex-col gap-3 [content-visibility:auto] [contain-intrinsic-size:auto_600px]">
+      {(turn.contextBlocks ?? []).map((block, index) => (
+        <ContextBlockCard
+          key={index}
+          block={block}
+          onUserToggle={onUserToggle}
+        />
+      ))}
       {/* Each user message right-aligns inside the full column width:
             the block stays stretched, so the bubble's `max-w-[80%]`
             resolves against the column instead of against a

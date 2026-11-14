@@ -237,13 +237,18 @@ pub(super) fn conversation(
         if kind == "session_info_update" {
             continue;
         }
-        updates.push((
-            kind.to_string(),
-            update["content"]["text"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-        ));
+        let text = update["content"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        // A context block is replayed as well, but it is the agent's own note
+        // about where and when it runs rather than a message in the
+        // conversation these tests read. Its replay is asserted where it is
+        // produced.
+        if kind == "user_message_chunk" && text.starts_with("<env-context") {
+            continue;
+        }
+        updates.push((kind.to_string(), text));
     }
     updates
 }

@@ -658,14 +658,10 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         .clone()
         .filter_map(|event| event.history_item().cloned())
         .collect();
-    let conversation = ordered
-        .filter(|event| {
-            event
-                .history_item()
-                .is_none_or(|item| !crate::context::is_item(item))
-        })
-        .cloned()
-        .collect();
+    // Context blocks are part of what a client is shown: they describe the
+    // session, and a transcript that dropped them would lose what the model was
+    // told about where and when it was working.
+    let conversation = ordered.cloned().collect();
 
     Ok(Loaded {
         session_id,
@@ -1357,8 +1353,8 @@ mod tests {
         assert_eq!(loaded.history.len(), 3, "{:?}", loaded.history);
         assert_eq!(
             loaded.conversation.len(),
-            2,
-            "and a client is not shown it: {:?}",
+            3,
+            "and a client is shown it too: {:?}",
             loaded.conversation
         );
     }
@@ -1525,9 +1521,10 @@ mod tests {
     }
 
     #[test]
-    fn the_conversation_leaves_out_what_the_user_never_said() {
-        // The env-context block is recorded so the model reads it; a client
-        // replaying the session is not being shown the agent's own notes.
+    fn the_conversation_carries_the_context_block_and_the_reasoning() {
+        // A client folds the context block into its own card, so a replay has to
+        // carry it; reasoning is model-invisible but rendered by the client, so
+        // the two projections are not each other's complement.
         let turn_id = TurnId::new();
         let log = log_of(vec![
             opening(),
@@ -1554,7 +1551,7 @@ mod tests {
 
         let loaded = rebuild(&log, true).expect("a session");
 
-        // The model sees the context; the client does not.
+        // The model sees the context; the client is shown it as well.
         assert_eq!(loaded.history.len(), 3, "{:?}", loaded.history);
         let shown: Vec<&ResponseItem> = loaded
             .conversation
@@ -1562,16 +1559,21 @@ mod tests {
             .filter_map(SessionEvent::history_item)
             .collect();
         assert_eq!(
-            shown,
-            vec![
-                &ResponseItem::user("hello"),
-                // Reasoning is model-invisible but the client renders it, so the
-                // two projections are not each other's complement.
-                &ResponseItem::Reasoning {
-                    content: "thinking".into()
-                },
-            ],
-            "the env-context block is the one left out"
+            shown.len(),
+            3,
+            "the context block is replayed first: {shown:?}"
+        );
+        assert!(
+            crate::context::is_item(shown[0]),
+            "the block a client folds into its own card: {shown:?}"
+        );
+        assert_eq!(shown[1], &ResponseItem::user("hello"));
+        assert_eq!(
+            shown[2],
+            &ResponseItem::Reasoning {
+                content: "thinking".into()
+            },
+            "reasoning is model-invisible but the client renders it"
         );
     }
 

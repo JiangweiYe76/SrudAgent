@@ -115,6 +115,15 @@ pub fn is_item(item: &ResponseItem) -> bool {
     )
 }
 
+/// The text a context block carries, when the item is one.
+#[must_use]
+pub fn text_of(item: &ResponseItem) -> Option<&str> {
+    let ResponseItem::Message { content, .. } = item else {
+        return None;
+    };
+    is_item(item).then_some(content.as_str())
+}
+
 /// The date the last context block told the model, when the history holds one.
 ///
 /// Read when a session asks whether the date it was given has gone stale: the

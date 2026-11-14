@@ -69,6 +69,7 @@ fn kind_of(event: &Event) -> String {
         Event::StepStarted { .. } => "StepStarted".into(),
         Event::StepEnded { .. } => "StepEnded".into(),
         Event::UserMessage { .. } => "UserMessage".into(),
+        Event::ContextBlock { .. } => "ContextBlock".into(),
         Event::AgentMessageDelta { .. } => "AgentMessageDelta".into(),
         Event::AgentThoughtDelta { .. } => "AgentThoughtDelta".into(),
         Event::ToolCallBegin { .. } => "ToolCallBegin".into(),
@@ -420,14 +421,15 @@ async fn every_announcement_has_a_record_written_first() {
     .await
     .expect("the turn runs");
 
-    // TurnStarted, then the user's message, then the step it opens, a chunk per
-    // delta, the step's close, then the turn's close. The chunks are announced
-    // as they stream — a chunk is a fragment of a record, not a record of its
-    // own, so there is nothing to write until the message closes.
+    // TurnStarted, then the context block, then the user's message, then the step
+    // it opens, a chunk per delta, the step's close, then the turn's close. The
+    // chunks are announced as they stream — a chunk is a fragment of a record, not
+    // a record of its own, so there is nothing to write until the message closes.
     assert_eq!(
         timeline.kinds(),
         vec![
             "TurnStarted",
+            "ContextBlock",
             "UserMessage",
             "StepStarted",
             "AgentMessageDelta",

@@ -44,6 +44,7 @@ fn kind_of(event: &Event) -> &'static str {
         Event::StepStarted { .. } => "StepStarted",
         Event::StepEnded { .. } => "StepEnded",
         Event::UserMessage { .. } => "UserMessage",
+        Event::ContextBlock { .. } => "ContextBlock",
         Event::AgentMessageDelta { .. } => "AgentMessageDelta",
         Event::AgentThoughtDelta { .. } => "AgentThoughtDelta",
         Event::ToolCallBegin { .. } => "ToolCallBegin",
@@ -175,6 +176,7 @@ async fn a_plain_exchange_records_history_and_emits_in_order() {
         sink.kinds(),
         vec![
             "TurnStarted",
+            "ContextBlock",
             "UserMessage",
             "StepStarted",
             "AgentMessageDelta",
@@ -293,7 +295,7 @@ async fn a_provider_that_reports_nothing_produces_no_usage_record() {
 }
 
 #[tokio::test]
-async fn env_context_leads_the_turn_without_being_announced() {
+async fn env_context_leads_the_turn_and_is_announced_as_context() {
     let session = session();
     let sink = Recorder::default();
     let (tools, _calls) = tool_registry();
@@ -340,11 +342,13 @@ async fn env_context_leads_the_turn_without_being_announced() {
         "the block carries the local date and time: {content}"
     );
 
-    // It is context, not something the user said, so nothing announces it.
+    // It is context, not something the user said, so it is announced as its own
+    // kind rather than as a user message.
     assert_eq!(
         sink.kinds(),
         vec![
             "TurnStarted",
+            "ContextBlock",
             "UserMessage",
             "StepStarted",
             "StepEnded",
@@ -396,6 +400,7 @@ async fn a_tool_call_round_trips_and_drives_a_second_request() {
         sink.kinds(),
         vec![
             "TurnStarted",
+            "ContextBlock",
             "UserMessage",
             "StepStarted",
             "ToolCallBegin",
