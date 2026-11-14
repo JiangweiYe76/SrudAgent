@@ -22,6 +22,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use chrono::Local;
 use futures::StreamExt;
 
 use crate::client::{ModelClient, ModelError, ModelEvent, ModelRequest, TokenUsage};
@@ -546,20 +547,61 @@ pub async fn run_turn_with(
     // says belongs after what the runtime says for every session.
     blocks.extend_from_slice(sections);
 
-    // Written once, above every turn. Emptiness is the test for whether this is
-    // the first: nothing is recorded before the turn's own opening, so an empty
-    // history means no turn has contributed an item yet. If a turn opens and then
-    // fails to record an item, the history stays empty while the log already holds
-    // a turn, and the next turn writes a second instruction — the reader takes the
-    // last, and the bytes are the same either way.
+    // The instruction is settled on the turn that first renders it. It opens every
+    // request, so a prefix that moved would cost the provider's cache on every
+    // request; what later differs is described as a change rather than written
+    // into what the model was sent.
+    let rendered = prompt::render_instructions(&blocks);
+    // Read before the match: a guard held across the record below would make the
+    // turn's future non-`Send`, and the state lock must not span an await anyway.
+    let settled = journal.session().state().instruction().map(str::to_owned);
+    let instruction = match settled {
+        Some(settled) => settled,
+        None => {
+            // Written once, above every turn. Emptiness is the test for whether
+            // this is the first: nothing is recorded before the turn's own
+            // opening, so an empty history means no turn has contributed an item
+            // yet. If a turn opens and then fails to record an item, the history
+            // stays empty while the log already holds a turn, and the next turn
+            // writes a second instruction — the reader takes the last, and the
+            // bytes are the same either way.
+            //
+            // A turn that opens on a message already said is not the first: its
+            // history holds what that message opened with, instruction and context
+            // block included.
+            let first = journal.session().state().is_empty();
+            if first {
+                journal
+                    .record_system(&rendered)
+                    .await
+                    .map_err(TurnError::Unrecordable)?;
+            }
+            journal.session().state().set_instruction(rendered.clone());
+            rendered
+        }
+    };
+
+    // Recomputed every turn: a skill or a server can appear or vanish between
+    // turns, and the instruction the model was sent cannot say so. The request
+    // keeps the settled text regardless.
     //
-    // A turn that opens on a message already said is not the first: its history
-    // holds what that message opened with, instruction and context block included.
-    if journal.session().state().is_empty() {
-        journal
-            .record_system(&prompt::render_instructions(&blocks))
-            .await
-            .map_err(TurnError::Unrecordable)?;
+    // A session restored from a log holds the instruction but not the blocks it
+    // was rendered from, so its first turn takes the current render as the
+    // baseline rather than reporting every block as new.
+    let now = Local::now();
+    let previous = journal.session().state().sections().map(<[_]>::to_vec);
+    let changes = previous.map_or_else(Vec::new, |previous| {
+        prompt::context_changes(
+            &previous,
+            &blocks,
+            context::last_time(journal.session().state().history()),
+            now,
+        )
+    });
+    {
+        let mut state = journal.session().state();
+        state.set_sections(blocks.clone());
+        state.set_context_changes(changes);
     }
 
     // Everything up to the model's first request is recorded before it is announced.
@@ -577,7 +619,7 @@ pub async fn run_turn_with(
         return Err(TurnError::Unrecordable(err));
     }
 
-    let failure = drive(&journal, client, tools, &cancel, &blocks, &sandbox).await;
+    let failure = drive(&journal, client, tools, &cancel, &instruction, &sandbox).await;
 
     // The end is announced even when it could not be recorded. A log one record
     // short is recoverable; a turn left open on the wire is not, because the
@@ -715,7 +757,7 @@ async fn drive(
     client: &dyn ModelClient,
     tools: &ToolRegistry,
     cancel: &tokio_util::sync::CancellationToken,
-    sections: &[prompt::Section],
+    instruction: &str,
     sandbox: &srud_sandbox::SandboxPolicy,
 ) -> TurnFailure {
     let mut step: u32 = 0;
@@ -738,7 +780,7 @@ async fn drive(
 
         let request = {
             let state = journal.session.state();
-            prompt::build_prompt(&state, tools.definitions(), Some(sections))
+            prompt::build_prompt(&state, tools.definitions(), instruction)
         };
 
         let outcome = run_step(journal, client, tools, cancel, request, sandbox).await;

@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 
 use crate::types::{ResponseItem, Role};
 
@@ -47,6 +47,27 @@ pub fn is_item(item: &ResponseItem) -> bool {
         item,
         ResponseItem::Message { role: Role::User, content } if content.starts_with(OPEN_TAG)
     )
+}
+
+/// The date the last context block told the model, when the history holds one.
+///
+/// Read when a session asks whether the date it was given has gone stale: the
+/// block is recorded once, so the last one in history is the last date the model
+/// was told.
+#[must_use]
+pub fn last_time(history: &[ResponseItem]) -> Option<DateTime<Local>> {
+    history.iter().rev().find_map(|item| {
+        if !is_item(item) {
+            return None;
+        }
+        let ResponseItem::Message { content, .. } = item else {
+            return None;
+        };
+        let (_, rest) = content.split_once("<date>")?;
+        let (date, _) = rest.split_once("</date>")?;
+        let naive = NaiveDateTime::parse_from_str(date.trim(), DATE_FORMAT).ok()?;
+        Local.from_local_datetime(&naive).single()
+    })
 }
 
 /// Escapes the characters that would otherwise read as markup.
@@ -122,5 +143,21 @@ mod tests {
     fn a_users_own_message_is_not_context() {
         assert!(!is_item(&ResponseItem::user("hello")));
         assert!(!is_item(&ResponseItem::assistant("<env-context>")));
+    }
+
+    #[test]
+    fn the_last_block_says_when_the_model_was_last_told() {
+        let at = at(14, 35);
+        let history = vec![
+            ResponseItem::user(render(Path::new("/work/ws"), at)),
+            ResponseItem::user("hello"),
+        ];
+
+        assert_eq!(last_time(&history), Some(at));
+        assert_eq!(
+            last_time(&[ResponseItem::user("hello")]),
+            None,
+            "a user's own words are not a date"
+        );
     }
 }

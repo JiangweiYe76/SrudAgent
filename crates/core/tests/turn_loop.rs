@@ -1228,6 +1228,7 @@ async fn a_restored_session_keeps_the_last_question() {
             ResponseItem::user("hi"),
             ResponseItem::assistant("an answer"),
         ],
+        None,
     );
 
     let opened = session
@@ -1333,6 +1334,7 @@ async fn a_restored_session_keeps_the_images_beside_the_question() {
             },
             ResponseItem::assistant("an answer"),
         ],
+        None,
     );
 
     let opened = session.last_prompt().expect("can be asked again");
@@ -1348,6 +1350,7 @@ async fn a_restored_session_with_no_user_message_cannot_be_asked_again() {
         srud_core::types::SessionId::new(),
         "workspace",
         vec![srud_core::context::item(std::path::Path::new("workspace"))],
+        None,
     );
     assert!(session.last_prompt().is_none());
 }

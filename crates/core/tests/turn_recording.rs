@@ -1080,6 +1080,84 @@ async fn caller_blocks_join_the_instruction_after_the_built_ones() {
 }
 
 #[tokio::test]
+async fn the_instruction_stays_settled_when_the_callers_blocks_change() {
+    // The instruction opens every request, so re-rendering it would move the
+    // prefix and cost the provider's cache on every request. What has changed is
+    // described as a change instead.
+    let log = Volatile::new();
+    let timeline = Timeline::default();
+    let session = session();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let client = Watching {
+        inner: Scripted::new(vec![vec![ModelEvent::Done], vec![ModelEvent::Done]]),
+        seen: Arc::clone(&seen),
+    };
+    let before = [srud_core::prompt::Section::new(
+        "MCP servers",
+        "## docs\n\nread docs",
+    )];
+    let after = [srud_core::prompt::Section::new(
+        "MCP servers",
+        "## docs\n\nread docs\n\n## remote\n\ncall remote",
+    )];
+
+    run_turn_with(
+        &session,
+        TurnInput {
+            text: "one".into(),
+            images: Vec::new(),
+        },
+        TurnOptions {
+            sections: &before,
+            ..TurnOptions::default()
+        },
+        &client,
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+    assert!(
+        session.state().context_changes().is_empty(),
+        "the turn that settled the instruction has nothing to report"
+    );
+
+    run_turn_with(
+        &session,
+        TurnInput {
+            text: "two".into(),
+            images: Vec::new(),
+        },
+        TurnOptions {
+            sections: &after,
+            ..TurnOptions::default()
+        },
+        &client,
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+
+    let seen = seen.lock().expect("seen lock");
+    assert_eq!(seen.len(), 2, "one request per turn");
+    assert_eq!(
+        seen[0], seen[1],
+        "the settled instruction is sent again rather than rebuilt"
+    );
+
+    assert_eq!(
+        session.state().context_changes().to_vec(),
+        vec![srud_core::prompt::ContextChange::ServerAdded(
+            "remote".into()
+        )],
+        "the new server is reported, not written into the prefix"
+    );
+}
+
+#[tokio::test]
 async fn a_failed_tool_is_recorded_as_failed() {
     // The flag is what tells a client replaying the log that a call failed. The
     // text carries a marker too, but that is what the model reads, not a fact a
