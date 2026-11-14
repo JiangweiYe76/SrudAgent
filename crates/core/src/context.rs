@@ -1,9 +1,14 @@
-//! The env-context block: where and when a turn runs.
+//! The env-context blocks: where a turn runs, and what has changed since.
 //!
-//! Recorded as a user message immediately ahead of the user's own input, so the
-//! model reads where it is and what time it is before it reads the request. It
-//! is contextual, not conversational: nothing emits an event for it, and it is
-//! recognised by its tag rather than by where it sits in history.
+//! Reported as user messages immediately ahead of the user's own input, so the
+//! model reads its surroundings before it reads the request. They are contextual,
+//! not conversational: nothing emits an event for them, and they are recognised
+//! by their tags rather than by where they sit in history.
+//!
+//! `<env-context>` opens the first turn with the directory and the local time.
+//! `<env-context-update>` appears before a later turn's input when the system
+//! instruction no longer describes the session — a skill or server came or went,
+//! or the date has moved on. There is no block for a turn where nothing changed.
 //!
 //! The time is the user's local time: that is the clock the user's own words —
 //! "today", "this afternoon", deadlines — are measured on.
@@ -12,6 +17,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 
+use crate::prompt::ContextChange;
 use crate::types::{ResponseItem, Role};
 
 /// The tag opening a block. [`is_item`] recognises a block by this text, so it
@@ -20,6 +26,12 @@ pub const OPEN_TAG: &str = "<env-context>";
 
 /// The tag closing the same block.
 pub const CLOSE_TAG: &str = "</env-context>";
+
+/// The tag opening a change block.
+pub const UPDATE_OPEN_TAG: &str = "<env-context-update>";
+
+/// The tag closing a change block.
+pub const UPDATE_CLOSE_TAG: &str = "</env-context-update>";
 
 /// The date format: local date and wall-clock time to the minute.
 const DATE_FORMAT: &str = "%Y-%m-%d %H:%M";
@@ -40,12 +52,66 @@ pub fn item(cwd: &Path) -> ResponseItem {
     ResponseItem::user(render(cwd, Local::now()))
 }
 
-/// Whether an item is an env-context block rather than something the user said.
+/// Renders what changed since the instruction settled.
+///
+/// Only the parts that changed are written: a new date, the skills that came or
+/// went, and the servers that came or went. An addition carries what the
+/// instruction would have said about it — a skill's description, a server's
+/// notes — because nothing else tells the model how to reach it. A removal needs
+/// only the name. `changes` is expected to be non-empty: a turn with nothing to
+/// report writes no block at all.
+#[must_use]
+pub fn render_update(changes: &[ContextChange]) -> String {
+    let mut lines = Vec::with_capacity(changes.len());
+    for change in changes {
+        match change {
+            ContextChange::Time { now } => {
+                lines.push(format!("  <date>{}</date>", now.format(DATE_FORMAT)));
+            }
+            ContextChange::SkillAdded { name, description } => {
+                lines.push(format!(
+                    "  <skill-added>{}: {}</skill-added>",
+                    escape(name),
+                    description
+                ));
+            }
+            ContextChange::SkillRemoved(name) => {
+                lines.push(format!("  <skill-removed>{}</skill-removed>", escape(name)));
+            }
+            ContextChange::ServerAdded { name, instructions } => {
+                lines.push(format!(
+                    "  <server-added>{}: {}</server-added>",
+                    escape(name),
+                    instructions
+                ));
+            }
+            ContextChange::ServerRemoved(name) => {
+                lines.push(format!(
+                    "  <server-removed>{}</server-removed>",
+                    escape(name)
+                ));
+            }
+        }
+    }
+    format!(
+        "{UPDATE_OPEN_TAG}\n{}\n{UPDATE_CLOSE_TAG}",
+        lines.join("\n")
+    )
+}
+
+/// Builds the history item that tells the model what changed.
+#[must_use]
+pub fn update_item(changes: &[ContextChange]) -> ResponseItem {
+    ResponseItem::user(render_update(changes))
+}
+
+/// Whether an item is a context block rather than something the user said.
 #[must_use]
 pub fn is_item(item: &ResponseItem) -> bool {
     matches!(
         item,
-        ResponseItem::Message { role: Role::User, content } if content.starts_with(OPEN_TAG)
+        ResponseItem::Message { role: Role::User, content }
+            if content.starts_with(OPEN_TAG) || content.starts_with(UPDATE_OPEN_TAG)
     )
 }
 
@@ -159,5 +225,39 @@ mod tests {
             None,
             "a user's own words are not a date"
         );
+    }
+
+    #[test]
+    fn an_update_names_only_what_changed() {
+        let changes = [
+            ContextChange::Time { now: at(15, 5) },
+            ContextChange::SkillAdded {
+                name: "gamma".into(),
+                description: "third".into(),
+            },
+            ContextChange::ServerAdded {
+                name: "remote".into(),
+                instructions: "call it".into(),
+            },
+            ContextChange::ServerRemoved("docs".into()),
+        ];
+
+        assert_eq!(
+            render_update(&changes),
+            "<env-context-update>\n  <date>2026-10-02 15:05</date>\n  \
+             <skill-added>gamma: third</skill-added>\n  \
+             <server-added>remote: call it</server-added>\n  \
+             <server-removed>docs</server-removed>\n</env-context-update>"
+        );
+    }
+
+    #[test]
+    fn an_update_is_context_rather_than_something_the_user_said() {
+        let item = update_item(&[ContextChange::SkillAdded {
+            name: "gamma".into(),
+            description: "third".into(),
+        }]);
+
+        assert!(is_item(&item), "a reader skipping context skips this too");
     }
 }

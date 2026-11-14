@@ -8,7 +8,7 @@
 //! keeps it: what changes afterwards is described as [`ContextChange`]s rather
 //! than written into a prefix the model has already been sent.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Local};
 
@@ -54,6 +54,13 @@ const WORKING_STYLE_BODY: &str = "\
 - Do not guess: if a fact is not in front of you, go get it, or say you could not find it.
 - Answer in the language the user writes in.";
 
+/// The context block: how to read the tagged messages that describe the session
+/// rather than the conversation.
+const CONTEXT_BODY: &str = "\
+- `<env-context>` opens the first turn: the directory the session works in, and the local date and time.
+- `<env-context-update>` appears before a user message when a skill or MCP server was added or removed, or the date has moved on.
+- Both describe the environment; read them as facts, not as requests.";
+
 /// The blocks the system instruction is built from when the caller supplies
 /// none of its own.
 ///
@@ -64,6 +71,7 @@ pub fn default_sections() -> Vec<Section> {
     vec![
         Section::new("Role", ROLE_BODY),
         Section::new("Working style", WORKING_STYLE_BODY),
+        Section::new("Context", CONTEXT_BODY),
     ]
 }
 
@@ -101,11 +109,11 @@ pub enum ContextChange {
     /// The instruction's date is more than [`TIME_UPDATE_AFTER_SECS`] old.
     Time { now: DateTime<Local> },
     /// A skill the instruction did not advertise.
-    SkillAdded(String),
+    SkillAdded { name: String, description: String },
     /// A skill the instruction advertised that is gone.
     SkillRemoved(String),
     /// A server the instruction did not describe.
-    ServerAdded(String),
+    ServerAdded { name: String, instructions: String },
     /// A server the instruction described that is gone.
     ServerRemoved(String),
 }
@@ -132,55 +140,61 @@ pub fn context_changes(
 
     let before = skills_in(settled);
     let after = skills_in(current);
-    changes.extend(
-        after
-            .difference(&before)
-            .map(|name| ContextChange::SkillAdded(name.clone())),
-    );
-    changes.extend(
-        before
-            .difference(&after)
-            .map(|name| ContextChange::SkillRemoved(name.clone())),
-    );
+    for (name, description) in &after {
+        if !before.contains_key(name) {
+            changes.push(ContextChange::SkillAdded {
+                name: name.clone(),
+                description: description.clone(),
+            });
+        }
+    }
+    for name in before.keys() {
+        if !after.contains_key(name) {
+            changes.push(ContextChange::SkillRemoved(name.clone()));
+        }
+    }
 
     let before = servers_in(settled);
     let after = servers_in(current);
-    changes.extend(
-        after
-            .difference(&before)
-            .map(|name| ContextChange::ServerAdded(name.clone())),
-    );
-    changes.extend(
-        before
-            .difference(&after)
-            .map(|name| ContextChange::ServerRemoved(name.clone())),
-    );
+    for (name, instructions) in &after {
+        if !before.contains_key(name) {
+            changes.push(ContextChange::ServerAdded {
+                name: name.clone(),
+                instructions: instructions.clone(),
+            });
+        }
+    }
+    for name in before.keys() {
+        if !after.contains_key(name) {
+            changes.push(ContextChange::ServerRemoved(name.clone()));
+        }
+    }
 
     changes
 }
 
-/// The skill names a set of blocks advertises.
-fn skills_in(sections: &[Section]) -> BTreeSet<String> {
+/// The skills a set of blocks advertises, by name.
+fn skills_in(sections: &[Section]) -> BTreeMap<String, String> {
     block(sections, "Skills")
         .into_iter()
         .flat_map(|body| body.lines())
         .filter_map(|line| line.strip_prefix("- "))
-        .filter_map(|entry| entry.split(':').next())
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
+        .filter_map(|entry| entry.split_once(':'))
+        .map(|(name, description)| (name.trim().to_owned(), description.trim().to_owned()))
+        .filter(|(name, _)| !name.is_empty())
         .collect()
 }
 
-/// The server names a set of blocks describes.
-fn servers_in(sections: &[Section]) -> BTreeSet<String> {
-    block(sections, "MCP servers")
-        .into_iter()
-        .flat_map(|body| body.lines())
-        .filter_map(|line| line.strip_prefix("## "))
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
+/// The servers a set of blocks describes, by name.
+fn servers_in(sections: &[Section]) -> BTreeMap<String, String> {
+    let Some(body) = block(sections, "MCP servers") else {
+        return BTreeMap::new();
+    };
+    body.split("\n## ")
+        .map(|part| part.trim_start_matches("## "))
+        .filter_map(|part| part.split_once('\n'))
+        .map(|(name, instructions)| (name.trim().to_owned(), instructions.trim().to_owned()))
+        .filter(|(name, _)| !name.is_empty())
         .collect()
 }
 
@@ -405,10 +419,10 @@ mod tests {
     }
 
     #[test]
-    fn the_default_blocks_are_role_then_working_style() {
+    fn the_default_blocks_are_role_working_style_and_context() {
         let sections = default_sections();
         let titles: Vec<_> = sections.iter().map(|section| section.title).collect();
-        assert_eq!(titles, vec!["Role", "Working style"]);
+        assert_eq!(titles, vec!["Role", "Working style", "Context"]);
         assert!(
             sections[0].body.starts_with("You are Srud,"),
             "the role block names the agent: {:?}",
@@ -417,6 +431,12 @@ mod tests {
         assert!(
             !sections[0].body.contains("Look before acting"),
             "how to work belongs to the working-style block, not the role one"
+        );
+        assert!(
+            sections[2].body.contains("<env-context>")
+                && sections[2].body.contains("<env-context-update>"),
+            "the context block names both tags the runtime writes: {:?}",
+            sections[2].body
         );
     }
 
@@ -462,7 +482,10 @@ mod tests {
         assert_eq!(
             changes,
             vec![
-                ContextChange::SkillAdded("gamma".into()),
+                ContextChange::SkillAdded {
+                    name: "gamma".into(),
+                    description: "third".into(),
+                },
                 ContextChange::SkillRemoved("alpha".into()),
             ],
             "only the names that came or went are reported"
@@ -490,7 +513,10 @@ mod tests {
 
         assert_eq!(
             context_changes(&settled, &current, None, now()),
-            vec![ContextChange::ServerAdded("remote".into())]
+            vec![ContextChange::ServerAdded {
+                name: "remote".into(),
+                instructions: "call remote".into(),
+            }]
         );
     }
 

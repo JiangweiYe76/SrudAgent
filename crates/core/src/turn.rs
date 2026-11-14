@@ -598,11 +598,7 @@ pub async fn run_turn_with(
             now,
         )
     });
-    {
-        let mut state = journal.session().state();
-        state.set_sections(blocks.clone());
-        state.set_context_changes(changes);
-    }
+    journal.session().state().set_sections(blocks.clone());
 
     // Everything up to the model's first request is recorded before it is announced.
     // Any failure here leaves a turn that opened in the log and never closed,
@@ -610,7 +606,7 @@ pub async fn run_turn_with(
     // handled together, and a failure in either closes the turn before reporting.
     let opened = match opening {
         Some(_) => reopen(&journal).await,
-        None => open(&journal, &input).await,
+        None => open(&journal, &input, &changes).await,
     };
     if let Err(err) = opened {
         // Nothing was announced, so nothing is announced here either: the caller
@@ -653,9 +649,14 @@ pub async fn run_turn_with(
 ///
 /// # Errors
 ///
-/// Fails if the log refuses any of the records. The first turn writes one more
-/// than the rest, because the context block is written once and never again.
-async fn open(journal: &Journal<'_>, input: &TurnInput) -> Result<(), RecordError> {
+/// Fails if the log refuses any of the records. A first turn writes the context
+/// block, which is written once and never again; a later turn writes a change
+/// block when something the instruction describes has moved.
+async fn open(
+    journal: &Journal<'_>,
+    input: &TurnInput,
+    changes: &[prompt::ContextChange],
+) -> Result<(), RecordError> {
     journal.open_turn().await?;
 
     // Where this session runs is recorded once, in front of the first thing said
@@ -666,6 +667,13 @@ async fn open(journal: &Journal<'_>, input: &TurnInput) -> Result<(), RecordErro
     if journal.session().state().is_empty() {
         journal
             .record(None, context::item(journal.session().cwd()), None)
+            .await?;
+    } else if !changes.is_empty() {
+        // What the settled instruction no longer describes is recorded ahead of
+        // the input it applies to, and only when something moved: a block saying
+        // nothing would be read for nothing.
+        journal
+            .record(None, context::update_item(changes), None)
             .await?;
     }
 

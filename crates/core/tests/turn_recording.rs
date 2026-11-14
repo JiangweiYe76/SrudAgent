@@ -1089,7 +1089,11 @@ async fn the_instruction_stays_settled_when_the_callers_blocks_change() {
     let session = session();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let client = Watching {
-        inner: Scripted::new(vec![vec![ModelEvent::Done], vec![ModelEvent::Done]]),
+        inner: Scripted::new(vec![
+            vec![ModelEvent::Done],
+            vec![ModelEvent::Done],
+            vec![ModelEvent::Done],
+        ]),
         seen: Arc::clone(&seen),
     };
     let before = [srud_core::prompt::Section::new(
@@ -1119,7 +1123,7 @@ async fn the_instruction_stays_settled_when_the_callers_blocks_change() {
     .await
     .expect("the turn runs");
     assert!(
-        session.state().context_changes().is_empty(),
+        !has_update(&session),
         "the turn that settled the instruction has nothing to report"
     );
 
@@ -1141,20 +1145,81 @@ async fn the_instruction_stays_settled_when_the_callers_blocks_change() {
     .await
     .expect("the turn runs");
 
-    let seen = seen.lock().expect("seen lock");
-    assert_eq!(seen.len(), 2, "one request per turn");
-    assert_eq!(
-        seen[0], seen[1],
-        "the settled instruction is sent again rather than rebuilt"
-    );
+    {
+        let seen = seen.lock().expect("seen lock");
+        assert_eq!(seen.len(), 2, "one request per turn");
+        assert_eq!(
+            seen[0], seen[1],
+            "the settled instruction is sent again rather than rebuilt"
+        );
+    }
 
-    assert_eq!(
-        session.state().context_changes().to_vec(),
-        vec![srud_core::prompt::ContextChange::ServerAdded(
-            "remote".into()
-        )],
-        "the new server is reported, not written into the prefix"
-    );
+    {
+        let history = session.state();
+        let items = history.history();
+        let update = items
+            .iter()
+            .position(is_update)
+            .expect("the change is recorded");
+        let asked = items.iter().position(
+            |item| matches!(item, ResponseItem::Message { content, .. } if content == "two"),
+        );
+        let asked = asked.expect("the input is recorded");
+        assert!(
+            update < asked,
+            "the change is read before the input it applies to"
+        );
+        let ResponseItem::Message { content, .. } = &items[update] else {
+            unreachable!("an update is a message");
+        };
+        assert!(
+            content.contains("<server-added>remote: call remote</server-added>"),
+            "the new server arrives with the notes the instruction would carry: {content}"
+        );
+        assert!(
+            !content.contains("docs"),
+            "a server that stayed put is not restated: {content}"
+        );
+    }
+
+    run_turn_with(
+        &session,
+        TurnInput {
+            text: "three".into(),
+            images: Vec::new(),
+        },
+        TurnOptions {
+            sections: &after,
+            ..TurnOptions::default()
+        },
+        &client,
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+
+    let updates = session
+        .state()
+        .history()
+        .iter()
+        .filter(|item| is_update(item))
+        .count();
+    assert_eq!(updates, 1, "a turn where nothing moved writes no block");
+}
+
+/// Whether an item is a change block rather than something the user said.
+fn is_update(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::Message { content, .. } if content.starts_with("<env-context-update>")
+    )
+}
+
+/// Whether the session's history holds a change block at all.
+fn has_update(session: &Session) -> bool {
+    session.state().history().iter().any(is_update)
 }
 
 #[tokio::test]

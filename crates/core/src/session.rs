@@ -35,8 +35,6 @@ pub struct SessionState {
     /// log, whose blocks were not recorded — its first turn takes the current
     /// render as the baseline.
     sections: Option<Vec<crate::prompt::Section>>,
-    /// What changed about the session's surroundings as of the last turn's start.
-    context_changes: Vec<crate::prompt::ContextChange>,
 }
 
 impl Default for SessionState {
@@ -53,7 +51,6 @@ impl SessionState {
             history: Vec::new(),
             instruction: None,
             sections: None,
-            context_changes: Vec::new(),
         }
     }
 
@@ -64,7 +61,6 @@ impl SessionState {
             history,
             instruction,
             sections: None,
-            context_changes: Vec::new(),
         }
     }
 
@@ -94,17 +90,6 @@ impl SessionState {
     /// Records the blocks this turn rendered.
     pub(crate) fn set_sections(&mut self, sections: Vec<crate::prompt::Section>) {
         self.sections = Some(sections);
-    }
-
-    /// What changed since the instruction settled, as of the last turn's start.
-    #[must_use]
-    pub fn context_changes(&self) -> &[crate::prompt::ContextChange] {
-        &self.context_changes
-    }
-
-    /// Replaces what changed as of this turn's start.
-    pub(crate) fn set_context_changes(&mut self, changes: Vec<crate::prompt::ContextChange>) {
-        self.context_changes = changes;
     }
 
     /// Returns how many items are recorded.
