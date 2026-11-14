@@ -2,7 +2,7 @@
 
 use serde_json::json;
 use srud_core::tools::{ToolContext, ToolRegistry};
-use srud_mcp::{connect_tools, ServerCommand};
+use srud_mcp::{connect_server, ServerCommand};
 use tokio_util::sync::CancellationToken;
 
 fn mock_server() -> ServerCommand {
@@ -22,9 +22,11 @@ fn context() -> ToolContext {
 
 /// The mock server's tools, registered the way the agent registers them.
 async fn registry() -> ToolRegistry {
-    let tools = connect_tools("docs", mock_server()).await.expect("connect");
+    let connected = connect_server("docs", mock_server())
+        .await
+        .expect("connect");
     ToolRegistry::new()
-        .with_tools(tools)
+        .with_tools(connected.tools)
         .expect("the mock server declares no duplicate names")
 }
 
@@ -42,16 +44,33 @@ async fn names_each_tool_after_its_server() {
 
 #[tokio::test]
 async fn keeps_the_name_reproducible_when_the_server_has_spaces_in_it() {
-    let tools = connect_tools("my server", mock_server())
+    let connected = connect_server("my server", mock_server())
         .await
         .expect("connect");
-    let names: Vec<String> = tools.iter().map(|tool| tool.name().to_owned()).collect();
+    let names: Vec<String> = connected
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_owned())
+        .collect();
 
     assert!(
         names
             .iter()
             .all(|name| name.starts_with("mcp__my_server__")),
         "a name the model reproduces has no spaces in it: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn carries_what_the_server_says_about_using_it() {
+    let connected = connect_server("docs", mock_server())
+        .await
+        .expect("connect");
+
+    assert_eq!(
+        connected.instructions.as_deref(),
+        Some("Use the echo tool to repeat text."),
+        "the handshake's usage notes reach the caller rather than being dropped"
     );
 }
 

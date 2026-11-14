@@ -19,7 +19,7 @@ use srud_core::session_event::{MessageId, SessionEvent};
 use srud_core::session_log::{RecordError, SessionLog, Volatile};
 use srud_core::tools::{Tool, ToolContext, ToolOutcome, ToolRegistry};
 use srud_core::types::{Event, EventSink, ResponseItem, TurnEndReason, TurnInput};
-use srud_core::{run_turn, TurnError};
+use srud_core::{run_turn, run_turn_with, TurnError, TurnOptions};
 
 /// One recorded thing and what had been announced by the time it was written.
 #[derive(Debug, Clone, PartialEq)]
@@ -1011,6 +1011,65 @@ async fn the_instruction_recorded_is_the_one_the_request_carries() {
             _ => None,
         })
         .expect("an instruction was recorded");
+
+    let sent = seen.lock().expect("seen lock").remove(0);
+    assert_eq!(
+        sent.as_deref(),
+        Some(recorded.as_str()),
+        "the log and the request must not diverge"
+    );
+}
+
+#[tokio::test]
+async fn caller_blocks_join_the_instruction_after_the_built_ones() {
+    // A caller's blocks describe configuration rather than history, so they are
+    // rendered into the instruction with the runtime's own blocks — and the
+    // recorded copy is still the one the request carries.
+    let log = Volatile::new();
+    let timeline = Timeline::default();
+    let session = session();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    let client = Watching {
+        inner: Scripted::new(vec![vec![ModelEvent::Done]]),
+        seen: Arc::clone(&seen),
+    };
+
+    let blocks = [srud_core::prompt::Section::new(
+        "MCP servers",
+        "## docs\n\nUse the echo tool to repeat text.",
+    )];
+
+    run_turn_with(
+        &session,
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        TurnOptions {
+            sections: &blocks,
+            ..TurnOptions::default()
+        },
+        &client,
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+
+    let recorded = events(&log)
+        .into_iter()
+        .find_map(|entry| match entry {
+            SessionEvent::System { content } => Some(content),
+            _ => None,
+        })
+        .expect("an instruction was recorded");
+
+    assert!(
+        recorded.ends_with("# MCP servers\n\n## docs\n\nUse the echo tool to repeat text."),
+        "the caller's block is rendered under its own heading, after the built ones: {recorded}"
+    );
 
     let sent = seen.lock().expect("seen lock").remove(0);
     assert_eq!(

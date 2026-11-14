@@ -54,6 +54,7 @@ def answer(method, params):
             "protocolVersion": params.get("protocolVersion", "2025-06-18"),
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "mock", "version": "0"},
+            "instructions": "Use the echo tool to repeat text.",
         }
     if method == "tools/list":
         return {"tools": TOOLS}

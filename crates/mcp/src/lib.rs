@@ -1,5 +1,5 @@
-//! MCP client: connects stdio and Streamable HTTP servers and exposes the tools
-//! they declare.
+//! MCP client: connects stdio and Streamable HTTP servers and exposes what they
+//! declare.
 //!
 //! # Layout
 //!
@@ -15,5 +15,5 @@ mod transport;
 
 pub use client::{Client, ToolInfo};
 pub use error::McpError;
-pub use tools::{connect_tools, TOOL_PREFIX};
+pub use tools::{connect_server, Connected, TOOL_PREFIX};
 pub use transport::{HttpEndpoint, ServerCommand, Transport};

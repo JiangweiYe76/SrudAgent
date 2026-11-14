@@ -7,12 +7,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use srud_core::prompt;
 use srud_core::tools::ToolRegistry;
-use srud_mcp::{connect_tools, HttpEndpoint, ServerCommand, Transport};
+use srud_mcp::{connect_server, HttpEndpoint, ServerCommand, Transport};
 use srud_protocol::acp::{AcpError, McpServer, SessionId};
 use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS};
 
 use super::{session_not_found, Agent};
+use crate::sessions::{McpInstructions, McpSession};
 
 impl Agent {
     /// Connects the servers this session was asked to run with.
@@ -37,15 +39,19 @@ impl Agent {
             return Ok(());
         }
         let mut tools = Vec::new();
+        let mut instructions = Vec::new();
         for server in servers {
             let (name, transport) = transport_for(server, cwd)?;
-            let connected = connect_tools(&name, transport).await.map_err(|err| {
+            let connected = connect_server(&name, transport).await.map_err(|err| {
                 AcpError::new(
                     INTERNAL_ERROR,
                     format!("MCP server `{name}` could not be reached: {err}"),
                 )
             })?;
-            tools.extend(connected);
+            tools.extend(connected.tools);
+            if let Some(text) = connected.instructions {
+                instructions.push(McpInstructions { server: name, text });
+            }
         }
         let registry = self.tools.with_tools(tools).map_err(|duplicate| {
             AcpError::new(
@@ -53,7 +59,11 @@ impl Agent {
                 format!("two MCP servers declare the same tool: {duplicate}"),
             )
         })?;
-        if !self.sessions.set_tools(id, Arc::new(registry)) {
+        let mcp = McpSession {
+            tools: Arc::new(registry),
+            instructions,
+        };
+        if !self.sessions.set_mcp(id, Arc::new(mcp)) {
             return Err(session_not_found(id));
         }
         Ok(())
@@ -68,6 +78,29 @@ impl Agent {
         self.sessions
             .tools(id)
             .unwrap_or_else(|| Arc::clone(&self.tools))
+    }
+
+    /// What a session's servers say about themselves, as instruction blocks.
+    ///
+    /// One `## <server>` section per server that said anything, all under a
+    /// single `# MCP servers` heading: each note is a paragraph of its own, so a
+    /// flat list would run them together. Empty when no server said anything —
+    /// a heading with no server under it is text the model reads for nothing.
+    pub(super) fn mcp_sections(&self, id: &SessionId) -> Vec<prompt::Section> {
+        let Some(mcp) = self.sessions.mcp(id) else {
+            return Vec::new();
+        };
+        let body = mcp
+            .instructions
+            .iter()
+            .filter(|server| !server.text.trim().is_empty())
+            .map(|server| format!("## {}\n\n{}", server.server, server.text.trim()))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if body.is_empty() {
+            return Vec::new();
+        }
+        vec![prompt::Section::new("MCP servers", body)]
     }
 }
 
@@ -294,6 +327,44 @@ mod tests {
         );
         let listed = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
         assert_eq!(listed["sessions"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn a_server_s_usage_notes_become_one_instruction_block() {
+        let _home = home();
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+
+        let reply = result_of(
+            agent
+                .handle(request(
+                    SESSION_NEW,
+                    json!({ "cwd": "", "mcpServers": [mock_server()] }),
+                ))
+                .await,
+        );
+        let id = SessionId::new(reply["sessionId"].as_str().expect("an id").to_owned());
+
+        let sections = agent.mcp_sections(&id);
+
+        assert_eq!(sections.len(), 1, "one block, however many servers spoke");
+        assert_eq!(sections[0].title, "MCP servers");
+        assert_eq!(
+            sections[0].body, "## docs\n\nUse the echo tool to repeat text.",
+            "each server keeps its own heading under the shared one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_with_no_servers_has_no_mcp_block() {
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let id = new_session(&agent).await;
+
+        assert!(
+            agent.mcp_sections(&id).is_empty(),
+            "a heading with no server under it is text read for nothing"
+        );
     }
 
     #[tokio::test]

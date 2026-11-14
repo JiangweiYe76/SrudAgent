@@ -16,22 +16,32 @@ use crate::error::McpError;
 /// apart without the agent having to decide which one wins.
 pub const TOOL_PREFIX: &str = "mcp__";
 
-/// Connects one server and returns the tools it declares, named for the model.
+/// One connected server: the tools it declares, and how it asks to be used.
+pub struct Connected {
+    /// The tools, named for the model.
+    pub tools: Vec<Arc<dyn AgentTool>>,
+    /// The usage notes from the handshake, when the server sent any.
+    pub instructions: Option<String>,
+}
+
+/// Connects one server and returns what it declares, named for the model.
 ///
 /// The tools hold the connection: it stays open, and a server started here keeps
 /// running, for as long as any of them is alive. A server that declares no tools
 /// leaves nothing to hold it, so it is closed at once — it has nothing to offer.
+/// Its instructions, if it sent any, are plain text and outlive the connection.
 ///
 /// # Errors
 ///
 /// As [`Client::connect`] and [`Client::list_tools`].
-pub async fn connect_tools(
+pub async fn connect_server(
     server: &str,
     transport: impl Into<crate::transport::Transport>,
-) -> Result<Vec<Arc<dyn AgentTool>>, McpError> {
+) -> Result<Connected, McpError> {
     let client = Arc::new(Client::connect(transport.into()).await?);
+    let instructions = client.instructions();
     let tools = client.list_tools().await?;
-    Ok(tools
+    let tools = tools
         .into_iter()
         .map(|tool| {
             Arc::new(McpTool {
@@ -43,7 +53,11 @@ pub async fn connect_tools(
                 parameters: serde_json::Value::Object((*tool.input_schema).clone()),
             }) as Arc<dyn AgentTool>
         })
-        .collect())
+        .collect();
+    Ok(Connected {
+        tools,
+        instructions,
+    })
 }
 
 /// One tool a connected server declares, as the agent's tool set sees it.

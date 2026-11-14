@@ -133,6 +133,20 @@ impl Client {
             .and_then(|info| info.server_info.as_ref().map(|server| server.name.clone()))
     }
 
+    /// How the server asks to be used, when the handshake carried it.
+    ///
+    /// The text is written for the model rather than for a client UI: when to
+    /// reach for this server and when not to. A server that sent nothing, or
+    /// only whitespace, reports `None`, so a caller can tell it apart from a
+    /// server whose notes are there to be shown.
+    #[must_use]
+    pub fn instructions(&self) -> Option<String> {
+        self.service
+            .peer_info()
+            .and_then(|info| info.instructions.clone())
+            .filter(|text| !text.trim().is_empty())
+    }
+
     /// Closes the connection and stops a server this client started.
     ///
     /// # Errors

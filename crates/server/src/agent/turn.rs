@@ -73,11 +73,16 @@ impl Agent {
         // while this turn runs replaces the session's set, and the turn keeps
         // the one it was asked to run with.
         let tools = self.tools_for(&request.session_id);
-        let result = srud_core::turn::run_turn(
+        let sections = self.mcp_sections(&request.session_id);
+        let result = srud_core::turn::run_turn_with(
             &session,
             srud_core::types::TurnInput {
                 text: parts.text,
                 images: parts.images,
+            },
+            srud_core::TurnOptions {
+                sections: &sections,
+                ..srud_core::TurnOptions::default()
             },
             client.as_ref(),
             tools.as_ref(),
@@ -258,10 +263,14 @@ impl Agent {
         sink.broadcast(latest, srud_core::Event::TurnDiscarded { turn_id: latest });
 
         let tools = self.tools_for(&request.session_id);
-        let result = srud_core::run_turn_after(
+        let sections = self.mcp_sections(&request.session_id);
+        let result = srud_core::turn::run_turn_with(
             &session,
             opened.input,
-            Some(opened.mark),
+            srud_core::TurnOptions {
+                opening: Some(opened.mark),
+                sections: &sections,
+            },
             client.as_ref(),
             tools.as_ref(),
             log.as_ref(),
