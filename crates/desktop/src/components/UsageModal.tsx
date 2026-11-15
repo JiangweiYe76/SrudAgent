@@ -17,13 +17,30 @@ export function UsageModal({ usage, open, onOpenChange }: UsageModalProps) {
     usage.inputTokens > 0
       ? Math.round((usage.cachedInputTokens / usage.inputTokens) * 100)
       : null;
-  const rows: [string, number][] = [
-    [t('usage.input'), usage.inputTokens],
-    [t('usage.output'), usage.outputTokens],
-    [t('usage.cached'), usage.cachedInputTokens],
-    [t('usage.cacheWrite'), usage.cacheWriteInputTokens],
-    [t('usage.reasoning'), usage.reasoningOutputTokens],
+  // Averages over the steps that timed their tokens, so a slow first token and
+  // the rate afterwards are read from the same steps they happened in.
+  const avgFirstToken =
+    usage.timedSteps > 0 ? usage.firstTokenMs / usage.timedSteps : null;
+  const throughput =
+    usage.decodeMs > 0
+      ? (usage.timedOutputTokens * 1000) / usage.decodeMs
+      : null;
+  const rows: [string, string][] = [
+    [t('usage.input'), usage.inputTokens.toLocaleString()],
+    [t('usage.output'), usage.outputTokens.toLocaleString()],
+    [t('usage.cached'), usage.cachedInputTokens.toLocaleString()],
+    [t('usage.cacheWrite'), usage.cacheWriteInputTokens.toLocaleString()],
+    [t('usage.reasoning'), usage.reasoningOutputTokens.toLocaleString()],
   ];
+  if (avgFirstToken !== null) {
+    rows.push([
+      t('usage.avgFirstToken'),
+      `${(avgFirstToken / 1000).toFixed(2)}s`,
+    ]);
+  }
+  if (throughput !== null) {
+    rows.push([t('usage.throughput'), `${Math.round(throughput)} tok/s`]);
+  }
   return (
     <Modal open={open} onOpenChange={onOpenChange}>
       <ModalContent title={t('usage.title')} className="w-[360px]">
@@ -51,7 +68,7 @@ export function UsageModal({ usage, open, onOpenChange }: UsageModalProps) {
                 className="flex items-center justify-between border-b border-border/60 py-1.5 text-xs last:border-none"
               >
                 <span className="text-muted-foreground">{label}</span>
-                <span className="tabular-nums">{value.toLocaleString()}</span>
+                <span className="tabular-nums">{value}</span>
               </div>
             ))}
           </div>

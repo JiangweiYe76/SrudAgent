@@ -384,6 +384,14 @@ function applyUpdate(
       typeof breakdown?.[field] === 'number' ? breakdown[field] : 0;
     const total = (field: keyof UsageState) =>
       (session.usage?.[field] ?? 0) + step(field);
+    // The step's two spans, when it reported both: one without the other cannot
+    // say how long either half took.
+    const timing = srudMeta(params).timing as Json | undefined;
+    const firstTokenMs =
+      typeof timing?.firstTokenMs === 'number' ? timing.firstTokenMs : null;
+    const decodeMs =
+      typeof timing?.decodeMs === 'number' ? timing.decodeMs : null;
+    const timed = firstTokenMs !== null && decodeMs !== null;
     return {
       ...session,
       usage: {
@@ -394,6 +402,12 @@ function applyUpdate(
         cachedInputTokens: total('cachedInputTokens'),
         cacheWriteInputTokens: total('cacheWriteInputTokens'),
         reasoningOutputTokens: total('reasoningOutputTokens'),
+        timedSteps: (session.usage?.timedSteps ?? 0) + (timed ? 1 : 0),
+        firstTokenMs: (session.usage?.firstTokenMs ?? 0) + (firstTokenMs ?? 0),
+        decodeMs: (session.usage?.decodeMs ?? 0) + (decodeMs ?? 0),
+        timedOutputTokens:
+          (session.usage?.timedOutputTokens ?? 0) +
+          (timed ? step('outputTokens') : 0),
       },
       updatedAt: historical ? session.updatedAt : Date.now(),
     };

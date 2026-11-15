@@ -224,6 +224,15 @@ export interface UsageState {
   cachedInputTokens: number;
   cacheWriteInputTokens: number;
   reasoningOutputTokens: number;
+  // Steps that reported how long their tokens took, and what those spans add up
+  // to. A step with no token reports nothing, and is left out of these rather
+  // than counted as instant.
+  timedSteps: number;
+  firstTokenMs: number;
+  decodeMs: number;
+  // Output produced by the timed steps, so throughput is read from the same
+  // steps the time came from.
+  timedOutputTokens: number;
 }
 
 export interface Session {

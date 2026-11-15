@@ -210,6 +210,10 @@ function App() {
             cachedInputTokens: 0,
             cacheWriteInputTokens: 0,
             reasoningOutputTokens: 0,
+            timedSteps: 0,
+            firstTokenMs: 0,
+            decodeMs: 0,
+            timedOutputTokens: 0,
           }
         : undefined),
     [active?.usage, windowSize],

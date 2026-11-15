@@ -357,6 +357,8 @@ const en = {
   'usage.cached': 'Cached input',
   'usage.cacheWrite': 'Cache write',
   'usage.reasoning': 'Reasoning output',
+  'usage.avgFirstToken': 'Avg first token',
+  'usage.throughput': 'Throughput',
   'usage.note': 'Totals accumulate over every step this session reported.',
 
   'mock.reply':
