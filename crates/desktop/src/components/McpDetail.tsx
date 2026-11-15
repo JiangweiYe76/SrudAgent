@@ -8,6 +8,7 @@
 // means the same thing on both.
 import { useState } from 'react';
 import { Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Field, TextInput } from '@/components/ui/field';
 import { t } from '@/lib/i18n';
@@ -115,7 +116,7 @@ interface McpDetailProps {
   refusal: McpRefusal | null;
   /** A change is on its way to the agent; the fields hold still until it lands. */
   busy?: boolean;
-  onSave: (server: McpServerSpec) => void;
+  onSave: (server: McpServerSpec) => Promise<boolean>;
   /** Giving up on an add. An edit resets its own fields instead. */
   onCancel: () => void;
   /**
@@ -135,10 +136,14 @@ export function McpDetail({
   title,
 }: McpDetailProps) {
   const [draft, setDraft] = useState(() => draftOf(server));
+  // What the agent last accepted. A save replaces it with what was just written,
+  // so the Save button can say whether anything is left to write.
+  const [saved, setSaved] = useState(() => draftOf(server));
   const editing = server !== null;
 
   const clean = normalize(draft);
   const problem = validateServer(clean, taken);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   // A form nobody has filled in yet is not told what is missing; it is merely
   // not saveable. Everything else — a name that cannot be used, a duplicate, an
   // unnamed row — is said while it is still being typed.
@@ -352,12 +357,20 @@ export function McpDetail({
           {t('common.cancel')}
         </Button>
         <Button
-          disabled={problem !== null || busy}
+          disabled={problem !== null || busy || !dirty}
           onClick={() => {
-            if (problem === null) onSave(clean);
+            if (problem !== null) return;
+            void onSave(clean).then((landed) => {
+              // What the agent accepted is the new baseline, so the button goes
+              // quiet until something changes again. A refusal leaves the draft
+              // as it is, next to the message that says why.
+              if (!landed) return;
+              setSaved(draft);
+              toast.success(t('mcp.saved'));
+            });
           }}
         >
-          {t('mcp.form.save')}
+          {busy ? t('mcp.form.saving') : t('mcp.form.save')}
         </Button>
       </div>
     </div>

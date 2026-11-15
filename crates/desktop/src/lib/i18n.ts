@@ -191,6 +191,8 @@ const en = {
   'providers.form.add': 'Add a provider',
   'providers.form.edit': 'Editing {id}',
   'providers.form.save': 'Save',
+  'providers.form.saving': 'Saving…',
+  'providers.saved': 'Provider saved.',
   'providers.form.models.hint':
     'This provider offers {n} model(s). They are managed from its row in the list.',
   'providers.field.id': 'ID',
@@ -304,6 +306,8 @@ const en = {
   'mcp.form.add': 'Add a server',
   'mcp.form.edit': 'Editing {name}',
   'mcp.form.save': 'Save',
+  'mcp.form.saving': 'Saving…',
+  'mcp.saved': 'MCP server saved.',
   'mcp.field.transport': 'Transport',
   'mcp.transport.stdio': 'stdio',
   'mcp.transport.http': 'HTTP',

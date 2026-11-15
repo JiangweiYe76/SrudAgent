@@ -148,7 +148,9 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
       (candidate) => !thinkingRows.some((row) => row.level === candidate),
     );
     if (!level) return;
-    setThinkingRows((rows) => [...rows, { level, value: '' }]);
+    // A level's own name is what most endpoints accept, so the row starts
+    // filled with it; only a provider that names it differently needs an edit.
+    setThinkingRows((rows) => [...rows, { level, value: level }]);
     // The first row also becomes the default: a declaration has to name one,
     // and the level the user just added is the one they are thinking about.
     if (!thinkingRows.some((row) => row.level === thinkingDefault)) {
@@ -227,7 +229,18 @@ export function ModelForm({ model, taken, onSave, onCancel }: ModelFormProps) {
                         setThinkingRows((rows) =>
                           rows.map((entry, i) =>
                             i === index
-                              ? { ...entry, level: level as ThinkingLevel }
+                              ? {
+                                  ...entry,
+                                  level: level as ThinkingLevel,
+                                  // A value the user never customised follows
+                                  // the level it was filled from; one they typed
+                                  // stays as it is.
+                                  value:
+                                    entry.value === '' ||
+                                    entry.value === entry.level
+                                      ? level
+                                      : entry.value,
+                                }
                               : entry,
                           ),
                         )

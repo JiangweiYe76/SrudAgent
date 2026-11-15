@@ -85,7 +85,7 @@ export function McpPanel() {
     };
   }, []);
 
-  async function save(server: McpServerSpec) {
+  async function save(server: McpServerSpec): Promise<boolean> {
     setBusy(true);
     try {
       const result = await saveMcpServer(server);
@@ -96,8 +96,10 @@ export function McpPanel() {
       setSelected(
         result.servers.findIndex((entry) => entry.name === server.name),
       );
+      return true;
     } catch (err) {
       setRefusal(refusalOf(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -279,7 +281,7 @@ export function McpPanel() {
               taken={taken}
               refusal={refusal}
               busy={busy}
-              onSave={(server) => void save(server)}
+              onSave={save}
               onCancel={() => {
                 setAdding(false);
                 setRefusal(null);
@@ -294,7 +296,7 @@ export function McpPanel() {
               taken={taken}
               refusal={refusal}
               busy={busy}
-              onSave={(server) => void save(server)}
+              onSave={save}
             />
           ) : (
             <span className="text-xs text-muted-foreground">

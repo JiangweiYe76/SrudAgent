@@ -24,12 +24,15 @@ const mocks = vi.hoisted(() => ({
   ): Promise<unknown> => {
     throw new Error('invoke not configured');
   },
+  toast: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (cmd: string, args?: Record<string, unknown>) =>
     mocks.invoke(cmd, args),
 }));
+
+vi.mock('sonner', () => ({ toast: { success: mocks.toast } }));
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 
@@ -89,6 +92,7 @@ beforeEach(async () => {
   toolsFailure = null;
   sent = [];
   refuseNext = null;
+  mocks.toast.mockClear();
   mocks.invoke = async (cmd, args) => {
     if (cmd !== 'rpc_request') throw new Error(`unexpected invoke: ${cmd}`);
     const payload = args!.payload as {
@@ -375,6 +379,34 @@ describe('the list', () => {
       expect(lastSet()).toEqual(stdio({ command: 'renamed-server' }));
     });
     expect(document.body.textContent).toContain('renamed-server');
+  });
+});
+
+describe('saving a server', () => {
+  it('keeps Save disabled until a field changes', async () => {
+    catalog = [stdio()];
+    await render();
+
+    await click(row('docs'));
+    await click(button('Settings'));
+    expect(button('Save').disabled).toBe(true);
+
+    await type(inputByLabel('Command'), 'other-server');
+    expect(button('Save').disabled).toBe(false);
+  });
+
+  it('confirms a save and clears the button again', async () => {
+    catalog = [stdio()];
+    await render();
+
+    await click(row('docs'));
+    await click(button('Settings'));
+    await type(inputByLabel('Command'), 'renamed-server');
+    await click(button('Save'));
+
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
+    // What was written is the new baseline, so there is nothing left to save.
+    expect(button('Save').disabled).toBe(true);
   });
 });
 
