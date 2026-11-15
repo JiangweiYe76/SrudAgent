@@ -104,11 +104,12 @@ function selectTrigger(label: string): HTMLButtonElement {
   return found;
 }
 
-function inputByPlaceholder(placeholder: string): HTMLInputElement {
-  const found = [...document.querySelectorAll<HTMLInputElement>('input')].find(
-    (input) => input.placeholder === placeholder,
-  );
-  if (!found) throw new Error(`no field with placeholder ${placeholder}`);
+// The wire value of the last thinking level row: the form's fields are the
+// model's own, then one text field per level.
+function levelValue(): HTMLInputElement {
+  const fields = [...document.querySelectorAll<HTMLInputElement>('input')];
+  const found = fields[fields.length - 1];
+  if (!found) throw new Error('no thinking level value field');
   return found;
 }
 
@@ -206,10 +207,17 @@ describe('ModelForm', () => {
     await click(button('Add level'));
     // The first row is `off`, and it becomes the default.
     expect(selectTrigger('Default level').textContent).toBe('Off');
-    // A level with no wire value is still not a declaration.
+    // A new row starts with the level's own name as its wire value: that is
+    // what most endpoints accept, so it can be saved without an edit.
+    expect(levelValue().value).toBe('off');
+    expect(button('Save').disabled).toBe(false);
+
+    // Cleared, the row is no longer a declaration: the endpoint still needs a
+    // value to receive.
+    await type(levelValue(), '');
     expect(button('Save').disabled).toBe(true);
 
-    await type(inputByPlaceholder('off'), 'none');
+    await type(levelValue(), 'none');
     expect(button('Save').disabled).toBe(false);
 
     await click(button('Save'));
