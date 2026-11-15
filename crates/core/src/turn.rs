@@ -21,6 +21,7 @@
 //! of one turn rather than the guarantee that what they saw can be recovered.
 
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 use chrono::Local;
 use futures::StreamExt;
@@ -29,7 +30,7 @@ use crate::client::{ModelClient, ModelError, ModelEvent, ModelRequest, TokenUsag
 use crate::context;
 use crate::prompt;
 use crate::session::Session;
-use crate::session_event::MessageId;
+use crate::session_event::{MessageId, StepTiming};
 use crate::session_log::{entry_for, entry_in_step, RecordError, SessionLog};
 use crate::tools::{failure_text, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use crate::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnId, TurnInput};
@@ -191,11 +192,12 @@ impl<'a> Journal<'a> {
     /// # Errors
     ///
     /// If the log refuses the record.
-    pub async fn end_step(&self, step: u32) -> Result<(), RecordError> {
+    pub async fn end_step(&self, step: u32, timing: Option<StepTiming>) -> Result<(), RecordError> {
         self.log
             .record(&crate::session_event::SessionEvent::StepEnded {
                 turn_id: self.turn_id,
                 step,
+                timing,
             })
             .await?;
         self.step.store(0, Ordering::Relaxed);
@@ -793,16 +795,29 @@ async fn drive(
             return TurnFailure::reported(&err);
         }
 
+        // Measured from the step's start: the wait for the first token includes
+        // everything the step does before the model answers.
+        let mut timing = TokenTiming::new();
+
         let request = {
             let state = journal.session.state();
             prompt::build_prompt(&state, tools.definitions(), instruction)
         };
 
-        let outcome = run_step(journal, client, tools, cancel, request, sandbox).await;
+        let outcome = run_step(
+            journal,
+            client,
+            tools,
+            cancel,
+            request,
+            sandbox,
+            &mut timing,
+        )
+        .await;
 
         // The step closes however it went, so a log that stops here still says
         // which step it stopped in rather than leaving one open forever.
-        if let Err(err) = journal.end_step(step).await {
+        if let Err(err) = journal.end_step(step, timing.finish()).await {
             return TurnFailure::reported(&err);
         }
 
@@ -833,6 +848,62 @@ enum StepOutcome {
     NeedsFollowUp,
 }
 
+/// When the tokens of one step arrived, measured from the step's start.
+///
+/// Nothing else in the log says when an answer began: a record is stamped when
+/// it is written, and a message is written only once its stream ends. The ends
+/// of the stream are noted here as they happen and recorded with the step's
+/// close.
+struct TokenTiming {
+    started: Instant,
+    first: Option<Instant>,
+    last: Option<Instant>,
+}
+
+impl TokenTiming {
+    /// Starts the clock, before the request is built.
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            first: None,
+            last: None,
+        }
+    }
+
+    /// Notes one token of the answer's text or reasoning.
+    fn token(&mut self) {
+        let now = Instant::now();
+        self.first.get_or_insert(now);
+        self.last = Some(now);
+    }
+
+    /// Notes a tool call, which arrives complete.
+    ///
+    /// It closes the step's output but cannot open it: a call carries arguments
+    /// the model has finished producing, so the moment it arrives is the moment
+    /// the last token of that output did.
+    fn trail(&mut self) {
+        if self.first.is_some() {
+            self.last = Some(Instant::now());
+        }
+    }
+
+    /// The two spans, or `None` when no token arrived at all.
+    fn finish(&self) -> Option<StepTiming> {
+        let first = self.first?;
+        let last = self.last?;
+        Some(StepTiming {
+            first_token_ms: millis(first.duration_since(self.started)),
+            decode_ms: millis(last.duration_since(first)),
+        })
+    }
+}
+
+/// Milliseconds in a duration, saturating at the type's limit.
+fn millis(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Runs one request/response round-trip, executing any tools it asked for.
 async fn run_step(
     journal: &Journal<'_>,
@@ -841,6 +912,7 @@ async fn run_step(
     cancel: &tokio_util::sync::CancellationToken,
     request: ModelRequest,
     sandbox: &srud_sandbox::SandboxPolicy,
+    timing: &mut TokenTiming,
 ) -> Result<StepOutcome, TurnFailure> {
     let mut stream = match client.stream(request, cancel.clone()).await {
         Ok(stream) => stream,
@@ -900,6 +972,7 @@ async fn run_step(
 
         match event {
             ModelEvent::TextDelta { delta } => {
+                timing.token();
                 message.push_str(&delta);
                 journal.sink().emit(Event::AgentMessageDelta {
                     message_id: Some(message_id.clone()),
@@ -907,6 +980,7 @@ async fn run_step(
                 });
             }
             ModelEvent::ThoughtDelta { delta } => {
+                timing.token();
                 reasoning.push_str(&delta);
                 journal.sink().emit(Event::AgentThoughtDelta {
                     message_id: Some(thought_id.clone()),
@@ -922,11 +996,14 @@ async fn run_step(
                 call_id,
                 name,
                 arguments,
-            } => tool_calls.push(PendingToolCall {
-                call_id,
-                name,
-                arguments,
-            }),
+            } => {
+                timing.trail();
+                tool_calls.push(PendingToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                });
+            }
             ModelEvent::Usage(reported) => usage = Some(reported),
             ModelEvent::Done => break,
         }

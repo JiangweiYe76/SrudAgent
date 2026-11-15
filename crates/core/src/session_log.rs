@@ -142,7 +142,7 @@ pub fn describe(entry: &SessionEvent) -> String {
         SessionEvent::StepStarted { turn_id, step } => {
             format!("the start of step {step} in turn {turn_id}")
         }
-        SessionEvent::StepEnded { turn_id, step } => {
+        SessionEvent::StepEnded { turn_id, step, .. } => {
             format!("the end of step {step} in turn {turn_id}")
         }
         SessionEvent::TurnEnded { turn_id, .. } => format!("the end of turn {turn_id}"),
