@@ -24,7 +24,7 @@ interface McpServerDetailProps {
   taken: string[];
   refusal: McpRefusal | null;
   busy?: boolean;
-  onSave: (server: McpServerSpec) => void;
+  onSave: (server: McpServerSpec) => Promise<boolean>;
 }
 
 export function McpServerDetail({

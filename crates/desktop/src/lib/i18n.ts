@@ -306,6 +306,8 @@ const en = {
   'mcp.form.add': 'Add a server',
   'mcp.form.edit': 'Editing {name}',
   'mcp.form.save': 'Save',
+  'mcp.form.saving': 'Saving…',
+  'mcp.saved': 'MCP server saved.',
   'mcp.field.transport': 'Transport',
   'mcp.transport.stdio': 'stdio',
   'mcp.transport.http': 'HTTP',
