@@ -222,7 +222,7 @@ mod tests {
 
     /// A turn id for a test to record against.
     fn turn() -> TurnId {
-        TurnId::new()
+        TurnId(1)
     }
 
     #[tokio::test]

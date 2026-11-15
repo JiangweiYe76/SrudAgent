@@ -516,9 +516,9 @@ pub async fn run_turn_with(
     let sections = options.sections;
     let opening = options.opening;
 
-    let turn_id = TurnId::new();
     let guard = session.begin_turn().ok_or(TurnError::Busy)?;
     let cancel = guard.cancellation();
+    let turn_id = session.allocate_turn();
     let journal = Journal::new(session, log, sink, turn_id);
 
     // The sandbox level is read once, at the turn's start. A setting changed

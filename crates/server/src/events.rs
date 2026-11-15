@@ -291,7 +291,7 @@ mod tests {
         let mut rx = hub.subscribe();
         let sink = hub.sink_for(CoreSessionId::new(), None);
 
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         sink.emit(Event::TurnStarted { turn_id });
         sink.emit(Event::AgentMessageDelta {
             message_id: None,
@@ -326,7 +326,7 @@ mod tests {
             "nothing goes out before the turn has an id"
         );
 
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         sink.emit(Event::TurnStarted { turn_id });
 
         let received = rx.try_recv().expect("the held message is sent once named");
@@ -348,7 +348,7 @@ mod tests {
         let mut rx = hub.subscribe();
         let sink = hub.sink_for(CoreSessionId::new(), None);
 
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         sink.emit(Event::TurnStarted { turn_id });
         sink.emit(Event::AgentMessageDelta {
             message_id: None,
@@ -380,7 +380,7 @@ mod tests {
             )),
         };
 
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         sink.emit(Event::TurnStarted { turn_id });
         sink.emit(Event::AgentMessageDelta {
             message_id: None,
@@ -407,9 +407,7 @@ mod tests {
         let second = hub.sink_for(CoreSessionId::new(), None);
 
         for sink in [&first, &second] {
-            sink.emit(Event::TurnStarted {
-                turn_id: TurnId::new(),
-            });
+            sink.emit(Event::TurnStarted { turn_id: TurnId(1) });
             sink.emit(Event::AgentMessageDelta {
                 message_id: None,
                 delta: "x".into(),
@@ -452,9 +450,7 @@ mod tests {
     fn sink_without_subscribers_does_not_panic() {
         let hub = EventHub::new();
         let sink = hub.sink_for(CoreSessionId::new(), None);
-        sink.emit(Event::TurnStarted {
-            turn_id: TurnId::new(),
-        });
+        sink.emit(Event::TurnStarted { turn_id: TurnId(1) });
         sink.emit(Event::AgentMessageDelta {
             message_id: None,
             delta: "x".into(),

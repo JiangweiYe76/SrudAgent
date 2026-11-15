@@ -7,13 +7,14 @@
 //! model-visible context stay in agreement.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use tokio_util::sync::CancellationToken;
 
 use srud_sandbox::SandboxLevel;
 
-use crate::types::{ImagePart, ResponseItem, Role, SessionId, TurnInput};
+use crate::types::{ImagePart, ResponseItem, Role, SessionId, TurnId, TurnInput};
 
 /// The recorded conversation.
 #[derive(Debug)]
@@ -195,6 +196,12 @@ pub struct Session {
     /// Read when a turn starts, so a change between turns applies to the next
     /// one, and never halfway through the current one.
     sandbox: Mutex<SandboxLevel>,
+    /// The next turn number to hand out.
+    ///
+    /// A turn's id is the session's running turn number, so the counter has to
+    /// survive a restart: a session rebuilt from its log resumes after the last
+    /// turn the log holds.
+    next_turn: AtomicU32,
 }
 
 /// Where the last turn's input ends, and what it was.
@@ -237,6 +244,7 @@ impl Session {
             last_input: Mutex::new(None),
             steers: Mutex::new(Vec::new()),
             sandbox: Mutex::new(sandbox),
+            next_turn: AtomicU32::new(1),
         }
     }
 
@@ -256,12 +264,16 @@ impl Session {
     /// The last thing the user said is picked up from the history, so the turn
     /// that answered it can be answered again in this process. Where its input
     /// ended is not in the log, but the message and the images beside it are.
+    ///
+    /// `next_turn` is the number the log's session had reached, so turns recorded
+    /// after this one continue the sequence rather than repeat it.
     #[must_use]
     pub fn restored(
         id: SessionId,
         cwd: impl Into<PathBuf>,
         history: Vec<ResponseItem>,
         instruction: Option<String>,
+        next_turn: TurnId,
     ) -> Self {
         let state = SessionState::restored(history, instruction);
         let prompt = state.trailing_prompt();
@@ -278,7 +290,16 @@ impl Session {
             last_input,
             steers: Mutex::new(Vec::new()),
             sandbox: Mutex::new(SandboxLevel::default()),
+            next_turn: AtomicU32::new(next_turn.0),
         }
+    }
+
+    /// Hands out the next turn's id.
+    ///
+    /// Only the turn loop calls this, and only after it has claimed the turn
+    /// slot, so a busy session never burns a number.
+    pub(crate) fn allocate_turn(&self) -> TurnId {
+        TurnId(self.next_turn.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Returns this session's sandbox level.
@@ -622,5 +643,19 @@ mod tests {
             state.push(ResponseItem::assistant("two"));
         }
         assert_eq!(session.state().len(), 2);
+    }
+
+    #[test]
+    fn turns_are_numbered_from_where_the_log_left_off() {
+        let session = Session::restored(
+            SessionId::new(),
+            PathBuf::from("workspace"),
+            Vec::new(),
+            None,
+            TurnId(7),
+        );
+
+        assert_eq!(session.allocate_turn(), TurnId(7));
+        assert_eq!(session.allocate_turn(), TurnId(8));
     }
 }
