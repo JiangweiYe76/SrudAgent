@@ -482,9 +482,10 @@ mod tests {
         }
 
         // A replayed update is the update live streaming sent. The usage records
-        // are not among them: this agent configures no context window.
+        // are not among them: this agent configures no context window. The
+        // context block is, so the two turns replay five updates.
         let updates = replayed_updates(&mut rx);
-        assert_eq!(updates.len(), 4, "{updates:?}");
+        assert_eq!(updates.len(), 5, "{updates:?}");
         assert!(
             updates.iter().all(|(_, end)| end.is_none()),
             "no update closes a turn: {updates:?}"
@@ -583,7 +584,8 @@ mod tests {
         let history = response["_meta"]["srud"]["history"]
             .as_array()
             .expect("the response carries the replay");
-        assert_eq!(history.len(), 4, "{history:?}");
+        // The context block, then two questions and their answers.
+        assert_eq!(history.len(), 5, "{history:?}");
         let seqs: Vec<u64> = history
             .iter()
             .map(|item| {
@@ -592,22 +594,26 @@ mod tests {
                     .expect("every replayed update is numbered")
             })
             .collect();
-        assert_eq!(seqs, vec![1, 2, 3, 4]);
+        assert_eq!(seqs, vec![1, 2, 3, 4, 5]);
         assert_eq!(
             response["_meta"]["srud"]["lastSeq"],
-            json!(4),
+            json!(5),
             "the response says where its replay ended"
         );
         // Each entry is the update the stream would have carried: the turn it
-        // belongs to is on it, and so is the text.
-        assert_eq!(
-            history[0]["update"]["content"]["text"],
-            json!("hello"),
-            "{history:?}"
+        // belongs to is on it, and so is the text. The block comes first, then
+        // the question and answer it led.
+        let first_text = history[0]["update"]["content"]["text"]
+            .as_str()
+            .expect("the block carries text");
+        assert!(
+            first_text.starts_with("<env-context>"),
+            "the replay opens with the context block: {history:?}"
         );
-        assert_eq!(history[1]["update"]["content"]["text"], json!("answer"));
-        assert_eq!(history[2]["update"]["content"]["text"], json!("again"));
-        assert_eq!(history[3]["update"]["content"]["text"], json!("answer"));
+        assert_eq!(history[1]["update"]["content"]["text"], json!("hello"));
+        assert_eq!(history[2]["update"]["content"]["text"], json!("answer"));
+        assert_eq!(history[3]["update"]["content"]["text"], json!("again"));
+        assert_eq!(history[4]["update"]["content"]["text"], json!("answer"));
         let turns: Vec<&str> = history
             .iter()
             .map(|item| {
@@ -616,8 +622,9 @@ mod tests {
                     .expect("every replayed update names its turn")
             })
             .collect();
-        assert_eq!(turns[0], turns[1], "one turn");
-        assert_ne!(turns[0], turns[2], "the next prompt is its own turn");
+        assert_eq!(turns[0], turns[1], "the block belongs to the turn it leads");
+        assert_eq!(turns[1], turns[2], "one turn");
+        assert_ne!(turns[2], turns[3], "the next prompt is its own turn");
 
         // The streamed copy is the same updates under the same numbers. The
         // title that follows the replay is not one of them.
@@ -672,8 +679,8 @@ mod tests {
         let history = response["_meta"]["srud"]["history"]
             .as_array()
             .expect("the response carries the replay");
-        assert_eq!(history.len(), 520);
-        assert_eq!(response["_meta"]["srud"]["lastSeq"], json!(520));
+        assert_eq!(history.len(), 521);
+        assert_eq!(response["_meta"]["srud"]["lastSeq"], json!(521));
 
         // Drained only now: the subscriber was never keeping up, so the stream
         // is short by exactly what the channel dropped.

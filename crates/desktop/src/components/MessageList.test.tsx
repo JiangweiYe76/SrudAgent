@@ -334,6 +334,33 @@ describe('following the bottom while streaming', () => {
     expect(el.scrollTop).toBe(1600);
   });
 
+  it('folds a context block into its own card above the input', () => {
+    const text =
+      '<env-context-update>\n  <skill-added>demo01: testing</skill-added>\n</env-context-update>';
+    const container = render([
+      turn({
+        id: 't1',
+        contextBlocks: [{ kind: 'update', text }],
+      }),
+    ]);
+
+    expect(container.textContent).toContain('Environment update');
+    expect(container.textContent).toContain('draw me a flowchart');
+
+    const trigger = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Environment update'),
+    );
+    act(() => {
+      trigger?.click();
+    });
+
+    // A row names what changed; the notes beside a name stay out of the card.
+    expect(container.textContent).toContain('Skill added');
+    expect(container.textContent).toContain('demo01');
+    expect(container.textContent).not.toContain('testing');
+    expect(container.textContent).not.toContain('<env-context-update>');
+  });
+
   it('never leaves the reader above the bottom while they are following', () => {
     render([turn({ id: 't1' })]);
     const el = list();

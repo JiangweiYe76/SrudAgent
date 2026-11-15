@@ -292,6 +292,12 @@ pub struct Loaded {
     /// The thinking level the session sends, as last chosen. `None` when the
     /// session never chose one, or when thinking stopped being controlled.
     pub thinking: Option<String>,
+    /// The system instruction the log says was sent, as last recorded.
+    ///
+    /// A session started again from this log keeps this instruction rather than
+    /// rendering a new one: it is the front of the request prefix, and the
+    /// conversation it continues was cached on these bytes.
+    pub instruction: Option<String>,
     /// The sandbox level the session runs under, as last chosen.
     pub sandbox: SandboxLevel,
     /// The history the model should see next, oldest first.
@@ -505,6 +511,10 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
     // The thinking level the session sends, as last chosen. Same rule: the last
     // record is what is true now.
     let mut thinking = None;
+    // The system instruction, as last recorded. The last one wins: the format
+    // allows a later record to replace a changed instruction, and a reader
+    // rebuilding a request takes the one that was sent last.
+    let mut instruction = None;
     // The sandbox level the session runs under, as last chosen. An absent record
     // means the session never wrote one, and the default level applies.
     let mut sandbox = SandboxLevel::default();
@@ -518,6 +528,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
             SessionEvent::Title { title: last } => title = last.clone(),
             SessionEvent::Model { model: last } => model = last.clone(),
             SessionEvent::Thinking { level } => thinking = level.clone(),
+            SessionEvent::System { content } => instruction = Some(content.clone()),
             SessionEvent::Sandbox { mode } => sandbox = *mode,
             SessionEvent::TurnEnded {
                 turn_id,
@@ -546,9 +557,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
             | SessionEvent::StepEnded { turn_id, .. } => {
                 items.push((*turn_id, &entry.event));
             }
-            SessionEvent::Session { .. }
-            | SessionEvent::System { .. }
-            | SessionEvent::TurnStarted { .. } => {}
+            SessionEvent::Session { .. } | SessionEvent::TurnStarted { .. } => {}
         }
     }
 
@@ -649,14 +658,10 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         .clone()
         .filter_map(|event| event.history_item().cloned())
         .collect();
-    let conversation = ordered
-        .filter(|event| {
-            event
-                .history_item()
-                .is_none_or(|item| !crate::context::is_item(item))
-        })
-        .cloned()
-        .collect();
+    // Context blocks are part of what a client is shown: they describe the
+    // session, and a transcript that dropped them would lose what the model was
+    // told about where and when it was working.
+    let conversation = ordered.cloned().collect();
 
     Ok(Loaded {
         session_id,
@@ -665,6 +670,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         title,
         model,
         thinking,
+        instruction,
         sandbox,
         history,
         conversation,
@@ -864,6 +870,37 @@ mod tests {
         assert_eq!(log.entries[1].line, 2, "lines are numbered from one");
         let item = log.entries[1].event.history_item().unwrap();
         assert_eq!(item, &ResponseItem::assistant("hi"));
+    }
+
+    #[tokio::test]
+    async fn a_restarted_session_keeps_the_instruction_the_log_recorded() {
+        // The instruction is the front of the request prefix, so a session
+        // started again from its log must send the bytes it was cached on
+        // rather than render a new one.
+        let (writer, path) = fresh("instruction").await;
+        writer
+            .record(&SessionEvent::session(
+                SessionId::new(),
+                PathBuf::from("/w"),
+            ))
+            .await
+            .expect("the first record");
+        writer
+            .record(&SessionEvent::system("# Role\n\nfirst"))
+            .await
+            .expect("an instruction");
+        writer
+            .record(&SessionEvent::system("# Role\n\nsecond"))
+            .await
+            .expect("a later instruction");
+
+        let loaded = load(&path).await.expect("a log to read");
+
+        assert_eq!(
+            loaded.instruction.as_deref(),
+            Some("# Role\n\nsecond"),
+            "the reader takes the last instruction, as the format says"
+        );
     }
 
     #[tokio::test]
@@ -1316,8 +1353,8 @@ mod tests {
         assert_eq!(loaded.history.len(), 3, "{:?}", loaded.history);
         assert_eq!(
             loaded.conversation.len(),
-            2,
-            "and a client is not shown it: {:?}",
+            3,
+            "and a client is shown it too: {:?}",
             loaded.conversation
         );
     }
@@ -1484,9 +1521,10 @@ mod tests {
     }
 
     #[test]
-    fn the_conversation_leaves_out_what_the_user_never_said() {
-        // The env-context block is recorded so the model reads it; a client
-        // replaying the session is not being shown the agent's own notes.
+    fn the_conversation_carries_the_context_block_and_the_reasoning() {
+        // A client folds the context block into its own card, so a replay has to
+        // carry it; reasoning is model-invisible but rendered by the client, so
+        // the two projections are not each other's complement.
         let turn_id = TurnId::new();
         let log = log_of(vec![
             opening(),
@@ -1513,7 +1551,7 @@ mod tests {
 
         let loaded = rebuild(&log, true).expect("a session");
 
-        // The model sees the context; the client does not.
+        // The model sees the context; the client is shown it as well.
         assert_eq!(loaded.history.len(), 3, "{:?}", loaded.history);
         let shown: Vec<&ResponseItem> = loaded
             .conversation
@@ -1521,16 +1559,21 @@ mod tests {
             .filter_map(SessionEvent::history_item)
             .collect();
         assert_eq!(
-            shown,
-            vec![
-                &ResponseItem::user("hello"),
-                // Reasoning is model-invisible but the client renders it, so the
-                // two projections are not each other's complement.
-                &ResponseItem::Reasoning {
-                    content: "thinking".into()
-                },
-            ],
-            "the env-context block is the one left out"
+            shown.len(),
+            3,
+            "the context block is replayed first: {shown:?}"
+        );
+        assert!(
+            crate::context::is_item(shown[0]),
+            "the block a client folds into its own card: {shown:?}"
+        );
+        assert_eq!(shown[1], &ResponseItem::user("hello"));
+        assert_eq!(
+            shown[2],
+            &ResponseItem::Reasoning {
+                content: "thinking".into()
+            },
+            "reasoning is model-invisible but the client renders it"
         );
     }
 

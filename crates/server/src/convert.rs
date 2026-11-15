@@ -67,6 +67,12 @@ pub fn to_session_update(
         Event::UserMessage { content } => SessionUpdate::UserMessageChunk(ContentChunk::new(
             ContentBlock::Text(TextContent::new(content)),
         )),
+        // A block the runtime wrote travels as a user message because that is
+        // what it is in history; a client tells it apart by the tag it opens
+        // with, which is the same text the model reads.
+        Event::ContextBlock { content } => SessionUpdate::UserMessageChunk(ContentChunk::new(
+            ContentBlock::Text(TextContent::new(content)),
+        )),
         // The message id rides on the chunk: it is what tells a consumer where
         // one message ends and the next begins, which the text of a fragment
         // cannot say. Omitted rather than null when absent, because absent is the
@@ -479,13 +485,11 @@ pub(crate) fn end_reason_wire(reason: TurnEndReason) -> &'static str {
 /// cannot end up handling two shapes for one thing. How each turn ended is not part
 /// of this stream; it rides on the `session/load` response.
 ///
-/// Returns `None` for a record a client is not shown. The env-context block is
-/// context the model reads — showing it would put the agent's own notes on screen
-/// as something the user said — and a
-/// [`Reasoning`](srud_core::types::ResponseItem::Reasoning) item **is** shown,
-/// because a client renders thinking and the model is the one that never sees it
-/// again. `diffs` carries tool-call diffs from a call's recorded arguments to
-/// its recorded result.
+/// Returns `None` for a record a client is not shown. Reasoning is shown — a
+/// client renders thinking, and the model is the one that never sees it again —
+/// and so is a context block, which a client folds into its own card rather than
+/// a message bubble. `diffs` carries tool-call diffs from a call's recorded
+/// arguments to its recorded result.
 #[must_use]
 pub fn replay_notification(
     session_id: &SessionId,
@@ -525,12 +529,6 @@ pub fn replay_notification(
     else {
         return None;
     };
-
-    // Context the model reads, shown to nobody: putting it on screen would render
-    // the agent's own notes as something the user said.
-    if srud_core::context::is_item(item) {
-        return None;
-    }
 
     let update = match item {
         ResponseItem::Message { role, content } => match role {
@@ -784,6 +782,48 @@ mod tests {
         .expect("a replayed item is shown");
         let value = serde_json::to_value(&n).unwrap();
         assert_eq!(value["params"]["_meta"]["srud"]["stepIndex"], json!(2));
+    }
+
+    #[test]
+    fn a_context_block_travels_as_a_user_message() {
+        let n = notify(Event::ContextBlock {
+            content: "<env-context-update>\n  <skill-added>demo01: testing</skill-added>\n\
+                      </env-context-update>"
+                .into(),
+        });
+        let SessionUpdate::UserMessageChunk(chunk) = &n.params.as_ref().unwrap().update else {
+            panic!("expected a user_message_chunk");
+        };
+        let ContentBlock::Text(text) = &chunk.content else {
+            panic!("expected text");
+        };
+
+        assert!(
+            text.text.contains("<skill-added>demo01"),
+            "the block travels as the model read it: {}",
+            text.text
+        );
+    }
+
+    #[test]
+    fn a_replayed_context_block_is_shown_too() {
+        use srud_core::types::TurnId;
+        let event = SessionEvent::item(
+            TurnId::new(),
+            None,
+            srud_core::context::item(std::path::Path::new("/w")),
+        );
+
+        let n = replay_notification(&session_id(), &event, None, &mut ToolDiffIndex::default())
+            .expect("a context block is shown");
+
+        assert!(
+            matches!(
+                n.params.as_ref().unwrap().update,
+                SessionUpdate::UserMessageChunk(_)
+            ),
+            "a client renders it as its own card, not as a message bubble"
+        );
     }
 
     #[test]

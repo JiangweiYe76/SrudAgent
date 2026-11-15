@@ -404,6 +404,8 @@ mod tests {
             vec![
                 // The first prompt names the session, before any turn output.
                 "session_info_update",
+                // The block the turn writes ahead of the input, then the input.
+                "user_message_chunk",
                 "user_message_chunk",
                 "agent_message_chunk",
                 "agent_message_chunk"

@@ -120,6 +120,12 @@ pub enum Event {
     StepEnded { turn_id: TurnId, step: u32 },
     /// The user's input, echoed back so a consumer can render it in order.
     UserMessage { content: String },
+    /// A block the runtime wrote to describe the session rather than something
+    /// the user said, echoed so a consumer can show it where it was recorded.
+    ///
+    /// The text is the block as the model reads it, tags and all: a consumer that
+    /// renders it can name the block by the tag it opens with.
+    ContextBlock { content: String },
     /// A chunk of assistant-visible text.
     ///
     /// Carries the id of the message the chunk belongs to, so a consumer can tell

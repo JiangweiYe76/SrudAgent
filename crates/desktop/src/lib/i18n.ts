@@ -88,6 +88,15 @@ const en = {
 
   'thought.title': 'Thinking',
 
+  'context.title': 'Environment',
+  'context.updateTitle': 'Environment update',
+  'context.workspace': 'Workspace',
+  'context.time': 'Time',
+  'context.skillAdded': 'Skill added',
+  'context.skillRemoved': 'Skill removed',
+  'context.serverAdded': 'Server added',
+  'context.serverRemoved': 'Server removed',
+
   'turn.awaitingReply': 'Waiting for a reply',
   'turn.ended': 'turn {reason}',
   'turn.regenerate': 'Regenerate',

@@ -167,6 +167,15 @@ export interface Attachment {
   data: string;
 }
 
+// A block the agent wrote to describe the session rather than something the user
+// said: where and when the session runs, and what has changed since.
+export interface ContextBlock {
+  // The opening context, or a later change to what it described.
+  kind: 'context' | 'update';
+  // The block as the model reads it, tags included.
+  text: string;
+}
+
 // Why a turn could not finish. The code stays apart from the message so the UI
 // can show a mapped headline and keep the raw pair for details.
 export interface TurnError {
@@ -178,6 +187,10 @@ export interface TurnError {
 export interface Turn {
   id: string;
   userInput: string;
+  // Blocks the agent wrote ahead of the input to describe the session, in the
+  // order they were recorded. They are not something the user said, so they are
+  // rendered as their own cards rather than as input.
+  contextBlocks?: ContextBlock[];
   // Images sent with the text above, in the order they were attached.
   images?: Attachment[];
   // Steered messages injected into this turn while it was running. Each is a

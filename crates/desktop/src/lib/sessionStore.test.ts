@@ -1026,6 +1026,30 @@ describe('sessionStore live path', () => {
     });
   });
 
+  it('shows a context block as its own card instead of a user message', async () => {
+    const { useSessionStore, active, fire, prompt, waitForBackend } =
+      await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    const block =
+      '<env-context-update>\n  <skill-added>demo01: testing</skill-added>\n</env-context-update>';
+    fire({
+      sessionUpdate: 'user_message_chunk',
+      content: { type: 'text', text: block },
+    });
+
+    const turn = active().turns[0];
+    expect(turn.userInput).toBe('hi');
+    expect(turn.steeredInputs).toBeUndefined();
+    expect(turn.contextBlocks).toEqual([{ kind: 'update', text: block }]);
+
+    prompt.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(() => {
+      expect(active().turns[0].endReason).toBe('completed');
+    });
+  });
+
   it('groups numbered updates into the step the agent named', async () => {
     const { useSessionStore, active, fire, prompt, waitForBackend } =
       await boot();

@@ -20,6 +20,21 @@ use crate::types::{ImagePart, ResponseItem, Role, SessionId, TurnInput};
 pub struct SessionState {
     /// Every item the model has seen, in order.
     history: Vec<ResponseItem>,
+    /// The system instruction this session settled on, once a turn rendered it.
+    ///
+    /// Kept on the session rather than re-rendered per turn: the instruction
+    /// opens every request, and a prefix that moves costs the provider's cache on
+    /// every request. What changes later is described as
+    /// [`crate::prompt::ContextChange`]s instead.
+    instruction: Option<String>,
+    /// The blocks that instruction was rendered from.
+    ///
+    /// Kept beside the text so a later turn can say which skill or server came or
+    /// went without reading the rendered markdown back: a block's body can hold
+    /// the same headings the renderer writes. `None` is a session restored from a
+    /// log, whose blocks were not recorded — its first turn takes the current
+    /// render as the baseline.
+    sections: Option<Vec<crate::prompt::Section>>,
 }
 
 impl Default for SessionState {
@@ -34,19 +49,47 @@ impl SessionState {
     pub fn new() -> Self {
         Self {
             history: Vec::new(),
+            instruction: None,
+            sections: None,
         }
     }
 
-    /// Rebuilds state from a log's history.
+    /// Rebuilds state from a log's history and the instruction it recorded.
     #[must_use]
-    pub fn restored(history: Vec<ResponseItem>) -> Self {
-        Self { history }
+    pub fn restored(history: Vec<ResponseItem>, instruction: Option<String>) -> Self {
+        Self {
+            history,
+            instruction,
+            sections: None,
+        }
     }
 
     /// Reads the recorded history.
     #[must_use]
     pub fn history(&self) -> &[ResponseItem] {
         &self.history
+    }
+
+    /// The system instruction this session settled on, when a turn has settled one.
+    #[must_use]
+    pub fn instruction(&self) -> Option<&str> {
+        self.instruction.as_deref()
+    }
+
+    /// Settles the system instruction for the rest of the session.
+    pub(crate) fn set_instruction(&mut self, instruction: String) {
+        self.instruction = Some(instruction);
+    }
+
+    /// The blocks the settled instruction was rendered from.
+    #[must_use]
+    pub fn sections(&self) -> Option<&[crate::prompt::Section]> {
+        self.sections.as_deref()
+    }
+
+    /// Records the blocks this turn rendered.
+    pub(crate) fn set_sections(&mut self, sections: Vec<crate::prompt::Section>) {
+        self.sections = Some(sections);
     }
 
     /// Returns how many items are recorded.
@@ -197,7 +240,7 @@ impl Session {
         }
     }
 
-    /// Rebuilds a session from the history its log holds.
+    /// Rebuilds a session from the history and instruction its log holds.
     ///
     /// The turn loop is the only writer of history after this, so seeding here is
     /// the one other path — and it is what makes the log the authority rather than
@@ -205,12 +248,22 @@ impl Session {
     /// model API accepts: closing a turn the log left open, and answering a call
     /// whose result never arrived, is [`crate::session_store::load`]'s job.
     ///
+    /// `instruction` is the system instruction the log says was sent. A session
+    /// that is started again must keep it rather than render a new one: the
+    /// instruction is the front of the request prefix, and the conversation it
+    /// continues was cached on the one the log recorded.
+    ///
     /// The last thing the user said is picked up from the history, so the turn
     /// that answered it can be answered again in this process. Where its input
     /// ended is not in the log, but the message and the images beside it are.
     #[must_use]
-    pub fn restored(id: SessionId, cwd: impl Into<PathBuf>, history: Vec<ResponseItem>) -> Self {
-        let state = SessionState::restored(history);
+    pub fn restored(
+        id: SessionId,
+        cwd: impl Into<PathBuf>,
+        history: Vec<ResponseItem>,
+        instruction: Option<String>,
+    ) -> Self {
+        let state = SessionState::restored(history, instruction);
         let prompt = state.trailing_prompt();
         let (opening, last_input) = match prompt {
             Some((mark, input)) => (Mutex::new(Some(mark)), Mutex::new(Some(input))),
