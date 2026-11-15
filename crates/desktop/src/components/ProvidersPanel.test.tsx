@@ -25,12 +25,15 @@ const mocks = vi.hoisted(() => ({
   ): Promise<unknown> => {
     throw new Error('invoke not configured');
   },
+  toast: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (cmd: string, args?: Record<string, unknown>) =>
     mocks.invoke(cmd, args),
 }));
+
+vi.mock('sonner', () => ({ toast: { success: mocks.toast } }));
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 
@@ -62,6 +65,7 @@ beforeAll(() => {
 beforeEach(async () => {
   vi.resetModules();
   requests = [];
+  mocks.toast.mockClear();
   catalog = { providers: [PROVIDER], default: 'openai/gpt-4o' };
   mocks.invoke = async (cmd, args) => {
     if (cmd !== 'rpc_request') throw new Error(`unexpected invoke: ${cmd}`);
@@ -271,6 +275,7 @@ describe('ProvidersPanel', () => {
     expect(key.value).toBe('');
     expect(key.placeholder).toBe('sk-…1234');
 
+    await type(inputByLabel('Name'), 'OpenAI Inc');
     await click(button('Save'));
 
     await vi.waitFor(() => {
@@ -288,6 +293,24 @@ describe('ProvidersPanel', () => {
       { id: 'gpt-4o-mini', name: 'GPT-4o mini', modalities: [] },
     ]);
     expect(provider.baseUrl).toBe('https://api.example/v1');
+  });
+
+  it('keeps Save disabled until a field changes', async () => {
+    await render();
+    expect(button('Save').disabled).toBe(true);
+
+    await type(inputByLabel('Name'), 'OpenAI Inc');
+    expect(button('Save').disabled).toBe(false);
+  });
+
+  it('confirms a save and clears the button again', async () => {
+    await render();
+    await type(inputByLabel('Name'), 'OpenAI Inc');
+    await click(button('Save'));
+
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
+    // What was written is the new baseline, so there is nothing left to save.
+    expect(button('Save').disabled).toBe(true);
   });
 
   it('adds a provider that has no model yet', async () => {
@@ -466,6 +489,7 @@ describe('ProvidersPanel', () => {
       return reply(payload.id, catalog);
     };
     await render();
+    await type(inputByLabel('Name'), 'OpenAI Inc');
     await click(button('Save'));
 
     // The banner carries this client's wording, not the agent's sentence.

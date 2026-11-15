@@ -15,6 +15,7 @@
 // back must not depend on where the scroll has got to.
 import { useState } from 'react';
 import { ArrowLeft, Image, Music, Plus, Trash2, Video } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Field, TextInput } from '@/components/ui/field';
 import { PasswordInput } from '@/components/ui/password-input';
@@ -63,6 +64,10 @@ export function ProviderDetail({
   const error = useProviderStore((s) => s.error);
 
   const [draft, setDraft] = useState(() => draftOf(provider));
+  // What the agent last accepted. A save replaces it with what was just written,
+  // so the Save button can say whether anything is left to write.
+  const [saved, setSaved] = useState(() => draftOf(provider));
+  const [saving, setSaving] = useState(false);
   // The model form replaces the pane's content while it is open: an index into
   // the draft's models, or `null` for one that is not there yet.
   const [modelForm, setModelForm] = useState<{ index: number | null } | null>(
@@ -70,10 +75,13 @@ export function ProviderDetail({
   );
 
   const editing = provider !== null;
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   const canSave =
     draft.id.trim() !== '' &&
     draft.name.trim() !== '' &&
-    draft.baseUrl.trim() !== '';
+    draft.baseUrl.trim() !== '' &&
+    dirty &&
+    !saving;
 
   // One slot, two verbs: adding appends, changing replaces in place. Doing it
   // here rather than in the form keeps the form a form and nothing else.
@@ -97,9 +105,19 @@ export function ProviderDetail({
   }
 
   // A refused save leaves the pane as it is, so the store's error is readable
-  // next to the fields that caused it.
+  // next to the fields that caused it. A save that lands says so: the fields do
+  // not change, so without a word the click would look like it did nothing.
   async function submit() {
-    if (await save(draft)) onSaved(draft.id.trim());
+    setSaving(true);
+    try {
+      if (await save(draft)) {
+        setSaved(draft);
+        toast.success(t('providers.saved'));
+        onSaved(draft.id.trim());
+      }
+    } finally {
+      setSaving(false);
+    }
   }
 
   // Cancelling an edit puts the fields back the way the agent reported them;
@@ -285,7 +303,7 @@ export function ProviderDetail({
           {t('common.cancel')}
         </Button>
         <Button onClick={() => void submit()} disabled={!canSave}>
-          {t('providers.form.save')}
+          {saving ? t('providers.form.saving') : t('providers.form.save')}
         </Button>
       </div>
     </div>
