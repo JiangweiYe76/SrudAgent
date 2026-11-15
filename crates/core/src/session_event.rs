@@ -108,8 +108,8 @@ pub struct StepTiming {
     pub first_token_ms: u64,
     /// Milliseconds from the first token to the last one.
     ///
-    /// The rate tokens actually arrived at: it excludes everything before the
-    /// first token and the tool calls the step went on to run.
+    /// The span the tokens actually arrived over: it excludes everything before
+    /// the first token and the tool calls the step went on to run.
     pub decode_ms: u64,
 }
 

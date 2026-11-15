@@ -189,6 +189,10 @@ impl<'a> Journal<'a> {
     /// know where the step stopped, and a log that stops in the middle of one
     /// would otherwise look like a step still running.
     ///
+    /// `timing` is what the step's stream reported, absent when it produced no
+    /// token. It rides here so a reader can tell a slow first token from slow
+    /// generation.
+    ///
     /// # Errors
     ///
     /// If the log refuses the record.
@@ -324,12 +328,19 @@ impl<'a> Journal<'a> {
     /// they describe what a request cost, and must not enter the conversation
     /// the next request is built from.
     ///
+    /// `timing` rides with the counts, when the step timed its tokens, so a
+    /// consumer reads what a request cost and how fast it answered together.
+    ///
     /// # Errors
     ///
     /// As [`Journal::record`]. The turn loop treats a refusal as a loss of
     /// diagnostics, not of the turn: the counts are the provider's statement
     /// about a request that already happened.
-    pub async fn record_usage(&self, usage: TokenUsage) -> Result<(), RecordError> {
+    pub async fn record_usage(
+        &self,
+        usage: TokenUsage,
+        timing: Option<StepTiming>,
+    ) -> Result<(), RecordError> {
         let step = self.current_step();
         self.log
             .record(&crate::session_event::SessionEvent::UsageRecorded {
@@ -341,6 +352,7 @@ impl<'a> Journal<'a> {
         self.sink.emit(Event::UsageRecorded {
             step: step.unwrap_or_default(),
             usage,
+            timing,
         });
         Ok(())
     }
@@ -948,7 +960,7 @@ async fn run_step(
             // does not change why the turn is ending, and reporting it here would
             // report the interruption as something else.
             let _ = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
-            flush_usage(journal, usage).await;
+            flush_usage(journal, usage, timing.finish()).await;
             return Err(TurnFailure::silent(TurnEndReason::Interrupted));
         }
 
@@ -956,7 +968,7 @@ async fn run_step(
         let Some(item) = next else {
             // The provider went away without signalling completion.
             let _ = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
-            flush_usage(journal, usage).await;
+            flush_usage(journal, usage, timing.finish()).await;
             return Err(TurnFailure::reported(&ModelError::Truncated));
         };
 
@@ -965,7 +977,7 @@ async fn run_step(
             Err(error) => {
                 let _ =
                     flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
-                flush_usage(journal, usage).await;
+                flush_usage(journal, usage, timing.finish()).await;
                 return Err(TurnFailure::reported(&error));
             }
         };
@@ -1018,7 +1030,7 @@ async fn run_step(
         .map_err(|err| TurnFailure::reported(&err))?;
 
     if tool_calls.is_empty() {
-        flush_usage(journal, usage).await;
+        flush_usage(journal, usage, timing.finish()).await;
         return Ok(StepOutcome::Finished);
     }
 
@@ -1034,7 +1046,7 @@ async fn run_step(
             .map_err(|err| TurnFailure::reported(&err))?;
         recorded.push((call, arguments));
     }
-    flush_usage(journal, usage).await;
+    flush_usage(journal, usage, timing.finish()).await;
 
     for (call, arguments) in recorded {
         if cancel.is_cancelled() {
@@ -1055,9 +1067,9 @@ async fn run_step(
 /// Best-effort: a refused record costs the diagnostics of one request, not the
 /// turn — the counts describe a request that already happened, and the
 /// conversation is already durable by the time this runs.
-async fn flush_usage(journal: &Journal<'_>, usage: Option<TokenUsage>) {
+async fn flush_usage(journal: &Journal<'_>, usage: Option<TokenUsage>, timing: Option<StepTiming>) {
     if let Some(usage) = usage {
-        let _ = journal.record_usage(usage).await;
+        let _ = journal.record_usage(usage, timing).await;
     }
 }
 

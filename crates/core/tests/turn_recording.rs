@@ -14,7 +14,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use srud_core::client::{ModelClient, ModelError, ModelEvent, ModelRequest, ModelStream};
+use srud_core::client::{
+    ModelClient, ModelError, ModelEvent, ModelRequest, ModelStream, TokenUsage,
+};
 use srud_core::session::Session;
 use srud_core::session_event::{MessageId, SessionEvent};
 use srud_core::session_log::{RecordError, SessionLog, Volatile};
@@ -245,6 +247,10 @@ impl ModelClient for Paced {
         let events: Vec<Result<ModelEvent, ModelError>> = vec![
             Ok(ModelEvent::ThoughtDelta { delta: "hm".into() }),
             Ok(ModelEvent::TextDelta { delta: "hi".into() }),
+            Ok(ModelEvent::Usage(TokenUsage {
+                output_tokens: 2,
+                ..TokenUsage::default()
+            })),
             Ok(ModelEvent::Done),
         ];
         Ok(Box::pin(futures::stream::unfold(
@@ -428,6 +434,7 @@ async fn a_step_records_when_its_tokens_arrived() {
     // The step's close carries both ends of the stream so a reader can tell a
     // slow first token from slow generation.
     let log = Volatile::new();
+    let timeline = Timeline::default();
 
     run_turn(
         &session(),
@@ -438,7 +445,7 @@ async fn a_step_records_when_its_tokens_arrived() {
         &Paced(Duration::from_millis(40)),
         &tools(),
         &log,
-        &Timeline::default(),
+        &timeline,
     )
     .await
     .expect("the turn runs");
@@ -458,6 +465,23 @@ async fn a_step_records_when_its_tokens_arrived() {
     assert!(
         timing.decode_ms >= 30,
         "the answer's two tokens came a gap apart: {timing:?}"
+    );
+
+    // The counts go out with the same spans, so a client reads how much was
+    // produced and how fast it arrived from one report.
+    let announced = timeline
+        .events
+        .lock()
+        .expect("timeline lock")
+        .iter()
+        .find_map(|event| match event {
+            Event::UsageRecorded { timing, .. } => *timing,
+            _ => None,
+        });
+    assert_eq!(
+        announced,
+        Some(timing),
+        "the report carries what was recorded"
     );
 }
 
