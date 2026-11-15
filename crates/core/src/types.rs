@@ -171,6 +171,12 @@ pub enum Event {
         /// The step whose request reported these counts.
         step: u32,
         usage: crate::client::TokenUsage,
+        /// When the step's tokens arrived, when it produced any.
+        ///
+        /// Carried with the counts rather than on [`Event::StepEnded`] because
+        /// the two describe the same request, and a consumer showing cost also
+        /// shows how long it took to produce.
+        timing: Option<crate::session_event::StepTiming>,
     },
     /// A turn's output was discarded so it can be asked again.
     ///

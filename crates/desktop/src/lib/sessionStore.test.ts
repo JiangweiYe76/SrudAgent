@@ -572,6 +572,10 @@ describe('sessionStore live path', () => {
       cachedInputTokens: 600,
       cacheWriteInputTokens: 0,
       reasoningOutputTokens: 0,
+      timedSteps: 0,
+      firstTokenMs: 0,
+      decodeMs: 0,
+      timedOutputTokens: 0,
     });
 
     // The next report replaces the occupancy — it is the newest reading of the
@@ -589,6 +593,45 @@ describe('sessionStore live path', () => {
       cachedInputTokens: 1800,
       cacheWriteInputTokens: 0,
       reasoningOutputTokens: 0,
+      timedSteps: 0,
+      firstTokenMs: 0,
+      decodeMs: 0,
+      timedOutputTokens: 0,
+    });
+  });
+
+  it('adds the timings a step reported and keeps untimed steps out', async () => {
+    const { useSessionStore, active, fire, waitForBackend } = await boot();
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    fire(
+      { sessionUpdate: 'usage_update', used: 1000, size: 128000 },
+      {
+        turnId: 't1',
+        usage: { outputTokens: 100 },
+        timing: { firstTokenMs: 1200, decodeMs: 2400 },
+      },
+    );
+    expect(active().usage).toMatchObject({
+      timedSteps: 1,
+      firstTokenMs: 1200,
+      decodeMs: 2400,
+      timedOutputTokens: 100,
+    });
+
+    // A step that reported no timing still adds its counts, but must not enter
+    // the averages: a zero-length step would read as one that answered instantly.
+    fire(
+      { sessionUpdate: 'usage_update', used: 2000, size: 128000 },
+      { turnId: 't1', usage: { outputTokens: 80 } },
+    );
+    expect(active().usage).toMatchObject({
+      outputTokens: 180,
+      timedSteps: 1,
+      firstTokenMs: 1200,
+      decodeMs: 2400,
+      timedOutputTokens: 100,
     });
   });
 

@@ -14,8 +14,8 @@
 use std::collections::HashMap;
 
 use srud_core::client::TokenUsage;
-use srud_core::session_event::SessionEvent;
-use srud_core::types::{Event, ResponseItem, Role, TurnEndReason};
+use srud_core::session_event::{SessionEvent, StepTiming};
+use srud_core::types::{Event, ResponseItem, Role, TurnEndReason, TurnId};
 use srud_protocol::acp::{
     AcpError, ContentBlock, ContentChunk, ImageContent, Meta, Notification, SessionId,
     SessionInfoUpdate, SessionNotification, SessionUpdate, TextContent, ToolCall, ToolCallContent,
@@ -23,8 +23,11 @@ use srud_protocol::acp::{
     UsageUpdate, CLIENT_METHOD_NAMES,
 };
 use srud_protocol::error::INVALID_PARAMS;
-use srud_protocol::srud::meta::{SrudMeta, SrudUsage};
+use srud_protocol::srud::meta::{SrudMeta, SrudTiming, SrudUsage};
 use srud_protocol::srud::turn_end::{map_turn_end_reason, TurnEndWire};
+
+/// The timings a recorded conversation holds, keyed by turn and step.
+pub type StepTimings = HashMap<(TurnId, u32), StepTiming>;
 
 /// Which core events have no `session/update` representation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -381,6 +384,10 @@ pub fn to_notification(
         Event::UsageRecorded { usage, .. } => Some(srud_usage(usage)),
         _ => None,
     };
+    let timing = match &event {
+        Event::UsageRecorded { timing, .. } => timing.as_ref().map(srud_timing),
+        _ => None,
+    };
     // A discard names the turn it takes back, which is not the turn the sink is
     // streaming: it is emitted before the replacement starts and belongs to the
     // answer that is leaving. Read from the event rather than from `turn_id`,
@@ -393,7 +400,7 @@ pub fn to_notification(
         Err(Skipped::TurnDiscarded) => return Some(discard_notification(session_id, turn_id)),
         Err(_) => return None,
     };
-    let (update, outer_meta) = attach_turn_meta(update, turn_id, usage, step);
+    let (update, outer_meta) = attach_turn_meta(update, turn_id, usage, timing, step);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -438,12 +445,14 @@ fn attach_turn_meta(
     update: SessionUpdate,
     turn_id: &str,
     usage: Option<SrudUsage>,
+    timing: Option<SrudTiming>,
     step: Option<u32>,
 ) -> (SessionUpdate, Meta) {
     let srud = SrudMeta {
         turn_id: Some(turn_id.to_string()),
         step_index: step,
         usage,
+        timing,
         ..Default::default()
     };
     let meta = srud
@@ -461,6 +470,34 @@ fn srud_usage(usage: &TokenUsage) -> SrudUsage {
         cache_write_input_tokens: usage.cache_write_input_tokens,
         reasoning_output_tokens: usage.reasoning_output_tokens,
     }
+}
+
+/// Maps a step's token timings onto their `_meta.srud.timing` form.
+fn srud_timing(timing: &StepTiming) -> SrudTiming {
+    SrudTiming {
+        first_token_ms: timing.first_token_ms,
+        decode_ms: timing.decode_ms,
+    }
+}
+
+/// The timings a recorded conversation holds, keyed by the step each closes.
+///
+/// Read ahead of the replay because a step's timing is recorded on its end
+/// record, while the usage update a client reads it with comes from the usage
+/// record before it.
+#[must_use]
+pub fn step_timings(conversation: &[SessionEvent]) -> StepTimings {
+    conversation
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::StepEnded {
+                turn_id,
+                step,
+                timing,
+            } => timing.map(|timing| ((*turn_id, *step), timing)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The wire spelling of a turn-end reason.
@@ -496,6 +533,7 @@ pub fn replay_notification(
     event: &SessionEvent,
     context_size: Option<u64>,
     diffs: &mut ToolDiffIndex,
+    timings: &StepTimings,
 ) -> Option<Notification<SessionNotification>> {
     // A recorded usage report goes out exactly as the live one did, so a client
     // sees one shape for it. Without a configured window it stays unshown, as
@@ -507,12 +545,20 @@ pub fn replay_notification(
     } = event
     {
         let size = context_size?;
+        let timing = step
+            .and_then(|step| timings.get(&(*turn_id, step)).copied())
+            .map(|timing| srud_timing(&timing));
         let update = SessionUpdate::UsageUpdate(UsageUpdate::new(
             usage.input_tokens + usage.output_tokens,
             size,
         ));
-        let (update, outer_meta) =
-            attach_turn_meta(update, &turn_id.to_string(), Some(srud_usage(usage)), *step);
+        let (update, outer_meta) = attach_turn_meta(
+            update,
+            &turn_id.to_string(),
+            Some(srud_usage(usage)),
+            timing,
+            *step,
+        );
         let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
         return Some(Notification {
             method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -570,7 +616,7 @@ pub fn replay_notification(
         ),
     };
 
-    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), None, *step);
+    let (update, outer_meta) = attach_turn_meta(update, &turn_id.to_string(), None, None, *step);
     let notification = SessionNotification::new(session_id.clone(), update).meta(outer_meta);
     Some(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),
@@ -778,6 +824,7 @@ mod tests {
             &event,
             Some(128_000),
             &mut ToolDiffIndex::default(),
+            &StepTimings::default(),
         )
         .expect("a replayed item is shown");
         let value = serde_json::to_value(&n).unwrap();
@@ -814,8 +861,14 @@ mod tests {
             srud_core::context::item(std::path::Path::new("/w")),
         );
 
-        let n = replay_notification(&session_id(), &event, None, &mut ToolDiffIndex::default())
-            .expect("a context block is shown");
+        let n = replay_notification(
+            &session_id(),
+            &event,
+            None,
+            &mut ToolDiffIndex::default(),
+            &StepTimings::default(),
+        )
+        .expect("a context block is shown");
 
         assert!(
             matches!(
@@ -835,7 +888,14 @@ mod tests {
             cache_write_input_tokens: 0,
             reasoning_output_tokens: 40,
         };
-        let n = notify(Event::UsageRecorded { step: 1, usage });
+        let n = notify(Event::UsageRecorded {
+            step: 1,
+            usage,
+            timing: Some(StepTiming {
+                first_token_ms: 1_200,
+                decode_ms: 2_400,
+            }),
+        });
         let SessionUpdate::UsageUpdate(update) = &n.params.as_ref().unwrap().update else {
             panic!("expected a usage_update");
         };
@@ -849,6 +909,14 @@ mod tests {
         assert_eq!(
             value["params"]["_meta"]["srud"]["usage"]["reasoningOutputTokens"],
             json!(40)
+        );
+        assert_eq!(
+            value["params"]["_meta"]["srud"]["timing"]["firstTokenMs"],
+            json!(1_200)
+        );
+        assert_eq!(
+            value["params"]["_meta"]["srud"]["timing"]["decodeMs"],
+            json!(2_400)
         );
     }
 
@@ -871,6 +939,7 @@ mod tests {
             &event,
             Some(128_000),
             &mut ToolDiffIndex::default(),
+            &StepTimings::default(),
         )
         .expect("a replayed usage record is shown");
         let SessionUpdate::UsageUpdate(update) = &n.params.as_ref().unwrap().update else {
@@ -889,9 +958,52 @@ mod tests {
         );
         // Without a configured window the replayed record stays unshown, as
         // the live one would have.
-        assert!(
-            replay_notification(&session_id(), &event, None, &mut ToolDiffIndex::default())
-                .is_none()
+        assert!(replay_notification(
+            &session_id(),
+            &event,
+            None,
+            &mut ToolDiffIndex::default(),
+            &StepTimings::default()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_replayed_usage_record_carries_the_timing_of_the_step_it_closed() {
+        // A step's timing is recorded on its end record, which the replay reads
+        // after the usage record a client shows it with.
+        let turn_id = srud_core::types::TurnId(1);
+        let usage = SessionEvent::UsageRecorded {
+            turn_id,
+            step: Some(1),
+            usage: TokenUsage::default(),
+        };
+        let ended = SessionEvent::StepEnded {
+            turn_id,
+            step: 1,
+            timing: Some(StepTiming {
+                first_token_ms: 1_200,
+                decode_ms: 2_400,
+            }),
+        };
+        let timings = step_timings(&[usage.clone(), ended]);
+
+        let n = replay_notification(
+            &session_id(),
+            &usage,
+            Some(128_000),
+            &mut ToolDiffIndex::default(),
+            &timings,
+        )
+        .expect("a replayed usage record is shown");
+        let value = serde_json::to_value(&n).unwrap();
+        assert_eq!(
+            value["params"]["_meta"]["srud"]["timing"]["firstTokenMs"],
+            json!(1_200)
+        );
+        assert_eq!(
+            value["params"]["_meta"]["srud"]["timing"]["decodeMs"],
+            json!(2_400)
         );
     }
 
@@ -910,6 +1022,7 @@ mod tests {
             &event,
             Some(128_000),
             &mut ToolDiffIndex::default(),
+            &StepTimings::default(),
         )
         .expect("a replayed image is shown");
         let SessionUpdate::UserMessageChunk(chunk) = &n.params.as_ref().unwrap().update else {
@@ -929,6 +1042,7 @@ mod tests {
                 Event::UsageRecorded {
                     step: 1,
                     usage: TokenUsage::default(),
+                    timing: None,
                 },
                 None,
                 &mut ToolDiffIndex::default()
@@ -942,6 +1056,7 @@ mod tests {
             Event::UsageRecorded {
                 step: 1,
                 usage: TokenUsage::default(),
+                timing: None,
             },
             None,
             &mut ToolDiffIndex::default()

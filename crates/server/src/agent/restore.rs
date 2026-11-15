@@ -9,7 +9,7 @@
 //! drop updates under a burst, while a response can do neither.
 
 use super::{parse_params, session_not_found, Agent};
-use crate::convert::{end_reason_wire, replay_notification, ToolDiffIndex};
+use crate::convert::{end_reason_wire, replay_notification, step_timings, ToolDiffIndex};
 use crate::sessions::RestoreError;
 use serde_json::Value;
 use srud_protocol::acp::{
@@ -68,12 +68,17 @@ impl Agent {
         // the notifications remain for clients that only follow the stream.
         let context_size = self.context_size_for(&request.session_id);
         let mut diffs = ToolDiffIndex::default();
+        let timings = step_timings(&loaded.conversation);
         let mut history = Vec::with_capacity(loaded.conversation.len());
         let mut last_seq = None;
         for (index, event) in loaded.conversation.iter().enumerate() {
-            if let Some(notification) =
-                replay_notification(&request.session_id, event, context_size, &mut diffs)
-            {
+            if let Some(notification) = replay_notification(
+                &request.session_id,
+                event,
+                context_size,
+                &mut diffs,
+                &timings,
+            ) {
                 if let Some(params) = self.hub.send_replayed(notification) {
                     last_seq = params
                         .meta

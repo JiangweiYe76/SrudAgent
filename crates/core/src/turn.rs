@@ -21,6 +21,7 @@
 //! of one turn rather than the guarantee that what they saw can be recovered.
 
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 use chrono::Local;
 use futures::StreamExt;
@@ -29,7 +30,7 @@ use crate::client::{ModelClient, ModelError, ModelEvent, ModelRequest, TokenUsag
 use crate::context;
 use crate::prompt;
 use crate::session::Session;
-use crate::session_event::MessageId;
+use crate::session_event::{MessageId, StepTiming};
 use crate::session_log::{entry_for, entry_in_step, RecordError, SessionLog};
 use crate::tools::{failure_text, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use crate::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnId, TurnInput};
@@ -188,14 +189,19 @@ impl<'a> Journal<'a> {
     /// know where the step stopped, and a log that stops in the middle of one
     /// would otherwise look like a step still running.
     ///
+    /// `timing` is what the step's stream reported, absent when it produced no
+    /// token. It rides here so a reader can tell a slow first token from slow
+    /// generation.
+    ///
     /// # Errors
     ///
     /// If the log refuses the record.
-    pub async fn end_step(&self, step: u32) -> Result<(), RecordError> {
+    pub async fn end_step(&self, step: u32, timing: Option<StepTiming>) -> Result<(), RecordError> {
         self.log
             .record(&crate::session_event::SessionEvent::StepEnded {
                 turn_id: self.turn_id,
                 step,
+                timing,
             })
             .await?;
         self.step.store(0, Ordering::Relaxed);
@@ -322,12 +328,19 @@ impl<'a> Journal<'a> {
     /// they describe what a request cost, and must not enter the conversation
     /// the next request is built from.
     ///
+    /// `timing` rides with the counts, when the step timed its tokens, so a
+    /// consumer reads what a request cost and how fast it answered together.
+    ///
     /// # Errors
     ///
     /// As [`Journal::record`]. The turn loop treats a refusal as a loss of
     /// diagnostics, not of the turn: the counts are the provider's statement
     /// about a request that already happened.
-    pub async fn record_usage(&self, usage: TokenUsage) -> Result<(), RecordError> {
+    pub async fn record_usage(
+        &self,
+        usage: TokenUsage,
+        timing: Option<StepTiming>,
+    ) -> Result<(), RecordError> {
         let step = self.current_step();
         self.log
             .record(&crate::session_event::SessionEvent::UsageRecorded {
@@ -339,6 +352,7 @@ impl<'a> Journal<'a> {
         self.sink.emit(Event::UsageRecorded {
             step: step.unwrap_or_default(),
             usage,
+            timing,
         });
         Ok(())
     }
@@ -793,16 +807,29 @@ async fn drive(
             return TurnFailure::reported(&err);
         }
 
+        // Measured from the step's start: the wait for the first token includes
+        // everything the step does before the model answers.
+        let mut timing = TokenTiming::new();
+
         let request = {
             let state = journal.session.state();
             prompt::build_prompt(&state, tools.definitions(), instruction)
         };
 
-        let outcome = run_step(journal, client, tools, cancel, request, sandbox).await;
+        let outcome = run_step(
+            journal,
+            client,
+            tools,
+            cancel,
+            request,
+            sandbox,
+            &mut timing,
+        )
+        .await;
 
         // The step closes however it went, so a log that stops here still says
         // which step it stopped in rather than leaving one open forever.
-        if let Err(err) = journal.end_step(step).await {
+        if let Err(err) = journal.end_step(step, timing.finish()).await {
             return TurnFailure::reported(&err);
         }
 
@@ -833,6 +860,63 @@ enum StepOutcome {
     NeedsFollowUp,
 }
 
+/// When the tokens of one step arrived, measured from the step's start.
+///
+/// Nothing else in the log says when an answer began: a record is stamped when
+/// it is written, and a message is written only once its stream ends. The ends
+/// of the stream are noted here as they happen and recorded with the step's
+/// close.
+struct TokenTiming {
+    started: Instant,
+    first: Option<Instant>,
+    last: Option<Instant>,
+}
+
+impl TokenTiming {
+    /// Starts the clock, before the request is built.
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            first: None,
+            last: None,
+        }
+    }
+
+    /// Notes one token of the answer: its text, its reasoning, or a tool's name.
+    fn token(&mut self) {
+        let now = Instant::now();
+        self.first.get_or_insert(now);
+        self.last = Some(now);
+    }
+
+    /// Notes a tool call, which arrives complete.
+    ///
+    /// It closes the step's output: a call carries arguments the model has
+    /// finished producing, so the moment it arrives is the moment the last token
+    /// of that output did. The call's name already opened the output when the
+    /// stream named it.
+    fn trail(&mut self) {
+        if self.first.is_some() {
+            self.last = Some(Instant::now());
+        }
+    }
+
+    /// The two spans, or `None` when no token arrived at all.
+    fn finish(&self) -> Option<StepTiming> {
+        let first = self.first?;
+        let last = self.last?;
+        Some(StepTiming {
+            first_token_ms: millis(first.duration_since(self.started)),
+            decode_ms: millis(last.duration_since(first)),
+        })
+    }
+}
+
+/// Milliseconds in a duration, saturating at the type's limit.
+fn millis(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Runs one request/response round-trip, executing any tools it asked for.
 async fn run_step(
     journal: &Journal<'_>,
@@ -841,6 +925,7 @@ async fn run_step(
     cancel: &tokio_util::sync::CancellationToken,
     request: ModelRequest,
     sandbox: &srud_sandbox::SandboxPolicy,
+    timing: &mut TokenTiming,
 ) -> Result<StepOutcome, TurnFailure> {
     let mut stream = match client.stream(request, cancel.clone()).await {
         Ok(stream) => stream,
@@ -876,7 +961,7 @@ async fn run_step(
             // does not change why the turn is ending, and reporting it here would
             // report the interruption as something else.
             let _ = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
-            flush_usage(journal, usage).await;
+            flush_usage(journal, usage, timing.finish()).await;
             return Err(TurnFailure::silent(TurnEndReason::Interrupted));
         }
 
@@ -884,7 +969,7 @@ async fn run_step(
         let Some(item) = next else {
             // The provider went away without signalling completion.
             let _ = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
-            flush_usage(journal, usage).await;
+            flush_usage(journal, usage, timing.finish()).await;
             return Err(TurnFailure::reported(&ModelError::Truncated));
         };
 
@@ -893,13 +978,14 @@ async fn run_step(
             Err(error) => {
                 let _ =
                     flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
-                flush_usage(journal, usage).await;
+                flush_usage(journal, usage, timing.finish()).await;
                 return Err(TurnFailure::reported(&error));
             }
         };
 
         match event {
             ModelEvent::TextDelta { delta } => {
+                timing.token();
                 message.push_str(&delta);
                 journal.sink().emit(Event::AgentMessageDelta {
                     message_id: Some(message_id.clone()),
@@ -907,6 +993,7 @@ async fn run_step(
                 });
             }
             ModelEvent::ThoughtDelta { delta } => {
+                timing.token();
                 reasoning.push_str(&delta);
                 journal.sink().emit(Event::AgentThoughtDelta {
                     message_id: Some(thought_id.clone()),
@@ -914,19 +1001,24 @@ async fn run_step(
                 });
             }
             ModelEvent::ToolCallNamed { call_id, name } => {
-                // Forwarded, not recorded: see `Event::ToolCallNamed`. The log
-                // entry comes with `ToolCallBegin`, once there is an attempt to log.
+                // A tool's name is the first token of a call: it arrives before
+                // the arguments do, so a step that only calls a tool still has a
+                // moment to start from.
+                timing.token();
                 journal.sink().emit(Event::ToolCallNamed { call_id, name });
             }
             ModelEvent::ToolCall {
                 call_id,
                 name,
                 arguments,
-            } => tool_calls.push(PendingToolCall {
-                call_id,
-                name,
-                arguments,
-            }),
+            } => {
+                timing.trail();
+                tool_calls.push(PendingToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                });
+            }
             ModelEvent::Usage(reported) => usage = Some(reported),
             ModelEvent::Done => break,
         }
@@ -941,7 +1033,7 @@ async fn run_step(
         .map_err(|err| TurnFailure::reported(&err))?;
 
     if tool_calls.is_empty() {
-        flush_usage(journal, usage).await;
+        flush_usage(journal, usage, timing.finish()).await;
         return Ok(StepOutcome::Finished);
     }
 
@@ -957,7 +1049,7 @@ async fn run_step(
             .map_err(|err| TurnFailure::reported(&err))?;
         recorded.push((call, arguments));
     }
-    flush_usage(journal, usage).await;
+    flush_usage(journal, usage, timing.finish()).await;
 
     for (call, arguments) in recorded {
         if cancel.is_cancelled() {
@@ -978,9 +1070,9 @@ async fn run_step(
 /// Best-effort: a refused record costs the diagnostics of one request, not the
 /// turn — the counts describe a request that already happened, and the
 /// conversation is already durable by the time this runs.
-async fn flush_usage(journal: &Journal<'_>, usage: Option<TokenUsage>) {
+async fn flush_usage(journal: &Journal<'_>, usage: Option<TokenUsage>, timing: Option<StepTiming>) {
     if let Some(usage) = usage {
-        let _ = journal.record_usage(usage).await;
+        let _ = journal.record_usage(usage, timing).await;
     }
 }
 

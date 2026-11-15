@@ -93,6 +93,27 @@ impl std::fmt::Display for MessageId {
     }
 }
 
+/// When one step's tokens arrived, measured from the moment the step began.
+///
+/// A record is stamped with the moment it reaches the file, and a step's message
+/// is written only after its stream ends. That stamp therefore says when the
+/// answer finished, not when it started. The two ends of the stream are recorded
+/// here so a reader can tell a slow first token from slow generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepTiming {
+    /// Milliseconds from the step's start to its first token.
+    ///
+    /// A token is the first of the answer's text, its reasoning, or the name of a
+    /// tool it calls: a model that thinks before answering starts producing at
+    /// the first thought, and one that only calls a tool starts at the name.
+    pub first_token_ms: u64,
+    /// Milliseconds from the first token to the last one.
+    ///
+    /// The span the tokens actually arrived over: it excludes everything before
+    /// the first token and the tool calls the step went on to run.
+    pub decode_ms: u64,
+}
+
 /// The format version written into every new log.
 ///
 /// Bumped when a change makes older logs unreadable or ambiguous. A reader that
@@ -221,6 +242,12 @@ pub enum SessionEvent {
         turn_id: TurnId,
         /// The step this closes.
         step: u32,
+        /// When its tokens arrived, when it produced any.
+        ///
+        /// Absent for a step whose request failed or was interrupted before the
+        /// stream produced a token.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timing: Option<StepTiming>,
     },
 
     /// One entry of the recorded history.

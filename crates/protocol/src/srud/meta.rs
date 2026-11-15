@@ -80,6 +80,13 @@ pub struct SrudMeta {
     /// `usage` fields aggregate. Absent when the provider reported no usage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<SrudUsage>,
+    /// How long the step's tokens took to start and to finish arriving.
+    ///
+    /// Travels with [`usage`](Self::usage): both describe the request that just
+    /// finished, and a client showing what it cost also shows the speed it came
+    /// at. Absent when the step produced no token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<SrudTiming>,
     /// Every turn the session has finished and why. Carried on the `session/load`
     /// response, which is where a client learns how each turn of a replayed
     /// conversation ended. A turn the list leaves out is one still running.
@@ -149,6 +156,23 @@ pub struct SrudUsage {
     /// Output tokens spent on reasoning.
     #[serde(default)]
     pub reasoning_output_tokens: u64,
+}
+
+/// When one step's tokens arrived, carried under `_meta.srud.timing`.
+///
+/// A log record is stamped when it is written, and a message is written only
+/// after its stream ends, so the counts say nothing about how long the model
+/// took to start or how fast it produced. These two spans are what a client
+/// needs to report a first-token delay and a throughput.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SrudTiming {
+    /// Milliseconds from the step's start to its first token.
+    #[serde(default)]
+    pub first_token_ms: u64,
+    /// Milliseconds from the first token to the last one.
+    #[serde(default)]
+    pub decode_ms: u64,
 }
 
 impl SrudMeta {

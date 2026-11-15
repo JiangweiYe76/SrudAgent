@@ -9,11 +9,14 @@
 // stream is where the damage shows up. A test that only checked the log would pass
 // with the order reversed.
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use srud_core::client::{ModelClient, ModelError, ModelEvent, ModelRequest, ModelStream};
+use srud_core::client::{
+    ModelClient, ModelError, ModelEvent, ModelRequest, ModelStream, TokenUsage,
+};
 use srud_core::session::Session;
 use srud_core::session_event::{MessageId, SessionEvent};
 use srud_core::session_log::{RecordError, SessionLog, Volatile};
@@ -230,6 +233,37 @@ impl ModelClient for Scripted {
     }
 }
 
+/// A model that spaces its chunks apart, so a step's spans are not all zero.
+struct Paced(Duration);
+
+#[async_trait]
+impl ModelClient for Paced {
+    async fn stream(
+        &self,
+        _request: ModelRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ModelStream, ModelError> {
+        let gap = self.0;
+        let events: Vec<Result<ModelEvent, ModelError>> = vec![
+            Ok(ModelEvent::ThoughtDelta { delta: "hm".into() }),
+            Ok(ModelEvent::TextDelta { delta: "hi".into() }),
+            Ok(ModelEvent::Usage(TokenUsage {
+                output_tokens: 2,
+                ..TokenUsage::default()
+            })),
+            Ok(ModelEvent::Done),
+        ];
+        Ok(Box::pin(futures::stream::unfold(
+            events.into_iter(),
+            move |mut events| async move {
+                let event = events.next()?;
+                tokio::time::sleep(gap).await;
+                Some((event, events))
+            },
+        )))
+    }
+}
+
 /// A tool that succeeds, so a turn reaches the tool-call path.
 struct Echo;
 
@@ -391,6 +425,156 @@ async fn the_turn_opens_and_closes_in_the_log() {
         records.last()
     );
     assert!(log.ended_with(result.reason));
+}
+
+#[tokio::test]
+async fn a_step_records_when_its_tokens_arrived() {
+    // A record is stamped when it is written, and the message is written only
+    // after its stream ends, so the stamp alone says when the answer finished.
+    // The step's close carries both ends of the stream so a reader can tell a
+    // slow first token from slow generation.
+    let log = Volatile::new();
+    let timeline = Timeline::default();
+
+    run_turn(
+        &session(),
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        &Paced(Duration::from_millis(40)),
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+
+    let timing = events(&log)
+        .into_iter()
+        .find_map(|event| match event {
+            SessionEvent::StepEnded { timing, .. } => timing,
+            _ => None,
+        })
+        .expect("the step produced tokens, so it records their timing");
+
+    assert!(
+        timing.first_token_ms >= 30,
+        "the first token waited for the gap before it: {timing:?}"
+    );
+    assert!(
+        timing.decode_ms >= 30,
+        "the answer's two tokens came a gap apart: {timing:?}"
+    );
+
+    // The counts go out with the same spans, so a client reads how much was
+    // produced and how fast it arrived from one report.
+    let announced = timeline
+        .events
+        .lock()
+        .expect("timeline lock")
+        .iter()
+        .find_map(|event| match event {
+            Event::UsageRecorded { timing, .. } => *timing,
+            _ => None,
+        });
+    assert_eq!(
+        announced,
+        Some(timing),
+        "the report carries what was recorded"
+    );
+}
+
+#[tokio::test]
+async fn a_step_that_produced_no_token_records_no_timing() {
+    // An empty step has no spans to report, and a zero would read as one that
+    // answered instantly.
+    let log = Volatile::new();
+
+    run_turn(
+        &session(),
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        &Silent,
+        &tools(),
+        &log,
+        &Timeline::default(),
+    )
+    .await
+    .expect("the turn runs");
+
+    assert!(
+        events(&log).iter().all(|event| !matches!(
+            event,
+            SessionEvent::StepEnded {
+                timing: Some(_),
+                ..
+            }
+        )),
+        "a step with no token reports no timing"
+    );
+}
+
+#[tokio::test]
+async fn a_step_that_only_calls_a_tool_times_its_tokens() {
+    // A call's name is the step's first token and the finished call its last, so
+    // a step with no text or reasoning still says how long the model took. The
+    // tool itself runs after both and is not part of them.
+    let log = Volatile::new();
+
+    run_turn(
+        &session(),
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        &Scripted::new(vec![
+            vec![
+                ModelEvent::ToolCallNamed {
+                    call_id: "c1".into(),
+                    name: "echo".into(),
+                },
+                ModelEvent::ToolCall {
+                    call_id: "c1".into(),
+                    name: "echo".into(),
+                    arguments: r#"{"text":"hi"}"#.into(),
+                },
+                ModelEvent::Usage(TokenUsage {
+                    output_tokens: 3,
+                    ..TokenUsage::default()
+                }),
+                ModelEvent::Done,
+            ],
+            vec![
+                ModelEvent::TextDelta {
+                    delta: "done".into(),
+                },
+                ModelEvent::Done,
+            ],
+        ]),
+        &tools(),
+        &log,
+        &Timeline::default(),
+    )
+    .await
+    .expect("the turn runs");
+
+    let timing = events(&log)
+        .into_iter()
+        .find_map(|event| match event {
+            SessionEvent::StepEnded {
+                step: 1, timing, ..
+            } => Some(timing),
+            _ => None,
+        })
+        .expect("the first step closed");
+
+    assert!(
+        timing.is_some(),
+        "a step that only calls a tool still records when its tokens arrived"
+    );
 }
 
 #[tokio::test]
