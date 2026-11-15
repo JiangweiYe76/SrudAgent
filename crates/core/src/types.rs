@@ -16,8 +16,12 @@ pub struct SessionId(pub Uuid);
 /// A turn is one user input and everything the agent does in response. It is
 /// not a wire concept: it exists so that interrupts, audit records, and history
 /// indexes have something stable to point at.
+///
+/// The value is a running number the session assigns, one higher for each turn.
+/// It is unique only within that session, and numbering resumes from the last
+/// turn its log holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TurnId(pub Uuid);
+pub struct TurnId(pub u32);
 
 impl SessionId {
     /// Creates a fresh, random session id.
@@ -28,20 +32,6 @@ impl SessionId {
 }
 
 impl Default for SessionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TurnId {
-    /// Creates a fresh, random turn id.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for TurnId {
     fn default() -> Self {
         Self::new()
     }

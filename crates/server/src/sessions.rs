@@ -560,6 +560,7 @@ impl SessionManager {
             loaded.cwd.clone(),
             loaded.history.clone(),
             loaded.instruction.clone(),
+            loaded.next_turn,
         ));
         session.set_sandbox(loaded.sandbox);
         self.sessions
@@ -674,6 +675,7 @@ impl SessionManager {
             cwd.clone(),
             loaded.history.clone(),
             loaded.instruction.clone(),
+            loaded.next_turn,
         ));
         session.set_sandbox(sandbox);
         let wire_id = SessionId::new(session_id.to_string());

@@ -24,10 +24,10 @@
 //! {"time":"…","event":{"type":"system","content":"# Role\n\n…"}}
 //! {"time":"…","event":{"type":"title","title":"Fix the timestamp"}}
 //! {"time":"…","event":{"type":"model","model":"deepseek/deepseek-chat"}}
-//! {"time":"…","event":{"type":"turn_started","turn_id":"…"}}
-//! {"time":"…","event":{"type":"item","turn_id":"…","message_id":"…","item":{…}}}
-//! {"time":"…","event":{"type":"turn_ended","turn_id":"…","reason":"interrupted"}}
-//! {"time":"…","event":{"type":"turn_discarded","turn_id":"…"}}
+//! {"time":"…","event":{"type":"turn_started","turn_id":1}}
+//! {"time":"…","event":{"type":"item","turn_id":1,"message_id":"…","item":{…}}}
+//! {"time":"…","event":{"type":"turn_ended","turn_id":1,"reason":"interrupted"}}
+//! {"time":"…","event":{"type":"turn_discarded","turn_id":1}}
 //! ```
 //!
 //! # Records that take something back
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn every_record_round_trips_through_json() {
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let entries = vec![
             SessionEvent::session(SessionId::new(), PathBuf::from("/w")),
             SessionEvent::system("# Role\n\nYou are Srud."),
@@ -541,7 +541,7 @@ mod tests {
     fn the_tag_is_what_names_each_record() {
         // The reader dispatches on this, so it has to be present and stable, and
         // the fields beside it are what a reader then reads.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let cases = [
             (
                 SessionEvent::system("# Role\n\nYou are Srud."),
@@ -606,7 +606,7 @@ mod tests {
         // The reason says a turn broke; the sentence says why. Only the second
         // one tells a rejected key from an exhausted quota.
         let entry = SessionEvent::TurnEnded {
-            turn_id: TurnId::new(),
+            turn_id: TurnId(1),
             reason: TurnEndReason::Error,
             error: Some("model request rejected: 429 Too Many Requests".into()),
         };
@@ -625,10 +625,7 @@ mod tests {
         // The field is optional, so a line without it is a whole record rather
         // than a damaged one. Reading it as damaged would cost a session for a
         // sentence it never had.
-        let line = concat!(
-            r#"{"type":"turn_ended","turn_id":"#,
-            r#""11111111-1111-4111-8111-111111111111","reason":"error"}"#
-        );
+        let line = r#"{"type":"turn_ended","turn_id":1,"reason":"error"}"#;
         let event: SessionEvent = serde_json::from_str(line).expect("a record without it reads");
 
         let SessionEvent::TurnEnded { reason, error, .. } = event else {
@@ -642,7 +639,7 @@ mod tests {
     fn a_record_without_a_message_id_omits_the_field() {
         // Written rather than null: an absent field is the statement "this is not
         // part of a message", and `null` would be a different claim.
-        let entry = SessionEvent::item(TurnId::new(), None, ResponseItem::assistant("x"));
+        let entry = SessionEvent::item(TurnId(1), None, ResponseItem::assistant("x"));
         let json = serde_json::to_string(&entry).unwrap();
 
         assert!(!json.contains("message_id"), "{json}");
@@ -666,7 +663,7 @@ mod tests {
             assert_eq!(outside.turn_id(), None, "{outside:?}");
         }
 
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         assert_eq!(
             SessionEvent::TurnStarted { turn_id }.turn_id(),
             Some(turn_id)
@@ -691,11 +688,11 @@ mod tests {
     fn a_discard_names_the_turn_it_takes_back() {
         // The record carries the turn and nothing else: what the reader needs is
         // the id, and every other property of the turn is already in the log.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let value = serde_json::to_value(SessionEvent::turn_discarded(turn_id)).unwrap();
 
         assert_eq!(value["type"], "turn_discarded");
-        assert_eq!(value["turn_id"], turn_id.to_string());
+        assert_eq!(value["turn_id"].as_u64(), Some(1));
         let back: SessionEvent = serde_json::from_value(value).unwrap();
         assert_eq!(back, SessionEvent::turn_discarded(turn_id));
     }
@@ -750,16 +747,8 @@ mod tests {
         // consumer can group them. A value that changed per chunk would group
         // nothing.
         let id = MessageId::new();
-        let first = SessionEvent::item(
-            TurnId::new(),
-            Some(id.clone()),
-            ResponseItem::assistant("a"),
-        );
-        let second = SessionEvent::item(
-            TurnId::new(),
-            Some(id.clone()),
-            ResponseItem::assistant("b"),
-        );
+        let first = SessionEvent::item(TurnId(1), Some(id.clone()), ResponseItem::assistant("a"));
+        let second = SessionEvent::item(TurnId(1), Some(id.clone()), ResponseItem::assistant("b"));
 
         let ids: Vec<_> = [&first, &second]
             .iter()
@@ -779,7 +768,7 @@ mod tests {
         // round-trips as the content it is, and the reader recognises it the
         // same way the runtime does.
         let entry = SessionEvent::item(
-            TurnId::new(),
+            TurnId(1),
             None,
             ResponseItem::Message {
                 role: Role::User,

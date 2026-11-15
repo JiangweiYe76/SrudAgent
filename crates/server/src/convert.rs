@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn turn_started_and_complete_are_not_updates() {
         use srud_core::types::TurnId;
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         assert_eq!(
             to_session_update(
                 Event::TurnStarted { turn_id },
@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn a_step_boundary_is_not_an_update_but_its_index_rides_on_the_events_inside() {
         use srud_core::types::TurnId;
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         assert!(
             to_notification(
                 &session_id(),
@@ -766,7 +766,7 @@ mod tests {
     fn a_replayed_item_carries_the_step_it_belongs_to() {
         use srud_core::session_event::MessageId;
         use srud_core::types::TurnId;
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let event = SessionEvent::item_in_step(
             turn_id,
             2,
@@ -809,7 +809,7 @@ mod tests {
     fn a_replayed_context_block_is_shown_too() {
         use srud_core::types::TurnId;
         let event = SessionEvent::item(
-            TurnId::new(),
+            TurnId(1),
             None,
             srud_core::context::item(std::path::Path::new("/w")),
         );
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn a_replayed_usage_record_becomes_the_same_usage_update() {
-        let turn_id = srud_core::types::TurnId::new();
+        let turn_id = srud_core::types::TurnId(1);
         let event = SessionEvent::UsageRecorded {
             turn_id,
             step: Some(1),
@@ -898,7 +898,7 @@ mod tests {
     #[test]
     fn a_replayed_image_becomes_a_user_message_chunk() {
         let event = SessionEvent::item(
-            srud_core::types::TurnId::new(),
+            srud_core::types::TurnId(1),
             Some(srud_core::session_event::MessageId::new()),
             ResponseItem::Image {
                 mime: "image/png".into(),

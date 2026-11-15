@@ -178,6 +178,22 @@ fn last_turn_of(log: &ReadLog) -> Option<TurnId> {
     last.filter(|turn_id| !discarded.contains(turn_id))
 }
 
+/// The turn number a log's session has reached, one past its highest.
+///
+/// Every record that names a turn counts, including turns that were discarded:
+/// a discarded number is not handed out again, or a new turn would inherit the
+/// record that took the old one back.
+fn next_turn_of(log: &ReadLog) -> TurnId {
+    let highest = log
+        .entries
+        .iter()
+        .filter_map(|entry| entry.event.turn_id())
+        .map(|id| id.0)
+        .max()
+        .unwrap_or(0);
+    TurnId(highest.saturating_add(1))
+}
+
 /// Something outside a turn that records to a session's log.
 ///
 /// The turn loop records through [`SessionLog`] and does so on the event sink's
@@ -313,6 +329,12 @@ pub struct Loaded {
     /// Records to append before the session runs again, closing what the log left
     /// open.
     pub repairs: Vec<SessionEvent>,
+    /// The turn id the session hands out next.
+    ///
+    /// Read from the log rather than restarted at one: turn ids are the session's
+    /// running turn number, so a resumed session has to continue after the last
+    /// turn the log holds.
+    pub next_turn: TurnId,
 }
 
 /// How one recorded turn ended.
@@ -676,6 +698,7 @@ fn rebuild(log: &ReadLog, stopped: bool) -> Result<Loaded, LoadError> {
         conversation,
         turn_ends,
         repairs,
+        next_turn: next_turn_of(log),
     })
 }
 
@@ -802,7 +825,7 @@ mod tests {
 
     /// A turn id for a test to record against.
     fn turn() -> TurnId {
-        TurnId::new()
+        TurnId(1)
     }
 
     #[tokio::test]
@@ -1010,7 +1033,7 @@ mod tests {
             "{\"time\":\"2026-10-03T21:28:14.123Z\",\"event\":{\"type\":\"from_the_future\",\"payload\":{\"x\":1}}}\n",
         );
         text.push_str(&format!(
-            "{{\"time\":\"2026-10-03T21:28:14.124Z\",\"event\":{{\"type\":\"turn_ended\",\"turn_id\":\"{}\",\"reason\":\"interrupted\"}}}}\n",
+            "{{\"time\":\"2026-10-03T21:28:14.124Z\",\"event\":{{\"type\":\"turn_ended\",\"turn_id\":{},\"reason\":\"interrupted\"}}}}\n",
             turn()
         ));
         std::fs::write(&path, text).unwrap();
@@ -1180,7 +1203,7 @@ mod tests {
     fn a_discarded_turn_gives_back_its_message_and_keeps_the_answer_out() {
         // What regenerate needs from a reload: the question the second turn
         // answered is there once, and neither version of the answer is.
-        let (first, second) = (TurnId::new(), TurnId::new());
+        let (first, second) = (TurnId(1), TurnId(2));
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id: first },
@@ -1235,7 +1258,7 @@ mod tests {
     fn a_discarded_turn_takes_the_images_it_was_sent_with() {
         // The images are content the user attached rather than something the
         // turn produced, and they belong to the message the new turn answers.
-        let (first, second) = (TurnId::new(), TurnId::new());
+        let (first, second) = (TurnId(1), TurnId(2));
         let image = ResponseItem::Image {
             mime: "image/png".into(),
             data: "AAAA".into(),
@@ -1268,7 +1291,7 @@ mod tests {
         // A turn that answered nothing — cut off before its first chunk, or
         // refused before it asked — leaves the user's message and the images
         // beside it as the only entries it wrote. Those are not its output.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1292,7 +1315,7 @@ mod tests {
         // Its end record failed to write while the turn still ended. A reader
         // that closed it would put a boundary in a conversation the turn is no
         // longer part of.
-        let (first, second) = (TurnId::new(), TurnId::new());
+        let (first, second) = (TurnId(1), TurnId(2));
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id: first },
@@ -1327,7 +1350,7 @@ mod tests {
     fn the_env_context_block_survives_a_discard() {
         // Written ahead of the first message and never repeated, so a discard
         // that cut back past it would leave the model without where it is working.
-        let (first, second) = (TurnId::new(), TurnId::new());
+        let (first, second) = (TurnId(1), TurnId(2));
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id: first },
@@ -1361,7 +1384,7 @@ mod tests {
 
     #[test]
     fn a_finished_turn_rebuilds_without_repairs() {
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1385,7 +1408,7 @@ mod tests {
     fn a_log_that_stopped_mid_turn_is_closed_as_interrupted() {
         // Without the synthetic end, a reader cannot tell a turn that was
         // interrupted from one still running.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1408,8 +1431,8 @@ mod tests {
     fn every_turn_left_open_is_closed() {
         // A turn's end record can fail to write while the turn itself still ends,
         // so a log can carry more than one turn that never closed.
-        let first = TurnId::new();
-        let second = TurnId::new();
+        let first = TurnId(1);
+        let second = TurnId(2);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id: first },
@@ -1441,7 +1464,7 @@ mod tests {
     fn a_call_with_no_result_is_answered() {
         // A model API refuses a call nothing answered, so a resumed session could
         // not send a request at all without this.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1485,7 +1508,7 @@ mod tests {
 
     #[test]
     fn an_answered_call_is_left_alone() {
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1525,7 +1548,7 @@ mod tests {
         // A client folds the context block into its own card, so a replay has to
         // carry it; reasoning is model-invisible but rendered by the client, so
         // the two projections are not each other's complement.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1582,7 +1605,7 @@ mod tests {
         // A restart must not blank the session's costs: the records ride into
         // the replayed conversation. They stay out of the model's history,
         // which is what `history_item` decides.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1649,7 +1672,7 @@ mod tests {
         // Not every log has one: a session that never had a model chosen, or one
         // written before this record existed, reads as "no model recorded" rather
         // than as some default.
-        let log = log_of(vec![opening(), said(TurnId::new(), "hello")]);
+        let log = log_of(vec![opening(), said(TurnId(1), "hello")]);
 
         let loaded = rebuild(&log, true).expect("a session");
 
@@ -1714,7 +1737,7 @@ mod tests {
 
     #[test]
     fn a_session_without_a_thinking_record_has_none() {
-        let log = log_of(vec![opening(), said(TurnId::new(), "hello")]);
+        let log = log_of(vec![opening(), said(TurnId(1), "hello")]);
 
         let loaded = rebuild(&log, true).expect("a session");
 
@@ -1722,11 +1745,41 @@ mod tests {
     }
 
     #[test]
+    fn the_next_turn_continues_after_a_discarded_one() {
+        // A discarded number is spent: the turn that replaces the answer must not
+        // wear the id its predecessor's discard record names.
+        let log = log_of(vec![
+            opening(),
+            SessionEvent::TurnStarted { turn_id: TurnId(1) },
+            said(TurnId(1), "hello"),
+            SessionEvent::turn_discarded(TurnId(1)),
+            SessionEvent::TurnStarted { turn_id: TurnId(2) },
+            said(TurnId(2), "again"),
+            SessionEvent::TurnEnded {
+                turn_id: TurnId(2),
+                reason: TurnEndReason::Completed,
+                error: None,
+            },
+        ]);
+
+        let loaded = rebuild(&log, true).expect("a session");
+
+        assert_eq!(loaded.next_turn, TurnId(3));
+    }
+
+    #[test]
+    fn a_log_with_no_turns_starts_at_the_first() {
+        let loaded = rebuild(&log_of(vec![opening()]), true).expect("a session");
+
+        assert_eq!(loaded.next_turn, TurnId(1));
+    }
+
+    #[test]
     fn a_running_session_is_not_repaired() {
         // Loading a session another client already has open: the turn with no end
         // is one still running, not one that stopped, so nothing is invented for
         // it.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1750,8 +1803,8 @@ mod tests {
     fn every_turn_says_how_it_ended() {
         // A client being shown the session has no prompt response to close its
         // turns with, so each reason has to be readable from here.
-        let first = TurnId::new();
-        let second = TurnId::new();
+        let first = TurnId(1);
+        let second = TurnId(2);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id: first },
@@ -1786,7 +1839,7 @@ mod tests {
     fn a_turn_only_the_repairs_closed_still_says_it_ended() {
         // Without this the last turn of a session that stopped mid-turn would be
         // shown with no reason at all, and would look like it were still running.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1806,7 +1859,7 @@ mod tests {
     fn a_running_turn_says_nothing_about_how_it_will_end() {
         // Its end has not happened yet, so inventing one would report a turn as
         // over that is not.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
@@ -1823,7 +1876,7 @@ mod tests {
         // Nothing writes a second end, so a log carrying one is damaged. The first
         // is kept, so a client is shown one reason per turn however many the log
         // claims.
-        let turn_id = TurnId::new();
+        let turn_id = TurnId(1);
         let log = log_of(vec![
             opening(),
             SessionEvent::TurnStarted { turn_id },
