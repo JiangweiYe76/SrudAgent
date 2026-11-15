@@ -518,6 +518,66 @@ async fn a_step_that_produced_no_token_records_no_timing() {
 }
 
 #[tokio::test]
+async fn a_step_that_only_calls_a_tool_times_its_tokens() {
+    // A call's name is the step's first token and the finished call its last, so
+    // a step with no text or reasoning still says how long the model took. The
+    // tool itself runs after both and is not part of them.
+    let log = Volatile::new();
+
+    run_turn(
+        &session(),
+        TurnInput {
+            text: "hi".into(),
+            images: Vec::new(),
+        },
+        &Scripted::new(vec![
+            vec![
+                ModelEvent::ToolCallNamed {
+                    call_id: "c1".into(),
+                    name: "echo".into(),
+                },
+                ModelEvent::ToolCall {
+                    call_id: "c1".into(),
+                    name: "echo".into(),
+                    arguments: r#"{"text":"hi"}"#.into(),
+                },
+                ModelEvent::Usage(TokenUsage {
+                    output_tokens: 3,
+                    ..TokenUsage::default()
+                }),
+                ModelEvent::Done,
+            ],
+            vec![
+                ModelEvent::TextDelta {
+                    delta: "done".into(),
+                },
+                ModelEvent::Done,
+            ],
+        ]),
+        &tools(),
+        &log,
+        &Timeline::default(),
+    )
+    .await
+    .expect("the turn runs");
+
+    let timing = events(&log)
+        .into_iter()
+        .find_map(|event| match event {
+            SessionEvent::StepEnded {
+                step: 1, timing, ..
+            } => Some(timing),
+            _ => None,
+        })
+        .expect("the first step closed");
+
+    assert!(
+        timing.is_some(),
+        "a step that only calls a tool still records when its tokens arrived"
+    );
+}
+
+#[tokio::test]
 async fn every_announcement_has_a_record_written_first() {
     // The whole stream at once, rather than one record at a time: a turn is a
     // sequence, and a gap anywhere in it is a gap a consumer cannot recover from.

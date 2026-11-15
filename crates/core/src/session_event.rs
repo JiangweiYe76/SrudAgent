@@ -103,8 +103,9 @@ impl std::fmt::Display for MessageId {
 pub struct StepTiming {
     /// Milliseconds from the step's start to its first token.
     ///
-    /// A token is the first of either the answer's text or its reasoning: a
-    /// model that thinks before answering starts producing at the first thought.
+    /// A token is the first of the answer's text, its reasoning, or the name of a
+    /// tool it calls: a model that thinks before answering starts producing at
+    /// the first thought, and one that only calls a tool starts at the name.
     pub first_token_ms: u64,
     /// Milliseconds from the first token to the last one.
     ///

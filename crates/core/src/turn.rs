@@ -882,7 +882,7 @@ impl TokenTiming {
         }
     }
 
-    /// Notes one token of the answer's text or reasoning.
+    /// Notes one token of the answer: its text, its reasoning, or a tool's name.
     fn token(&mut self) {
         let now = Instant::now();
         self.first.get_or_insert(now);
@@ -891,9 +891,10 @@ impl TokenTiming {
 
     /// Notes a tool call, which arrives complete.
     ///
-    /// It closes the step's output but cannot open it: a call carries arguments
-    /// the model has finished producing, so the moment it arrives is the moment
-    /// the last token of that output did.
+    /// It closes the step's output: a call carries arguments the model has
+    /// finished producing, so the moment it arrives is the moment the last token
+    /// of that output did. The call's name already opened the output when the
+    /// stream named it.
     fn trail(&mut self) {
         if self.first.is_some() {
             self.last = Some(Instant::now());
@@ -1000,8 +1001,10 @@ async fn run_step(
                 });
             }
             ModelEvent::ToolCallNamed { call_id, name } => {
-                // Forwarded, not recorded: see `Event::ToolCallNamed`. The log
-                // entry comes with `ToolCallBegin`, once there is an attempt to log.
+                // A tool's name is the first token of a call: it arrives before
+                // the arguments do, so a step that only calls a tool still has a
+                // moment to start from.
+                timing.token();
                 journal.sink().emit(Event::ToolCallNamed { call_id, name });
             }
             ModelEvent::ToolCall {
