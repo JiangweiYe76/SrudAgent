@@ -30,9 +30,13 @@ pnpm-debug.log*
 .workbuddy/
 .trae/
 
+# Private research notes (surveys, papers, source breakdowns)
+research/
+
 # OS
 .DS_Store
 Thumbs.db
+.Trash-0/
 
 # Python (if any tooling)
 __pycache__/
