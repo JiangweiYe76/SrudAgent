@@ -33,6 +33,7 @@ import {
   newSession,
   onNotify,
   parseSessionOptions,
+  readSessionOptions,
   setSessionModel,
   setSessionMode,
   setSessionThinking,
@@ -715,6 +716,9 @@ interface SessionState {
   // place. The message the turn answered stays where it is, and the new answer
   // fills the same turn when it arrives.
   regenerateTurn: (turn: Turn) => void;
+  // Asks for the active session's selectors again when the provider catalog
+  // has moved on since they were read.
+  refreshOptions: () => void;
   setModel: (model: string) => void;
   setThinking: (level: string) => void;
   setSandboxMode: (mode: string) => void;
@@ -906,6 +910,10 @@ function startLoad(localId: string, repairing: boolean) {
   if (!repairing) repairCounts.delete(backendId);
   beginReopen(backendId);
   lastSeq.delete(backendId);
+  // Taken before the request: if the catalog moves while the load is in flight,
+  // the session is left to be read again rather than stamped with a version its
+  // reply may not reflect.
+  const optionsVersion = useProviderStore.getState().catalogVersion;
   let loaded: LoadedSession | null = null;
   void loadSession(backendId, session.cwd)
     .then((result) => {
@@ -924,6 +932,9 @@ function startLoad(localId: string, repairing: boolean) {
       if (result.model) setModelOf(localId, result.model);
       setThinkingOf(localId, result.thinking);
       setSandboxModeOf(localId, result.sandboxMode);
+      // The reply names selectors built from the catalog the load started
+      // from, which is what the version records.
+      setOptionsVersionOf(localId, optionsVersion);
     })
     .catch((err: unknown) => {
       // A session the agent will not name is one this app cannot show, and
@@ -949,6 +960,42 @@ function startLoad(localId: string, repairing: boolean) {
       // refused; it is owed one now that the conversation is back.
       flushFollowups(localId);
     });
+}
+
+// Bumped whenever this client switches a session's selectors, so a read that
+// started earlier cannot land on top of the newer choice.
+const optionsEpoch = new Map<string, number>();
+
+function invalidateOptions(localId: string) {
+  optionsEpoch.set(localId, (optionsEpoch.get(localId) ?? 0) + 1);
+}
+
+// Reads one session's selectors when the catalog has moved on, and folds them
+// in.
+//
+// A session's selectors are a snapshot taken when it was created, opened, or
+// switched, so a catalog change since leaves it showing choices the agent may
+// no longer offer. Only the session that asks is read; the others are read when
+// they come back on screen.
+function refreshOptionsOf(localId: string) {
+  const session = useSessionStore
+    .getState()
+    .sessions.find((s) => s.id === localId);
+  const backendId = session?.backendId;
+  const version = useProviderStore.getState().catalogVersion;
+  if (!backendId || session.optionsVersion === version) return;
+  const epoch = optionsEpoch.get(localId) ?? 0;
+  void readSessionOptions(backendId)
+    .then(({ model, thinking }) => {
+      // A choice made while the read was in flight is newer than its answer.
+      if ((optionsEpoch.get(localId) ?? 0) !== epoch) return;
+      setModelOf(localId, model);
+      setThinkingOf(localId, thinking);
+      setOptionsVersionOf(localId, version);
+    })
+    // A failed read leaves the session showing what it had; the next turn
+    // reports a session the agent no longer has.
+    .catch(() => undefined);
 }
 
 // How each replayed turn ended, as the `session/load` reply reported it, under
@@ -1038,6 +1085,7 @@ function freshSession(cwd = ''): Session {
     title: null,
     model: null,
     thinking: null,
+    optionsVersion: 0,
     sandboxMode: DEFAULT_SANDBOX_MODE,
     turns: [],
     followups: [],
@@ -1061,6 +1109,7 @@ function listedSession(info: ListedSession, now: number): Session {
     // Known once the conversation is loaded: the model comes back with it.
     model: null,
     thinking: null,
+    optionsVersion: 0,
     sandboxMode: DEFAULT_SANDBOX_MODE,
     turns: [],
     followups: [],
@@ -1213,11 +1262,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeId: id,
       unreadIds: s.unreadIds.filter((x) => x !== id),
     }));
-    // A session the agent listed has a conversation that is not on screen yet, so
-    // it is asked for on the way to being shown. Already-loaded and draft
-    // sessions are left alone: loading one again would replay it on top of itself.
+    // A session the agent listed has a conversation that is not on screen yet,
+    // so it is asked for on the way to being shown. A draft has no conversation
+    // behind it.
     const session = get().sessions.find((s) => s.id === id);
-    if (!session?.backendId || session.loaded) return;
+    if (!session?.backendId) return;
+    // One already live keeps the selectors from when it loaded; a catalog
+    // change since makes that read worth repeating.
+    if (session.loaded) {
+      refreshOptionsOf(id);
+      return;
+    }
     startLoad(id, false);
   },
 
@@ -1307,6 +1362,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         get().sessions.find((s) => s.id === sessionId)?.backendId ?? null;
       if (!backendId) {
         try {
+          // Taken before the request, so a catalog change while the session is
+          // being created leaves it to be read again.
+          const optionsVersion = useProviderStore.getState().catalogVersion;
           // The directory the user chose, or empty for one of the agent's own:
           // in the latter case the agent gives the session a workspace under its
           // configuration directory.
@@ -1400,6 +1458,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                       cwd: created.cwd || sess.cwd,
                       model: options.model,
                       thinking: options.thinking,
+                      optionsVersion,
                       sandboxMode,
                     }
                   : sess,
@@ -1589,6 +1648,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     })();
   },
 
+  refreshOptions: () => {
+    const { activeId, sessions } = get();
+    const session = sessions.find((s) => s.id === activeId);
+    // A draft has no session yet, and one still arriving gets its selectors
+    // with the load; anything else is on screen with a snapshot.
+    if (!session?.backendId || !session.loaded) return;
+    refreshOptionsOf(session.id);
+  },
+
   setModel: (model) => {
     const session = get().sessions.find((s) => s.id === get().activeId);
     if (!session) return;
@@ -1619,6 +1687,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // nothing to switch between.
     if (!session.model) return;
     const localId = session.id;
+    // Bumped before the request so a read already in flight is dropped rather
+    // than landing on the choice being sent. The version is read here too, so a
+    // catalog change during the switch leaves the reply marked older and read
+    // again later.
+    const optionsVersion = useProviderStore.getState().catalogVersion;
+    invalidateOptions(localId);
     // The agent echoes the accepted selection back over `session/update`, but
     // the reply already carries it: the picker settles from the reply rather
     // than waiting on the broadcast echo. The id comes from the selector: ACP
@@ -1627,6 +1701,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       .then((next) => {
         if (next.model) setModelOf(localId, next.model);
         setThinkingOf(localId, next.thinking);
+        setOptionsVersionOf(localId, optionsVersion);
       })
       .catch(() => toast.error(t('session.settingFailed')));
   },
@@ -1652,10 +1727,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     if (!session.thinking) return;
     const localId = session.id;
+    // As with a model switch: the bump and the version are taken before the
+    // request, so an older read cannot land on the new level.
+    const optionsVersion = useProviderStore.getState().catalogVersion;
+    invalidateOptions(localId);
     void setSessionThinking(session.backendId, session.thinking.configId, level)
       .then((next) => {
         if (next.model) setModelOf(localId, next.model);
         setThinkingOf(localId, next.thinking);
+        setOptionsVersionOf(localId, optionsVersion);
       })
       .catch(() => toast.error(t('session.settingFailed')));
   },
@@ -1800,6 +1880,7 @@ function removeSession(id: string) {
     };
   });
   if (!removed) return;
+  optionsEpoch.delete(id);
   if (backendId !== null) {
     lastSeq.delete(backendId);
     repairCounts.delete(backendId);
@@ -1845,6 +1926,15 @@ function setThinkingOf(localId: string, thinking: ThinkingOptions | null) {
   useSessionStore.setState((s) => ({
     sessions: s.sessions.map((sess) =>
       sess.id === localId ? { ...sess, thinking } : sess,
+    ),
+  }));
+}
+
+// Records the catalog version a session's selectors were read from.
+function setOptionsVersionOf(localId: string, version: number) {
+  useSessionStore.setState((s) => ({
+    sessions: s.sessions.map((sess) =>
+      sess.id === localId ? { ...sess, optionsVersion: version } : sess,
     ),
   }));
 }

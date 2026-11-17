@@ -138,6 +138,7 @@ function session(
     title,
     model: MODEL,
     thinking: THINKING,
+    optionsVersion: 0,
     sandboxMode: DEFAULT_SANDBOX_MODE,
     turns,
     createdAt: updatedAt,

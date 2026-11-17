@@ -634,6 +634,19 @@ async function setSessionOption(
   return parseSessionOptions(result.configOptions);
 }
 
+// Reads the selectors a session is offered right now. ACP has no method for
+// this: it sends them when a session is created, opened, or changed. This
+// extension is how a client refreshes the session on screen after the provider
+// catalog changed, without replaying its conversation.
+export async function readSessionOptions(
+  sessionId: string,
+): Promise<SessionOptions> {
+  const result = await rpcRequest('_srud/unstable/session/config_options', {
+    sessionId,
+  });
+  return parseSessionOptions(result.configOptions);
+}
+
 // ---------------------------------------------------------------------------
 // Providers and their credentials
 // ---------------------------------------------------------------------------
