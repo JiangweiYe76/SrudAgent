@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::acp::{ContentBlock, Meta, SessionId, StopReason};
+use crate::acp::{ContentBlock, Meta, SessionConfigOption, SessionId, StopReason};
 
 /// Client -> agent: `_srud/unstable/session/fork`.
 ///
@@ -142,6 +142,34 @@ pub struct SetSessionTitleResponse {
     /// The title now in effect, or `None` when the session is unnamed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Client -> agent: `_srud/unstable/session/config_options`.
+///
+/// Reads the selectors a session is offered right now. ACP carries them on the
+/// replies that create or open a session and on `config_option_update`, but has
+/// no way to ask for them again; a client that changed the provider catalog
+/// needs the current projection without replaying the conversation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigOptionsRequest {
+    /// The session to read them for.
+    pub session_id: SessionId,
+    /// The `_meta` property reserved by ACP for extensibility.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+/// Response to [`SessionConfigOptionsRequest`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigOptionsResponse {
+    /// The selectors this session is offered, empty when it is offered none.
+    #[serde(default)]
+    pub config_options: Vec<SessionConfigOption>,
     /// The `_meta` property reserved by ACP for extensibility.
     #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<Meta>,

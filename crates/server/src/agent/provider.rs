@@ -135,7 +135,7 @@ mod tests {
     use srud_core::client::ModelEvent;
     use srud_protocol::acp::methods::{
         SESSION_PROMPT, SRUD_PROVIDER_DELETE, SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET,
-        SRUD_PROVIDER_SET_DEFAULT,
+        SRUD_PROVIDER_SET_DEFAULT, SRUD_SESSION_CONFIG_OPTIONS,
     };
     use srud_protocol::error::INVALID_PARAMS;
 
@@ -176,6 +176,86 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[tokio::test]
+    async fn a_model_added_after_the_session_was_opened_is_read_back() {
+        let (agent, _factory) = providers_agent(vec![]);
+        initialize(&agent).await;
+        let _home = home();
+        let session_id = new_session_in(&agent, "").await;
+
+        result_of(
+            agent
+                .handle(request(
+                    SRUD_PROVIDER_SET,
+                    json!({
+                        "provider": {
+                            "id": "openai",
+                            "name": "OpenAI",
+                            "baseUrl": "https://openai.example/v1",
+                            "apiKey": "sk-openai-1234567890",
+                            "models": [
+                                { "id": "small", "name": "Small" },
+                                { "id": "large", "name": "Large" },
+                                { "id": "added", "name": "Added" },
+                            ],
+                        }
+                    }),
+                ))
+                .await,
+        );
+
+        // The read is the projection the session would get if it were opened
+        // now, so it names the model added since.
+        let read = result_of(
+            agent
+                .handle(request(
+                    SRUD_SESSION_CONFIG_OPTIONS,
+                    json!({ "sessionId": session_id.0.as_ref() }),
+                ))
+                .await,
+        );
+        let groups = read["configOptions"][0]["options"]
+            .as_array()
+            .expect("grouped by provider");
+        let values: Vec<&str> = groups
+            .iter()
+            .flat_map(|group| group["options"].as_array().expect("a group's options"))
+            .map(|option| option["value"].as_str().unwrap())
+            .collect();
+        assert!(values.contains(&"openai/added"), "{values:?}");
+    }
+
+    #[tokio::test]
+    async fn removing_every_provider_withdraws_the_selector() {
+        let (agent, _factory) = providers_agent(vec![]);
+        initialize(&agent).await;
+        let _home = home();
+        let session_id = new_session_in(&agent, "").await;
+
+        for provider in ["openai", "anthropic"] {
+            result_of(
+                agent
+                    .handle(request(
+                        SRUD_PROVIDER_DELETE,
+                        json!({ "providerId": provider }),
+                    ))
+                    .await,
+            );
+        }
+
+        // Nothing is left to choose from, so the session is offered no
+        // selectors at all.
+        let read = result_of(
+            agent
+                .handle(request(
+                    SRUD_SESSION_CONFIG_OPTIONS,
+                    json!({ "sessionId": session_id.0.as_ref() }),
+                ))
+                .await,
+        );
+        assert_eq!(read["configOptions"], json!([]));
     }
 
     #[tokio::test]

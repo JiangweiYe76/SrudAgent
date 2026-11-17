@@ -10,8 +10,8 @@ use srud_protocol::acp::methods::{
     SESSION_NEW, SESSION_PROMPT, SESSION_RESUME, SESSION_SET_CONFIG_OPTION, SESSION_SET_MODE,
     SRUD_MCP_DELETE, SRUD_MCP_IMPORT, SRUD_MCP_LIST, SRUD_MCP_SET, SRUD_MCP_TOOLS,
     SRUD_PROVIDER_DELETE, SRUD_PROVIDER_LIST, SRUD_PROVIDER_SET, SRUD_PROVIDER_SET_DEFAULT,
-    SRUD_SESSION_FORK, SRUD_SESSION_REGENERATE, SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER,
-    SRUD_SKILLS_LIST, SRUD_SKILLS_READ,
+    SRUD_SESSION_CONFIG_OPTIONS, SRUD_SESSION_FORK, SRUD_SESSION_REGENERATE,
+    SRUD_SESSION_SET_TITLE, SRUD_SESSION_STEER, SRUD_SKILLS_LIST, SRUD_SKILLS_READ,
 };
 use srud_protocol::acp::{AcpError, CloseSessionResponse, DeleteSessionResponse};
 
@@ -90,6 +90,12 @@ impl MethodTable {
             set_config_option,
             SESSION_SET_CONFIG_OPTION,
             |agent, params| agent.handle_set_config_option(params).await.map(serialize)
+        );
+        register!(
+            table,
+            config_options,
+            SRUD_SESSION_CONFIG_OPTIONS,
+            |agent, params| agent.handle_config_options(params).map(serialize)
         );
         register!(table, set_mode, SESSION_SET_MODE, |agent, params| agent
             .handle_set_mode(params)

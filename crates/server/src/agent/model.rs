@@ -16,6 +16,7 @@ use srud_protocol::acp::{
     SetSessionConfigOptionResponse, CLIENT_METHOD_NAMES,
 };
 use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
+use srud_protocol::srud::methods::{SessionConfigOptionsRequest, SessionConfigOptionsResponse};
 use std::sync::Arc;
 
 impl Agent {
@@ -262,6 +263,24 @@ impl Agent {
                 format!("cannot record the thinking level: {err}"),
             )),
         }
+    }
+
+    /// Reads the selectors a session is offered right now.
+    ///
+    /// The same projection `session/new` and `session/load` carry. It exists so
+    /// a client can refresh the session on screen after a change to the
+    /// provider catalog, instead of the agent pushing a new selector to every
+    /// open session.
+    pub(super) fn handle_config_options(
+        &self,
+        params: Value,
+    ) -> Result<SessionConfigOptionsResponse, AcpError> {
+        let request: SessionConfigOptionsRequest = parse_params(params)?;
+        self.require_session(&request.session_id)?;
+        Ok(SessionConfigOptionsResponse {
+            config_options: self.config_options(&request.session_id).unwrap_or_default(),
+            meta: None,
+        })
     }
 
     /// Publishes a configuration change on the `session/update` stream.
