@@ -32,6 +32,10 @@ export { THINKING_LEVELS };
 interface ProviderState {
   providers: Provider[];
   defaultModel: string | null;
+  // Counts the catalog changes this store has applied. A session records the
+  // version its selectors were read from, so a change makes them stale and an
+  // unchanged catalog costs nothing.
+  catalogVersion: number;
   // False until a listing has come back, so the panel can tell "nothing is
   // configured" apart from "not asked yet".
   loaded: boolean;
@@ -111,11 +115,18 @@ export const useProviderStore = create<ProviderState>((set) => {
   // a provider added, changed or removed all leave the store holding what the
   // agent says the file says.
   function apply(catalog: ProviderCatalog): boolean {
-    set({
+    set((state) => ({
       providers: catalog.providers,
       defaultModel: catalog.default,
       error: null,
-    });
+      // Only a catalog that differs moves the version: re-reading the same one
+      // is not a reason for an open session to ask for its selectors again.
+      catalogVersion:
+        state.defaultModel === catalog.default &&
+        JSON.stringify(state.providers) === JSON.stringify(catalog.providers)
+          ? state.catalogVersion
+          : state.catalogVersion + 1,
+    }));
     return true;
   }
 
@@ -127,6 +138,7 @@ export const useProviderStore = create<ProviderState>((set) => {
   return {
     providers: [],
     defaultModel: null,
+    catalogVersion: 0,
     loaded: false,
     error: null,
 

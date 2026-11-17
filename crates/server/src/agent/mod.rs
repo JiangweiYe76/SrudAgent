@@ -19,6 +19,7 @@
 //! | `session/close`   | interrupt + deregister                               |
 //! | `session/delete`  | deregister                                           |
 //! | `session/set_config_option` | choose the model a session runs on          |
+//! | `_srud/unstable/session/config_options` | read a session's selectors     |
 //! | `session/set_mode` | choose the session's sandbox mode                   |
 //! | `_srud/unstable/session/set_title` | rename a session               |
 //! | `_srud/unstable/session/fork` | branch a session at its current point   |

@@ -105,6 +105,8 @@ async function boot(
     newModel?: unknown;
     loadModel?: unknown;
     switched?: unknown;
+    // The `configOptions` a re-read of a session's selectors answers with.
+    refreshModel?: unknown;
     // The `modes` the agent hangs on each reply.
     newModes?: unknown;
     loadModes?: unknown;
@@ -198,6 +200,17 @@ async function boot(
               ? {}
               : { configOptions: options.switched }),
           });
+        case '_srud/unstable/session/config_options':
+          // A test that did not ask for a refresh has nothing to answer with;
+          // the store keeps what the session shows.
+          if (options.refreshModel === undefined) {
+            throw new Error('no selectors to read');
+          }
+          // A promise lets a test hold the answer back and let other work land
+          // first.
+          return Promise.resolve(options.refreshModel).then((model) =>
+            reply(payload.id, { configOptions: model }),
+          );
         case 'session/set_mode':
           if (options.settingFails) throw new Error('mode refused');
           return reply(payload.id, {});
@@ -2311,6 +2324,103 @@ describe('sessionStore model selection', () => {
     expect(active().model?.currentValue).toBe('deepseek/chat');
     // Session-level, like a rename: it lands whether or not a turn is open.
     expect(active().turns).toHaveLength(1);
+  });
+
+  it('re-reads the selectors of the session on screen when asked', async () => {
+    const { useSessionStore, useProviderStore, active, calls, waitForBackend } =
+      await boot({
+        newModel: sessionOptions('openai/gpt-4o', 'medium'),
+        refreshModel: sessionOptions('deepseek/chat', 'low'),
+      });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    // A provider edit reaches the store as a new catalog, which moves its
+    // version on and leaves the copy the header holds stale.
+    useProviderStore.setState({
+      ...providerCatalog('deepseek/chat'),
+      catalogVersion: useProviderStore.getState().catalogVersion + 1,
+    });
+    useSessionStore.getState().refreshOptions();
+
+    await vi.waitFor(() => {
+      expect(active().model?.currentValue).toBe('deepseek/chat');
+      expect(active().thinking?.currentValue).toBe('low');
+    });
+    expect(calls).toContain('_srud/unstable/session/config_options');
+    expect(active().turns).toHaveLength(1);
+  });
+
+  it('keeps the selectors when the catalog has not moved', async () => {
+    const { useSessionStore, calls, waitForBackend } = await boot({
+      newModel: modelOptions('openai/gpt-4o'),
+    });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useSessionStore.getState().refreshOptions();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls).not.toContain('_srud/unstable/session/config_options');
+  });
+
+  it('keeps a choice made while a read is in flight', async () => {
+    let answer!: (model: unknown) => void;
+    const read = new Promise((resolve) => {
+      answer = resolve;
+    });
+    const { useSessionStore, useProviderStore, active, waitForBackend } =
+      await boot({
+        newModel: modelOptions('openai/gpt-4o'),
+        switched: modelOptions('deepseek/chat'),
+        refreshModel: read,
+      });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+
+    useProviderStore.setState({
+      ...providerCatalog('deepseek/chat'),
+      catalogVersion: useProviderStore.getState().catalogVersion + 1,
+    });
+    useSessionStore.getState().refreshOptions();
+    // The user picks a model while the read is still out.
+    useSessionStore.getState().setModel('deepseek/chat');
+    await vi.waitFor(() => {
+      expect(active().model?.currentValue).toBe('deepseek/chat');
+    });
+
+    // The read answers with what the catalog offered before that switch.
+    answer(modelOptions('openai/gpt-4o'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(active().model?.currentValue).toBe('deepseek/chat');
+  });
+
+  it('re-reads the selectors when a session already live comes back on screen', async () => {
+    const { useSessionStore, useProviderStore, active, waitForBackend } =
+      await boot({
+        newModel: modelOptions('openai/gpt-4o'),
+        refreshModel: modelOptions('deepseek/chat'),
+      });
+    useSessionStore.getState().sendTurn('hi');
+    await waitForBackend();
+    const first = active().id;
+
+    // A second conversation takes the screen, so the first is no longer shown.
+    useSessionStore.getState().addSession();
+    useSessionStore.getState().sendTurn('another');
+    await waitForBackend();
+    expect(active().id).not.toBe(first);
+
+    // The catalog moved on while the first was off screen.
+    useProviderStore.setState({
+      ...providerCatalog('deepseek/chat'),
+      catalogVersion: useProviderStore.getState().catalogVersion + 1,
+    });
+    useSessionStore.getState().select(first);
+    await vi.waitFor(() => {
+      expect(active().model?.currentValue).toBe('deepseek/chat');
+    });
   });
 
   it('takes the model a reopened session was left on, not its session-wide default', async () => {

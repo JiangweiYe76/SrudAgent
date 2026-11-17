@@ -48,6 +48,7 @@ function App() {
   const stopTurn = useSessionStore((s) => s.stopTurn);
   const regenerateTurn = useSessionStore((s) => s.regenerateTurn);
   const setModel = useSessionStore((s) => s.setModel);
+  const refreshOptions = useSessionStore((s) => s.refreshOptions);
   const setThinking = useSessionStore((s) => s.setThinking);
   const setSandboxMode = useSessionStore((s) => s.setSandboxMode);
   const setWorkspace = useSessionStore((s) => s.setWorkspace);
@@ -136,6 +137,13 @@ function App() {
   useEffect(() => {
     void useProviderStore.getState().load();
   }, []);
+
+  // A conversation on screen keeps the selectors it was given. When the catalog
+  // changes, the visible session asks for a fresh copy; the others wait until
+  // they are opened, so a change costs one request rather than one per session.
+  useEffect(() => {
+    refreshOptions();
+  }, [providers, refreshOptions]);
 
   // A draft has no agent session, so it has no selector of its own yet. The
   // provider catalog is what the agent would build one from, and showing it now

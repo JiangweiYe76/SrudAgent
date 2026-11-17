@@ -258,6 +258,9 @@ export interface Session {
   // Which thinking level this conversation sends. Null when the selected model
   // declares no thinking control.
   thinking?: ThinkingOptions | null;
+  // The provider catalog version the two selectors above were read from. A
+  // catalog that has moved on since leaves them stale.
+  optionsVersion: number;
   // The sandbox mode this conversation runs in. Null for a draft and for a
   // session the agent has not loaded yet.
   sandboxMode?: SandboxModeOptions | null;

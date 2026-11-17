@@ -56,6 +56,12 @@ pub const SRUD_SESSION_ROLLOUT_READ: &str = "_srud/unstable/session/rollout/read
 /// ACP lets the *agent* name a session (`SessionInfoUpdate`) but defines no
 /// client-to-agent method for the user to rename one, so this fills that gap.
 pub const SRUD_SESSION_SET_TITLE: &str = "_srud/unstable/session/set_title";
+/// Client -> agent: read the config selectors a session is offered.
+///
+/// ACP sends them when a session is created, opened, or changed, but defines no
+/// method to ask again. A client that changed the provider catalog uses this to
+/// refresh the session on screen without replaying it.
+pub const SRUD_SESSION_CONFIG_OPTIONS: &str = "_srud/unstable/session/config_options";
 
 /// Client -> agent: list the skills visible from a working directory.
 ///

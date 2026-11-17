@@ -29,6 +29,7 @@ function session(id: string): Session {
     loaded: true,
     title: null,
     model: null,
+    optionsVersion: 0,
     turns: [],
     createdAt: now,
     updatedAt: now,
