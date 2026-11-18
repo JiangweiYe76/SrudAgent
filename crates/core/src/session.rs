@@ -36,6 +36,13 @@ pub struct SessionState {
     /// log, whose blocks were not recorded — its first turn takes the current
     /// render as the baseline.
     sections: Option<Vec<crate::prompt::Section>>,
+    /// The model label the env-context block last told the model.
+    ///
+    /// Kept for the same reason as [`Self::sections`]: a switch between turns is
+    /// reported as a change rather than by rewriting the block that opened the
+    /// session. `None` until a turn has settled one, including on a session
+    /// restored from a log.
+    model_label: Option<String>,
 }
 
 impl Default for SessionState {
@@ -52,6 +59,7 @@ impl SessionState {
             history: Vec::new(),
             instruction: None,
             sections: None,
+            model_label: None,
         }
     }
 
@@ -62,6 +70,7 @@ impl SessionState {
             history,
             instruction,
             sections: None,
+            model_label: None,
         }
     }
 
@@ -91,6 +100,17 @@ impl SessionState {
     /// Records the blocks this turn rendered.
     pub(crate) fn set_sections(&mut self, sections: Vec<crate::prompt::Section>) {
         self.sections = Some(sections);
+    }
+
+    /// The model label the env-context block last named, once a turn has named one.
+    #[must_use]
+    pub fn model_label(&self) -> Option<&str> {
+        self.model_label.as_deref()
+    }
+
+    /// Records the model label this turn named to the model.
+    pub(crate) fn set_model_label(&mut self, model: Option<String>) {
+        self.model_label = model;
     }
 
     /// Returns how many items are recorded.

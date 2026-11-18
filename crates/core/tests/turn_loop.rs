@@ -1061,7 +1061,7 @@ async fn a_turn_that_opens_on_an_answered_message_keeps_what_the_last_one_wrote_
     assert_eq!(
         session.state().history(),
         &[
-            srud_core::context::item(session.cwd()),
+            srud_core::context::item(session.cwd(), None),
             ResponseItem::user("hi"),
             ResponseItem::assistant("a second answer"),
         ][..],
@@ -1133,7 +1133,7 @@ async fn the_mark_a_re_answer_cuts_at_keeps_the_question() {
     assert_eq!(
         session.state().history(),
         &[
-            srud_core::context::item(session.cwd()),
+            srud_core::context::item(session.cwd(), None),
             ResponseItem::user("hi")
         ][..],
         "the question survives the cut, which is what lets the re-answer repeat it"
@@ -1182,7 +1182,7 @@ async fn a_re_answer_from_the_recorded_mark_asks_the_question_once() {
     assert_eq!(
         session.state().history(),
         &[
-            srud_core::context::item(session.cwd()),
+            srud_core::context::item(session.cwd(), None),
             ResponseItem::user("hi"),
             ResponseItem::assistant("a second answer"),
         ][..],
@@ -1229,7 +1229,7 @@ async fn a_restored_session_keeps_the_last_question() {
         srud_core::types::SessionId::new(),
         "workspace",
         vec![
-            srud_core::context::item(std::path::Path::new("workspace")),
+            srud_core::context::item(std::path::Path::new("workspace"), None),
             ResponseItem::user("hi"),
             ResponseItem::assistant("an answer"),
         ],
@@ -1247,7 +1247,7 @@ async fn a_restored_session_keeps_the_last_question() {
     assert_eq!(
         session.state().history(),
         &[
-            srud_core::context::item(std::path::Path::new("workspace")),
+            srud_core::context::item(std::path::Path::new("workspace"), None),
             ResponseItem::user("hi"),
         ][..],
         "cutting the answer leaves the question"
@@ -1289,7 +1289,7 @@ async fn a_re_answer_keeps_the_images_it_was_sent_with() {
     assert_eq!(
         session.state().history(),
         &[
-            srud_core::context::item(session.cwd()),
+            srud_core::context::item(session.cwd(), None),
             ResponseItem::user("look"),
             ResponseItem::Image {
                 mime: "image/png".into(),
@@ -1314,7 +1314,7 @@ async fn a_re_answer_keeps_the_images_it_was_sent_with() {
     assert_eq!(
         session.state().history(),
         &[
-            srud_core::context::item(session.cwd()),
+            srud_core::context::item(session.cwd(), None),
             ResponseItem::user("look"),
             ResponseItem::Image {
                 mime: "image/png".into(),
@@ -1332,7 +1332,7 @@ async fn a_restored_session_keeps_the_images_beside_the_question() {
         srud_core::types::SessionId::new(),
         "workspace",
         vec![
-            srud_core::context::item(std::path::Path::new("workspace")),
+            srud_core::context::item(std::path::Path::new("workspace"), None),
             ResponseItem::user("look"),
             ResponseItem::Image {
                 mime: "image/png".into(),
@@ -1356,7 +1356,10 @@ async fn a_restored_session_with_no_user_message_cannot_be_asked_again() {
     let session = Session::restored(
         srud_core::types::SessionId::new(),
         "workspace",
-        vec![srud_core::context::item(std::path::Path::new("workspace"))],
+        vec![srud_core::context::item(
+            std::path::Path::new("workspace"),
+            None,
+        )],
         None,
         srud_core::types::TurnId(1),
     );
@@ -1420,7 +1423,7 @@ async fn a_second_re_answer_cuts_at_the_same_question() {
     assert_eq!(
         session.state().history(),
         &[
-            srud_core::context::item(session.cwd()),
+            srud_core::context::item(session.cwd(), None),
             ResponseItem::user("hi"),
             ResponseItem::assistant("a third answer"),
         ][..],
@@ -1484,7 +1487,7 @@ async fn a_re_answer_stopped_mid_answer_keeps_the_question() {
     assert_eq!(
         session.state().history(),
         &[
-            srud_core::context::item(session.cwd()),
+            srud_core::context::item(session.cwd(), None),
             ResponseItem::user("hi"),
             // Stopping ends the turn; it does not take back what the model had
             // already said before it noticed.

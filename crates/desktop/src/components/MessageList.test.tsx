@@ -361,6 +361,50 @@ describe('following the bottom while streaming', () => {
     expect(container.textContent).not.toContain('<env-context-update>');
   });
 
+  it('names the model in the opening context block', () => {
+    const text =
+      '<env-context>\n  <cwd>/work</cwd>\n  <model>Acme / Fast</model>\n  <date>2026-10-02 14:35</date>\n</env-context>';
+    const container = render([
+      turn({
+        id: 't1',
+        contextBlocks: [{ kind: 'context', text }],
+      }),
+    ]);
+
+    const trigger = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Environment'),
+    );
+    act(() => {
+      trigger?.click();
+    });
+
+    expect(container.textContent).toContain('Model');
+    expect(container.textContent).toContain('Acme / Fast');
+    expect(container.textContent).not.toContain('<model>');
+  });
+
+  it('reports a model switch as an environment update', () => {
+    const text =
+      '<env-context-update>\n  <model>Acme / Slow</model>\n</env-context-update>';
+    const container = render([
+      turn({
+        id: 't1',
+        contextBlocks: [{ kind: 'update', text }],
+      }),
+    ]);
+
+    const trigger = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Environment update'),
+    );
+    act(() => {
+      trigger?.click();
+    });
+
+    expect(container.textContent).toContain('Model');
+    expect(container.textContent).toContain('Acme / Slow');
+    expect(container.textContent).not.toContain('<model>');
+  });
+
   it('never leaves the reader above the bottom while they are following', () => {
     render([turn({ id: 't1' })]);
     const el = list();

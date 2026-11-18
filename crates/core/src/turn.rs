@@ -511,6 +511,11 @@ pub struct TurnOptions<'a> {
     pub opening: Option<usize>,
     /// Blocks the caller adds to the system instruction.
     pub sections: &'a [prompt::Section],
+    /// The model this turn runs on, as the model itself should read it.
+    ///
+    /// Written into the session's opening context block, and reported as a
+    /// change on the first turn that runs under a different one.
+    pub model: Option<&'a str>,
 }
 
 /// Runs one turn with the options the caller chooses.
@@ -529,6 +534,7 @@ pub async fn run_turn_with(
 ) -> Result<TurnResult, TurnError> {
     let sections = options.sections;
     let opening = options.opening;
+    let model = options.model;
 
     let guard = session.begin_turn().ok_or(TurnError::Busy)?;
     let cancel = guard.cancellation();
@@ -603,16 +609,32 @@ pub async fn run_turn_with(
     // was rendered from, so its first turn takes the current render as the
     // baseline rather than reporting every block as new.
     let now = Local::now();
-    let previous = journal.session().state().sections().map(<[_]>::to_vec);
-    let changes = previous.map_or_else(Vec::new, |previous| {
-        prompt::context_changes(
-            &previous,
-            &blocks,
-            context::last_time(journal.session().state().history()),
-            now,
+    let (previous, previous_model, last_time) = {
+        let state = journal.session().state();
+        (
+            state.sections().map(<[_]>::to_vec),
+            state
+                .model_label()
+                .map(str::to_owned)
+                .or_else(|| context::last_model(state.history())),
+            context::last_time(state.history()),
         )
+    };
+    let mut changes = previous.map_or_else(Vec::new, |previous| {
+        prompt::context_changes(&previous, &blocks, last_time, now)
     });
-    journal.session().state().set_sections(blocks.clone());
+    if let (Some(previous), Some(current)) = (previous_model.as_deref(), model) {
+        if previous != current {
+            changes.push(prompt::ContextChange::ModelChanged {
+                name: current.to_owned(),
+            });
+        }
+    }
+    {
+        let mut state = journal.session().state();
+        state.set_sections(blocks.clone());
+        state.set_model_label(model.map(str::to_owned));
+    }
 
     // Everything up to the model's first request is recorded before it is announced.
     // Any failure here leaves a turn that opened in the log and never closed,
@@ -620,7 +642,7 @@ pub async fn run_turn_with(
     // handled together, and a failure in either closes the turn before reporting.
     let opened = match opening {
         Some(_) => reopen(&journal).await,
-        None => open(&journal, &input, &changes).await,
+        None => open(&journal, &input, &changes, model).await,
     };
     if let Err(err) = opened {
         // Nothing was announced, so nothing is announced here either: the caller
@@ -681,6 +703,7 @@ async fn open(
     journal: &Journal<'_>,
     input: &TurnInput,
     changes: &[prompt::ContextChange],
+    model: Option<&str>,
 ) -> Result<(), RecordError> {
     journal.open_turn().await?;
 
@@ -690,7 +713,7 @@ async fn open(
     // began rather than the time of the turn being answered. No event is emitted
     // for it: it is context, not something the user said.
     if journal.session().state().is_empty() {
-        record_context(journal, context::item(journal.session().cwd())).await?;
+        record_context(journal, context::item(journal.session().cwd(), model)).await?;
     } else if !changes.is_empty() {
         // What the settled instruction no longer describes is recorded ahead of
         // the input it applies to, and only when something moved: a block saying

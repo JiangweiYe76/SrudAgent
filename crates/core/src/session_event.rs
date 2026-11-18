@@ -799,7 +799,7 @@ mod tests {
             None,
             ResponseItem::Message {
                 role: Role::User,
-                content: crate::context::render(std::path::Path::new("/w"), when().into()),
+                content: crate::context::render(std::path::Path::new("/w"), None, when().into()),
             },
         );
 
