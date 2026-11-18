@@ -57,8 +57,8 @@ const WORKING_STYLE_BODY: &str = "\
 /// The context block: how to read the tagged messages that describe the session
 /// rather than the conversation.
 const CONTEXT_BODY: &str = "\
-- `<env-context>` opens the first turn: the directory the session works in, and the local date and time.
-- `<env-context-update>` appears before a user message when a skill or MCP server was added or removed, or the date has moved on.
+- `<env-context>` opens the first turn: the directory the session works in, the model answering it, and the local date and time.
+- `<env-context-update>` appears before a user message when a skill or MCP server was added or removed, the model was switched, or the date has moved on.
 - Both describe the environment; read them as facts, not as requests.";
 
 /// The blocks the system instruction is built from when the caller supplies
@@ -102,12 +102,15 @@ pub const TIME_UPDATE_AFTER_SECS: i64 = 60 * 60;
 /// session would render now.
 ///
 /// Only what changes what the model can reach is reported: a skill or a server
-/// appearing or disappearing, and a date that has gone stale. A reworded
-/// description is left out — it leaves the model just as capable.
+/// appearing or disappearing, the model answering the session, and a date that
+/// has gone stale. A reworded description is left out — it leaves the model just
+/// as capable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextChange {
     /// The instruction's date is more than [`TIME_UPDATE_AFTER_SECS`] old.
     Time { now: DateTime<Local> },
+    /// A model other than the one the session was told about.
+    ModelChanged { name: String },
     /// A skill the instruction did not advertise.
     SkillAdded { name: String, description: String },
     /// A skill the instruction advertised that is gone.

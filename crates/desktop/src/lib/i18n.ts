@@ -91,6 +91,7 @@ const en = {
   'context.title': 'Environment',
   'context.updateTitle': 'Environment update',
   'context.workspace': 'Workspace',
+  'context.model': 'Model',
   'context.time': 'Time',
   'context.skillAdded': 'Skill added',
   'context.skillRemoved': 'Skill removed',

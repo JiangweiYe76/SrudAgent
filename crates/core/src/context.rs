@@ -5,10 +5,11 @@
 //! not conversational: nothing emits an event for them, and they are recognised
 //! by their tags rather than by where they sit in history.
 //!
-//! `<env-context>` opens the first turn with the directory and the local time.
-//! `<env-context-update>` appears before a later turn's input when the system
-//! instruction no longer describes the session — a skill or server came or went,
-//! or the date has moved on. There is no block for a turn where nothing changed.
+//! `<env-context>` opens the first turn with the directory, the model answering
+//! it, and the local time. `<env-context-update>` appears before a later turn's
+//! input when the system instruction no longer describes the session — a skill
+//! or server came or went, the model was switched, or the date has moved on.
+//! There is no block for a turn where nothing changed.
 //!
 //! The time is the user's local time: that is the clock the user's own words —
 //! "today", "this afternoon", deadlines — are measured on.
@@ -37,19 +38,27 @@ pub const UPDATE_CLOSE_TAG: &str = "</env-context-update>";
 const DATE_FORMAT: &str = "%Y-%m-%d %H:%M";
 
 /// Renders the block for `cwd` as of `now`.
+///
+/// `model` is the model answering the session, when one is configured. A host
+/// that fixed a client instead of offering a choice has no label to name, and
+/// the element is left out rather than written empty.
 #[must_use]
-pub fn render(cwd: &Path, now: DateTime<Local>) -> String {
+pub fn render(cwd: &Path, model: Option<&str>, now: DateTime<Local>) -> String {
     let cwd = escape(&cwd.display().to_string());
+    let model = model
+        .filter(|model| !model.trim().is_empty())
+        .map(|model| format!("\n  <model>{}</model>", escape(model)))
+        .unwrap_or_default();
     format!(
-        "{OPEN_TAG}\n  <cwd>{cwd}</cwd>\n  <date>{}</date>\n{CLOSE_TAG}",
+        "{OPEN_TAG}\n  <cwd>{cwd}</cwd>{model}\n  <date>{}</date>\n{CLOSE_TAG}",
         now.format(DATE_FORMAT)
     )
 }
 
 /// Builds the history item for `cwd`, stamped with the current local time.
 #[must_use]
-pub fn item(cwd: &Path) -> ResponseItem {
-    ResponseItem::user(render(cwd, Local::now()))
+pub fn item(cwd: &Path, model: Option<&str>) -> ResponseItem {
+    ResponseItem::user(render(cwd, model, Local::now()))
 }
 
 /// Renders what changed since the instruction settled.
@@ -67,6 +76,9 @@ pub fn render_update(changes: &[ContextChange]) -> String {
         match change {
             ContextChange::Time { now } => {
                 lines.push(format!("  <date>{}</date>", now.format(DATE_FORMAT)));
+            }
+            ContextChange::ModelChanged { name } => {
+                lines.push(format!("  <model>{}</model>", escape(name)));
             }
             ContextChange::SkillAdded { name, description } => {
                 lines.push(format!(
@@ -145,6 +157,26 @@ pub fn last_time(history: &[ResponseItem]) -> Option<DateTime<Local>> {
     })
 }
 
+/// The model the last context block named, when the history holds one.
+///
+/// Read when a session restored from a log has no in-memory baseline: the log
+/// records the model switch, but the block that reports it is written by a turn,
+/// so the last mention in history is the one a restart starts from.
+#[must_use]
+pub fn last_model(history: &[ResponseItem]) -> Option<String> {
+    history.iter().rev().find_map(|item| {
+        if !is_item(item) {
+            return None;
+        }
+        let ResponseItem::Message { content, .. } = item else {
+            return None;
+        };
+        let (_, rest) = content.split_once("<model>")?;
+        let (model, _) = rest.split_once("</model>")?;
+        Some(unescape(model.trim()))
+    })
+}
+
 /// Escapes the characters that would otherwise read as markup.
 ///
 /// A path is whatever the host gave us, and `&` is legal in one, so the value
@@ -162,6 +194,14 @@ fn escape(text: &str) -> String {
     escaped
 }
 
+/// Reverses [`escape`], so a label read back equals the one that was written.
+fn unescape(text: &str) -> String {
+    // Ampersand last: unescaping it first would turn `&amp;lt;` into a tag.
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,17 +215,41 @@ mod tests {
     }
 
     #[test]
-    fn the_block_carries_the_directory_and_the_local_time() {
-        let rendered = render(Path::new("/work/ws"), at(14, 35));
+    fn the_block_carries_the_directory_the_model_and_the_local_time() {
+        let rendered = render(Path::new("/work/ws"), Some("Acme / Fast"), at(14, 35));
         assert_eq!(
             rendered,
-            "<env-context>\n  <cwd>/work/ws</cwd>\n  <date>2026-10-02 14:35</date>\n</env-context>"
+            "<env-context>\n  <cwd>/work/ws</cwd>\n  <model>Acme / Fast</model>\n  <date>2026-10-02 14:35</date>\n</env-context>"
+        );
+    }
+
+    #[test]
+    fn a_session_without_a_model_names_none() {
+        let rendered = render(Path::new("/work/ws"), None, at(14, 35));
+        assert!(
+            !rendered.contains("<model>"),
+            "a host with a fixed client has no label to name: {rendered}"
+        );
+
+        let blank = render(Path::new("/work/ws"), Some("   "), at(14, 35));
+        assert!(
+            !blank.contains("<model>"),
+            "a label that says nothing is left out rather than written empty: {blank}"
+        );
+    }
+
+    #[test]
+    fn markup_in_a_model_label_is_escaped() {
+        let rendered = render(Path::new("/work"), Some("A & B <fast>"), at(0, 0));
+        assert!(
+            rendered.contains("<model>A &amp; B &lt;fast&gt;</model>"),
+            "a label cannot end the element early: {rendered}"
         );
     }
 
     #[test]
     fn the_time_is_to_the_minute() {
-        let rendered = render(Path::new("/work"), at(9, 5));
+        let rendered = render(Path::new("/work"), None, at(9, 5));
         assert!(
             rendered.contains("<date>2026-10-02 09:05</date>"),
             "minutes are zero-padded: {rendered}"
@@ -194,7 +258,7 @@ mod tests {
 
     #[test]
     fn markup_in_a_path_is_escaped() {
-        let rendered = render(Path::new("/a&b/<c>"), at(0, 0));
+        let rendered = render(Path::new("/a&b/<c>"), None, at(0, 0));
         assert!(
             rendered.contains("<cwd>/a&amp;b/&lt;c&gt;</cwd>"),
             "a path cannot end the element early: {rendered}"
@@ -203,7 +267,7 @@ mod tests {
 
     #[test]
     fn the_item_is_a_user_message_tagged_as_context() {
-        let item = item(Path::new("/work"));
+        let item = item(Path::new("/work"), None);
         assert!(is_item(&item));
         assert!(matches!(
             item,
@@ -224,7 +288,7 @@ mod tests {
     fn the_last_block_says_when_the_model_was_last_told() {
         let at = at(14, 35);
         let history = vec![
-            ResponseItem::user(render(Path::new("/work/ws"), at)),
+            ResponseItem::user(render(Path::new("/work/ws"), None, at)),
             ResponseItem::user("hello"),
         ];
 
@@ -237,9 +301,35 @@ mod tests {
     }
 
     #[test]
+    fn the_last_block_says_which_model_was_last_told() {
+        let history = vec![
+            ResponseItem::user(render(Path::new("/w"), Some("A & B"), at(14, 35))),
+            ResponseItem::user("hello"),
+            ResponseItem::user(render_update(&[ContextChange::ModelChanged {
+                name: "Acme / Slow".into(),
+            }])),
+        ];
+
+        assert_eq!(last_model(&history).as_deref(), Some("Acme / Slow"));
+        assert_eq!(
+            last_model(&[ResponseItem::user("hello")]),
+            None,
+            "a user's own words are not a model"
+        );
+        assert_eq!(
+            last_model(&history[..1]).as_deref(),
+            Some("A & B"),
+            "the label is read back as it was written"
+        );
+    }
+
+    #[test]
     fn an_update_names_only_what_changed() {
         let changes = [
             ContextChange::Time { now: at(15, 5) },
+            ContextChange::ModelChanged {
+                name: "Acme / Slow".into(),
+            },
             ContextChange::SkillAdded {
                 name: "gamma".into(),
                 description: "third".into(),
@@ -254,6 +344,7 @@ mod tests {
         assert_eq!(
             render_update(&changes),
             "<env-context-update>\n  <date>2026-10-02 15:05</date>\n  \
+             <model>Acme / Slow</model>\n  \
              <skill-added>gamma: third</skill-added>\n  \
              <server-added>remote: call it</server-added>\n  \
              <server-removed>docs</server-removed>\n</env-context-update>"

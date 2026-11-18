@@ -247,7 +247,7 @@ mod tests {
             &[
                 // The env-context block the first turn recorded: it is part of
                 // what the model saw, so it comes back with it.
-                srud_core::context::item(std::path::Path::new(&cwd)),
+                srud_core::context::item(std::path::Path::new(&cwd), None),
                 srud_core::types::ResponseItem::user("first question"),
                 srud_core::types::ResponseItem::assistant("first answer"),
             ]

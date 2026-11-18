@@ -858,7 +858,7 @@ mod tests {
         let event = SessionEvent::item(
             TurnId(1),
             None,
-            srud_core::context::item(std::path::Path::new("/w")),
+            srud_core::context::item(std::path::Path::new("/w"), None),
         );
 
         let n = replay_notification(

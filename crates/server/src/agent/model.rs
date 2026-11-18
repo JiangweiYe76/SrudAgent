@@ -82,6 +82,18 @@ impl Agent {
         model.context_window
     }
 
+    /// The provider and model a session runs on, as the model itself reads it.
+    ///
+    /// `None` when the host configured no providers, the session names no model,
+    /// or the reference no longer resolves — in each case there is no label the
+    /// environment block could honestly carry.
+    pub(super) fn model_label(&self, id: &SessionId) -> Option<String> {
+        let providers = self.providers.as_ref()?;
+        let reference = self.sessions.model(id)?;
+        let (provider, model) = providers.store.resolve(&reference).ok()?;
+        Some(format!("{} / {}", provider.name, model.label()))
+    }
+
     /// The client the host fixed at construction, when it fixed one.
     fn fixed_client(&self) -> Result<Arc<dyn ModelClient>, AcpError> {
         self.model.clone().ok_or_else(|| {

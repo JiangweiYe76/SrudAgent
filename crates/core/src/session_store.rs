@@ -1357,7 +1357,7 @@ mod tests {
             SessionEvent::item(
                 first,
                 None,
-                crate::context::item(std::path::Path::new("/w")),
+                crate::context::item(std::path::Path::new("/w"), None),
             ),
             said(first, "hello"),
             answered(first, "a discarded answer"),
@@ -1555,7 +1555,7 @@ mod tests {
             SessionEvent::item(
                 turn_id,
                 None,
-                crate::context::item(std::path::Path::new("/w")),
+                crate::context::item(std::path::Path::new("/w"), None),
             ),
             said(turn_id, "hello"),
             SessionEvent::item(

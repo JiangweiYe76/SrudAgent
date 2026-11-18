@@ -251,24 +251,29 @@ interface ContextRow {
 function contextRows(block: ContextBlock): ContextRow[] {
   if (block.kind === 'context') {
     const cwd = /<cwd>([\s\S]*?)<\/cwd>/.exec(block.text)?.[1]?.trim();
+    const model = /<model>([\s\S]*?)<\/model>/.exec(block.text)?.[1]?.trim();
     const date = /<date>([\s\S]*?)<\/date>/.exec(block.text)?.[1]?.trim();
     const rows: ContextRow[] = [];
     if (cwd) rows.push({ label: t('context.workspace'), value: cwd });
+    if (model) rows.push({ label: t('context.model'), value: model });
     if (date) rows.push({ label: t('context.time'), value: date });
     return rows;
   }
 
   const rows: ContextRow[] = [];
   const tags =
-    /<(date|skill-added|skill-removed|server-added|server-removed)>([\s\S]*?)<\/\1>/g;
+    /<(date|model|skill-added|skill-removed|server-added|server-removed)>([\s\S]*?)<\/\1>/g;
   for (const match of block.text.matchAll(tags)) {
     const [, tag, raw] = match;
-    // A date is the whole value; a name is what precedes the first colon,
-    // since the notes follow it.
+    // A date or a model is the whole value; a name is what precedes the first
+    // colon, since the notes follow it.
     const value =
-      tag === 'date' ? raw.trim() : raw.split('\n')[0].split(':')[0].trim();
+      tag === 'date' || tag === 'model'
+        ? raw.trim()
+        : raw.split('\n')[0].split(':')[0].trim();
     if (!value) continue;
     if (tag === 'date') rows.push({ label: t('context.time'), value });
+    else if (tag === 'model') rows.push({ label: t('context.model'), value });
     else if (tag === 'skill-added')
       rows.push({ label: t('context.skillAdded'), value });
     else if (tag === 'skill-removed')

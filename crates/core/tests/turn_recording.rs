@@ -1395,6 +1395,118 @@ async fn the_instruction_stays_settled_when_the_callers_blocks_change() {
     assert_eq!(updates, 1, "a turn where nothing moved writes no block");
 }
 
+#[tokio::test]
+async fn a_model_switch_is_reported_before_the_input() {
+    // The first turn names the model in the block that opens the session. A
+    // later turn under another model is told as a change, because the opening
+    // block is written once and never repeated.
+    let log = Volatile::new();
+    let timeline = Timeline::default();
+    let session = session();
+    let client = Silent;
+
+    run_turn_with(
+        &session,
+        TurnInput {
+            text: "one".into(),
+            images: Vec::new(),
+        },
+        TurnOptions {
+            model: Some("Acme / Fast"),
+            ..TurnOptions::default()
+        },
+        &client,
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+
+    run_turn_with(
+        &session,
+        TurnInput {
+            text: "two".into(),
+            images: Vec::new(),
+        },
+        TurnOptions {
+            model: Some("Acme / Slow"),
+            ..TurnOptions::default()
+        },
+        &client,
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+
+    {
+        let state = session.state();
+        let items = state.history();
+        let ResponseItem::Message { content, .. } = items.first().expect("the opening block")
+        else {
+            panic!("the opening item is a message");
+        };
+        assert!(
+            content.contains("<model>Acme / Fast</model>"),
+            "the first turn names the model: {content}"
+        );
+
+        let update = items
+            .iter()
+            .position(is_update)
+            .expect("the switch is recorded");
+        let asked = items
+            .iter()
+            .position(
+                |item| matches!(item, ResponseItem::Message { content, .. } if content == "two"),
+            )
+            .expect("the input is recorded");
+        assert!(
+            update < asked,
+            "the change is read before the input it applies to"
+        );
+        let ResponseItem::Message { content, .. } = &items[update] else {
+            panic!("an update is a message");
+        };
+        assert!(
+            content.contains("<model>Acme / Slow</model>"),
+            "the new model is named: {content}"
+        );
+        assert!(
+            !content.contains("Fast"),
+            "the model that was replaced is not restated: {content}"
+        );
+    }
+
+    run_turn_with(
+        &session,
+        TurnInput {
+            text: "three".into(),
+            images: Vec::new(),
+        },
+        TurnOptions {
+            model: Some("Acme / Slow"),
+            ..TurnOptions::default()
+        },
+        &client,
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn runs");
+
+    let updates = session
+        .state()
+        .history()
+        .iter()
+        .filter(|item| is_update(item))
+        .count();
+    assert_eq!(updates, 1, "a turn under the same model writes no block");
+}
+
 /// Whether an item is a change block rather than something the user said.
 fn is_update(item: &ResponseItem) -> bool {
     matches!(
