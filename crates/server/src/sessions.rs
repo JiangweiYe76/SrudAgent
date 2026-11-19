@@ -23,6 +23,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tokio::sync::watch;
 
 use chrono::{Datelike, SecondsFormat};
 use srud_core::sandbox::SandboxLevel;
@@ -57,6 +60,8 @@ pub struct McpSession {
     pub tools: Arc<ToolRegistry>,
     /// How each server asks to be used, in the order the client named them.
     pub instructions: Vec<McpInstructions>,
+    /// Servers that could not be reached, in the order the client named them.
+    pub failures: Vec<String>,
 }
 
 /// One server's usage notes, as the handshake returned them.
@@ -65,6 +70,22 @@ pub struct McpInstructions {
     pub server: String,
     /// The text the server sent in `initialize`.
     pub text: String,
+}
+
+/// How far a session's MCP servers have got.
+///
+/// A session answers before its servers do, so this is what the first prompt
+/// reads: the tools a server contributes arrive when it is ready.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum McpPhase {
+    /// The session asked for no servers.
+    Idle,
+    /// At least one requested server has not settled yet.
+    Connecting,
+    /// Every reachable server has been attached.
+    Ready,
+    /// No requested server could be reached.
+    Failed(String),
 }
 
 /// A tracked session: the runtime handle plus the wire-level context.
@@ -93,6 +114,50 @@ struct Tracked {
     /// Held here rather than in the agent so a session's connections are dropped
     /// with it: closing or deleting the session closes what it opened.
     mcp: Option<Arc<McpSession>>,
+    /// How far this session's servers have got.
+    mcp_phase: McpPhase,
+    /// Wakes whoever is waiting for the servers to settle.
+    ///
+    /// Subscribed to before a wait, so the map lock is never held across one.
+    mcp_changes: watch::Sender<McpPhase>,
+    /// The task connecting this session's servers, aborted when it goes.
+    mcp_task: Option<tokio::task::AbortHandle>,
+    /// Whether a turn has already spent the bounded wait for this attempt.
+    mcp_waited: bool,
+}
+
+impl Tracked {
+    fn new(
+        session: Arc<Session>,
+        log: Arc<srud_core::session_store::SessionLogWriter>,
+        title: Option<String>,
+        model: Option<String>,
+        thinking: Option<String>,
+    ) -> Self {
+        let (mcp_changes, _) = watch::channel(McpPhase::Idle);
+        Self {
+            session,
+            log,
+            title,
+            model,
+            thinking,
+            mcp: None,
+            mcp_phase: McpPhase::Idle,
+            mcp_changes,
+            mcp_task: None,
+            mcp_waited: false,
+        }
+    }
+
+    /// Announces a phase to whoever is waiting on this session's servers.
+    ///
+    /// `send_replace` rather than `send`: a phase usually changes while nobody
+    /// is waiting, and the value still has to be there for the first waiter.
+    fn set_phase(&mut self, phase: McpPhase) {
+        self.mcp_phase = phase.clone();
+        self.mcp_task = None;
+        self.mcp_changes.send_replace(phase);
+    }
 }
 
 /// The workspace for a session that named no directory of its own.
@@ -483,14 +548,7 @@ impl SessionManager {
             .expect("session map lock poisoned")
             .insert(
                 id.to_string(),
-                Tracked {
-                    session,
-                    log: Arc::new(log),
-                    title: None,
-                    model,
-                    thinking,
-                    mcp: None,
-                },
+                Tracked::new(session, Arc::new(log), None, model, thinking),
             );
         Ok(id)
     }
@@ -568,14 +626,13 @@ impl SessionManager {
             .expect("session map lock poisoned")
             .insert(
                 id.to_string(),
-                Tracked {
+                Tracked::new(
                     session,
-                    log: Arc::new(log),
-                    title: loaded.title.clone(),
-                    model: loaded.model.clone(),
-                    thinking: loaded.thinking.clone(),
-                    mcp: None,
-                },
+                    Arc::new(log),
+                    loaded.title.clone(),
+                    loaded.model.clone(),
+                    loaded.thinking.clone(),
+                ),
             );
         Ok(loaded)
     }
@@ -684,14 +741,13 @@ impl SessionManager {
             .expect("session map lock poisoned")
             .insert(
                 wire_id.to_string(),
-                Tracked {
+                Tracked::new(
                     session,
-                    log: Arc::new(log),
+                    Arc::new(log),
                     title,
-                    model: loaded.model.clone(),
-                    thinking: loaded.thinking.clone(),
-                    mcp: None,
-                },
+                    loaded.model.clone(),
+                    loaded.thinking.clone(),
+                ),
             );
         Ok(wire_id)
     }
@@ -948,10 +1004,128 @@ impl SessionManager {
         {
             Some(tracked) => {
                 tracked.mcp = Some(mcp);
+                tracked.set_phase(McpPhase::Ready);
                 true
             }
             None => false,
         }
+    }
+
+    /// Marks a session's servers as being connected, returning whether it exists.
+    pub fn set_mcp_connecting(&self, id: &SessionId) -> bool {
+        match self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get_mut(id.0.as_ref())
+        {
+            Some(tracked) => {
+                tracked.mcp_waited = false;
+                tracked.set_phase(McpPhase::Connecting);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Claims the one bounded wait this connection attempt gets.
+    ///
+    /// A later turn does not wait again: the window belongs to the attempt,
+    /// not to every prompt that arrives while it is still running.
+    pub fn take_mcp_wait(&self, id: &SessionId) -> bool {
+        match self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get_mut(id.0.as_ref())
+        {
+            Some(tracked) if tracked.mcp_phase == McpPhase::Connecting && !tracked.mcp_waited => {
+                tracked.mcp_waited = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Records that no requested server could be reached.
+    pub fn set_mcp_failed(&self, id: &SessionId, reason: String) -> bool {
+        match self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get_mut(id.0.as_ref())
+        {
+            Some(tracked) => {
+                tracked.set_phase(McpPhase::Failed(reason));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remembers the task connecting a session's servers, so it can be aborted.
+    pub fn set_mcp_task(&self, id: &SessionId, task: tokio::task::AbortHandle) -> bool {
+        match self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get_mut(id.0.as_ref())
+        {
+            // A task that already finished has left its phase behind; there is
+            // nothing left to abort.
+            Some(tracked) if tracked.mcp_phase == McpPhase::Connecting => {
+                tracked.mcp_task = Some(task);
+                true
+            }
+            Some(_) => false,
+            None => false,
+        }
+    }
+
+    /// How far a session's servers have got, if the session exists.
+    #[must_use]
+    pub fn mcp_phase(&self, id: &SessionId) -> Option<McpPhase> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .map(|tracked| tracked.mcp_phase.clone())
+    }
+
+    /// Waits until a session's servers settle, or `timeout` passes.
+    ///
+    /// A session with no servers, or whose servers have already settled,
+    /// returns at once. The returned phase is what the caller acts on: a
+    /// `Connecting` left after the timeout means the wait gave up, not that
+    /// the servers failed.
+    pub async fn wait_for_mcp(&self, id: &SessionId, timeout: Duration) -> McpPhase {
+        let Some(mut changes) = self.mcp_changes(id) else {
+            return McpPhase::Idle;
+        };
+        let mut phase = changes.borrow().clone();
+        if phase != McpPhase::Connecting {
+            return phase;
+        }
+        let _ = tokio::time::timeout(timeout, async {
+            while changes.changed().await.is_ok() {
+                phase = changes.borrow().clone();
+                if phase != McpPhase::Connecting {
+                    return;
+                }
+            }
+        })
+        .await;
+        phase
+    }
+
+    /// A receiver for a session's phase changes, subscribed before a wait so
+    /// nothing sent between the check and the wait is lost.
+    fn mcp_changes(&self, id: &SessionId) -> Option<watch::Receiver<McpPhase>> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .map(|tracked| tracked.mcp_changes.subscribe())
     }
 
     /// What this session's MCP servers contributed, when they contributed
@@ -983,11 +1157,20 @@ impl SessionManager {
     /// deleted and is still there to be loaded — which is why this is not
     /// [`remove`](Self::remove).
     pub fn forget(&self, id: &SessionId) -> bool {
-        self.sessions
+        let removed = self
+            .sessions
             .lock()
             .expect("session map lock poisoned")
-            .remove(id.0.as_ref())
-            .is_some()
+            .remove(id.0.as_ref());
+        match removed {
+            Some(tracked) => {
+                if let Some(task) = tracked.mcp_task {
+                    task.abort();
+                }
+                true
+            }
+            None => false,
+        }
     }
 
     /// Whether any session other than the one owning the log at `except` works
@@ -1043,6 +1226,12 @@ impl SessionManager {
             .lock()
             .expect("session map lock poisoned")
             .remove(id.0.as_ref());
+        if let Some(task) = removed
+            .as_ref()
+            .and_then(|tracked| tracked.mcp_task.as_ref())
+        {
+            task.abort();
+        }
 
         let Ok(path) = find_log(id).await else {
             return removed.is_some();

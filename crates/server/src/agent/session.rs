@@ -60,15 +60,11 @@ impl Agent {
             .ok_or_else(|| {
                 AcpError::new(INTERNAL_ERROR, "the session it created is not registered")
             })?;
-        // Connected before the session is announced, so a client told the session
-        // is ready can rely on the tools it asked for. A server that cannot be
-        // reached fails the call, and the session it would have belonged to is
-        // dropped with it — a session without those tools was never what was
-        // asked for.
-        if let Err(err) = self
-            .attach_mcp_servers(&session_id, &cwd, &request.mcp_servers)
-            .await
-        {
+        // Started before the session is announced, so the tools it asked for are
+        // on their way by the time it can be used. A transport this agent does
+        // not declare fails the call; a server that cannot be reached leaves the
+        // session running without its tools.
+        if let Err(err) = self.start_mcp_servers(&session_id, &cwd, &request.mcp_servers) {
             self.sessions.remove(&session_id).await;
             return Err(err);
         }

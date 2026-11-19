@@ -3,6 +3,7 @@
 use super::*;
 use crate::config;
 use crate::providers::{Model, Provider, ProviderInput};
+use crate::sessions::McpPhase;
 use crate::test_env::{self, Guard};
 use futures::{stream, StreamExt};
 use serde_json::json;
@@ -412,6 +413,14 @@ pub(super) fn home() -> Guard {
     let guard = Guard::take(&[config::HOME_VAR]);
     std::env::set_var(config::HOME_VAR, test_env::unique_dir("srud-agent-home"));
     guard
+}
+
+/// Waits for a session's MCP servers to settle, and reports how they ended.
+pub(super) async fn mcp_phase(agent: &Agent, session_id: &SessionId) -> McpPhase {
+    agent
+        .sessions
+        .wait_for_mcp(session_id, std::time::Duration::from_secs(10))
+        .await
 }
 
 pub(super) async fn prompt_once(agent: &Agent, session_id: &SessionId) {

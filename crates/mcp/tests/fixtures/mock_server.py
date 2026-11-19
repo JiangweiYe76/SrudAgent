@@ -4,10 +4,15 @@
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mock_protocol import answer  # noqa: E402
+
+delay = float(os.environ.get("MCP_STARTUP_DELAY", "0") or "0")
+if delay > 0:
+    time.sleep(delay)
 
 
 def reply(request_id, result):
