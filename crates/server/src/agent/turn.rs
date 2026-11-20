@@ -69,6 +69,11 @@ impl Agent {
         self.name_from_first_prompt(&request.session_id, &parts.text)
             .await;
 
+        // The first turn waits for servers that are still connecting, so the
+        // tool list it sends is the one the session was opened with. Bounded:
+        // a slow server cannot hold the conversation.
+        self.await_mcp_startup(&request.session_id).await;
+
         // Resolved once, before the turn starts: a `session/load` that lands
         // while this turn runs replaces the session's set, and the turn keeps
         // the one it was asked to run with.

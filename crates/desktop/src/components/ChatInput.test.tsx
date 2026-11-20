@@ -331,6 +331,44 @@ describe('ChatInput', () => {
   });
 });
 
+describe('the MCP status indicator', () => {
+  it('shows that the servers are still connecting', () => {
+    render({
+      mcpStatus: {
+        state: 'connecting',
+        servers: [{ name: 'context7', state: 'connecting' }],
+      },
+    });
+
+    expect(container.textContent).toContain('MCP connecting');
+  });
+
+  it('names a failed server in its tooltip', () => {
+    render({
+      mcpStatus: {
+        state: 'failed',
+        servers: [{ name: 'context7', state: 'failed', error: 'boom' }],
+      },
+    });
+
+    expect(container.textContent).toContain('MCP servers failed');
+    expect(
+      container.querySelector('[title*="context7"]')?.getAttribute('title'),
+    ).toContain('boom');
+  });
+
+  it('stays out of the way once every server is ready', () => {
+    render({
+      mcpStatus: {
+        state: 'ready',
+        servers: [{ name: 'context7', state: 'ready' }],
+      },
+    });
+
+    expect(container.textContent).not.toContain('MCP');
+  });
+});
+
 describe('the way back to the bottom', () => {
   it('is offered only while the reader is away from it', () => {
     render();

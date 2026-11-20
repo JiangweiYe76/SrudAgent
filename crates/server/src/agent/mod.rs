@@ -224,6 +224,17 @@ impl Agent {
         self.hub.subscribe()
     }
 
+    /// Subscribes to SrudAgent's own notifications.
+    ///
+    /// These are not `session/update` items: currently the MCP connection state
+    /// of a session.
+    #[must_use]
+    pub fn subscribe_status(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<Notification<serde_json::Value>> {
+        self.hub.subscribe_status()
+    }
+
     /// Stops accepting new prompts and steers, and waits for every in-flight
     /// turn to settle.
     ///

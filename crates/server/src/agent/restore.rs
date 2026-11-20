@@ -36,8 +36,7 @@ impl Agent {
         let loaded = self.restore(&request.session_id, &request.cwd).await?;
         // The servers the session was created with: ACP carries them again on
         // resume, because a log holds no record of what was spawned.
-        self.attach_mcp_servers(&request.session_id, &loaded.cwd, &request.mcp_servers)
-            .await?;
+        self.attach_mcp_servers_if_needed(&request.session_id, &loaded.cwd, &request.mcp_servers)?;
         // No replay: a client asking to resume is saying it already has the
         // conversation.
         self.broadcast_title(&request.session_id, loaded.title.clone());
@@ -54,8 +53,7 @@ impl Agent {
     pub(super) async fn handle_load(&self, params: Value) -> Result<LoadSessionResponse, AcpError> {
         let request: LoadSessionRequest = parse_params(params)?;
         let loaded = self.restore(&request.session_id, &request.cwd).await?;
-        self.attach_mcp_servers(&request.session_id, &loaded.cwd, &request.mcp_servers)
-            .await?;
+        self.attach_mcp_servers_if_needed(&request.session_id, &loaded.cwd, &request.mcp_servers)?;
 
         // Replayed before the response, because ACP requires the client to have
         // the whole conversation by the time `session/load` resolves. Anything

@@ -2,6 +2,7 @@
 // the error notice and the transcript limits can be seen without a backend;
 // only the mock dev commands load them.
 import type {
+  McpStatus,
   ModelOptions,
   Session,
   Step,
@@ -128,6 +129,7 @@ function session(
   turns: Turn[],
   minutesAgo: number,
   cwd = '/home/jov/Projects/SrudAgent',
+  mcpStatus?: McpStatus,
 ): Session {
   const updatedAt = NOW - minutesAgo * MINUTE;
   return {
@@ -140,6 +142,7 @@ function session(
     thinking: THINKING,
     optionsVersion: 0,
     sandboxMode: DEFAULT_SANDBOX_MODE,
+    ...(mcpStatus ? { mcpStatus } : {}),
     turns,
     createdAt: updatedAt,
     updatedAt,
@@ -148,6 +151,28 @@ function session(
 
 export function mockSessions(): { sessions: Session[]; activeId: string } {
   const base = NOW - 20 * MINUTE;
+  // Shows the MCP indicator under the composer: both servers failed, so the
+  // session stays usable without their tools.
+  const mcpFailure = session(
+    'MCP failure',
+    [
+      completedTurn(
+        'Look up the React 19 migration notes with context7.',
+        'The context7 server could not be started, so I answered without it. Its tools stay unavailable until the connection succeeds.',
+        base,
+      ),
+    ],
+    1,
+    '/home/jov/Projects/SrudAgent',
+    {
+      state: 'failed',
+      servers: [
+        { name: 'context7', state: 'failed', error: 'npx exited with code 1' },
+        { name: 'docs', state: 'failed', error: 'no answer in 30s' },
+      ],
+    },
+  );
+
   const providerErrors = session(
     'Provider errors',
     [
@@ -426,6 +451,12 @@ export function mockSessions(): { sessions: Session[]; activeId: string } {
     30,
   );
 
-  const sessions = [providerErrors, replayStates, longContent, normal];
+  const sessions = [
+    mcpFailure,
+    providerErrors,
+    replayStates,
+    longContent,
+    normal,
+  ];
   return { sessions, activeId: sessions[0].id };
 }

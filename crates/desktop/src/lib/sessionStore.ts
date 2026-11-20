@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import type {
   Attachment,
   ContextBlock,
+  McpStatus,
   ModelOptions,
   SandboxModeOptions,
   Session,
@@ -46,6 +47,7 @@ import {
   sendPrompt,
   steerTurn as requestSteer,
   SESSION_NOT_FOUND,
+  SRUD_SESSION_MCP_STATUS,
   setSessionTitle,
   type Json,
 } from './acp';
@@ -784,6 +786,59 @@ const MAX_REPAIRS = 3;
 // the conversation mid-turn would drop it.
 const repairPending = new Set<string>();
 
+// MCP status that arrived before the session it names was in the store.
+//
+// `session/new` starts its servers before it answers, so their status can reach
+// the window while the request that creates the session is still in flight.
+// These are applied when the backend id is linked; the cap keeps a session
+// deleted before that from holding memory.
+const pendingMcpStatus = new Map<string, McpStatus>();
+const MAX_PENDING_MCP_STATUS = 64;
+
+function isMcpConnectionState(value: unknown): value is McpStatus['state'] {
+  return value === 'connecting' || value === 'ready' || value === 'failed';
+}
+
+function parseMcpStatus(params: Json): McpStatus | null {
+  if (!isMcpConnectionState(params.state)) return null;
+  const servers = Array.isArray(params.servers)
+    ? params.servers.flatMap((entry) => {
+        const server = entry as Json | undefined;
+        const name = server?.name;
+        const state = server?.state;
+        if (typeof name !== 'string' || !isMcpConnectionState(state)) return [];
+        const error =
+          typeof server?.error === 'string' ? server.error : undefined;
+        return [{ name, state, ...(error ? { error } : {}) }];
+      })
+    : [];
+  return { state: params.state, servers };
+}
+
+function applyMcpStatus(params: Json) {
+  const backendId =
+    typeof params.sessionId === 'string' ? params.sessionId : '';
+  const status = parseMcpStatus(params);
+  if (!backendId || !status) return;
+  const known = useSessionStore
+    .getState()
+    .sessions.some((session) => session.backendId === backendId);
+  if (!known) {
+    if (pendingMcpStatus.size >= MAX_PENDING_MCP_STATUS)
+      pendingMcpStatus.clear();
+    pendingMcpStatus.set(backendId, status);
+    return;
+  }
+  pendingMcpStatus.delete(backendId);
+  useSessionStore.setState((s) => ({
+    sessions: s.sessions.map((session) =>
+      session.backendId === backendId
+        ? { ...session, mcpStatus: status }
+        : session,
+    ),
+  }));
+}
+
 function beginReopen(backendId: string) {
   replaying.add(backendId);
   useSessionStore.setState((s) => ({ reopeningCount: s.reopeningCount + 1 }));
@@ -1168,7 +1223,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       try {
         await initialize();
-        onNotify((params) => {
+        onNotify((method, params) => {
+          if (method === SRUD_SESSION_MCP_STATUS) {
+            applyMcpStatus(params);
+            return;
+          }
+          if (method !== 'session/update') return;
           const target = String(params.sessionId ?? '');
           const seq = seqOf(params);
           // A numbered update is read before it is applied: one the reply's copy
@@ -1435,6 +1495,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             get()
               .sessions.find((s) => s.id === sessionId)
               ?.title?.trim() || '';
+          // Status that arrived while the request was in flight, before this
+          // session had a backend id to match it against.
+          const pendingStatus = pendingMcpStatus.get(created.sessionId);
+          pendingMcpStatus.delete(created.sessionId);
           useSessionStore.setState((s) => {
             // The draft moves to the backend id. Text typed while the backend
             // session was being created is still under the local id here.
@@ -1460,6 +1524,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                       thinking: options.thinking,
                       optionsVersion,
                       sandboxMode,
+                      mcpStatus: pendingStatus ?? sess.mcpStatus,
                     }
                   : sess,
               ),
@@ -1852,6 +1917,7 @@ function removeSession(id: string) {
   const backendId =
     useSessionStore.getState().sessions.find((s) => s.id === id)?.backendId ??
     null;
+  if (backendId) pendingMcpStatus.delete(backendId);
   // Where the view goes once the row is gone: `null` when the row that went was
   // not the one on screen, so the view stays where it is and there is nothing
   // more to ask for. An empty string means it was on screen and nothing is left.

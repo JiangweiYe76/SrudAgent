@@ -5,16 +5,23 @@ import {
   ArrowUp,
   ClipboardPaste,
   Copy,
+  Loader2,
   Scissors,
   Square,
   TextCursorInput,
   Trash2,
+  TriangleAlert,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { t } from '@/lib/i18n';
 import { isTauri, readClipboard, readImageFile } from '@/lib/acp';
-import type { Attachment, SandboxModeOptions, UsageState } from '@/lib/types';
+import type {
+  Attachment,
+  McpStatus,
+  SandboxModeOptions,
+  UsageState,
+} from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { ContextMenu } from '@/components/ContextMenu';
 import { Modal, ModalContent } from '@/components/ui/modal';
@@ -55,6 +62,8 @@ interface ChatInputProps {
   sandboxMode?: SandboxModeOptions | null;
   // Asks for another mode. The owner decides whether to apply it.
   onSandboxModeSelect?: (mode: string) => void;
+  // How far the session's MCP servers got, once the agent reports it.
+  mcpStatus?: McpStatus;
   // Reports the composer's height, so the conversation can keep enough room
   // under its last message: the box floats over the list, and queued messages
   // make it taller than any fixed padding allows for.
@@ -87,6 +96,7 @@ export const ChatInput = memo(function ChatInput({
   usage,
   sandboxMode,
   onSandboxModeSelect,
+  mcpStatus,
   onHeightChange,
   showScrollToBottom = false,
   onScrollToBottom,
@@ -423,11 +433,14 @@ export const ChatInput = memo(function ChatInput({
         />
       </ContextMenu>
       <div className="flex items-center justify-between gap-1.5">
-        <SandboxModeSelect
-          options={sandboxMode}
-          disabled={busy}
-          onSelect={onSandboxModeSelect}
-        />
+        <div className="flex min-w-0 items-center gap-1.5">
+          <SandboxModeSelect
+            options={sandboxMode}
+            disabled={busy}
+            onSelect={onSandboxModeSelect}
+          />
+          <McpStatusIndicator status={mcpStatus} />
+        </div>
         <div className="flex items-center gap-1.5">
           {usage && (
             <UsageIndicator usage={usage} onOpen={() => setUsageOpen(true)} />
@@ -632,6 +645,51 @@ function readAttachment(file: File): Promise<Attachment> {
     };
     reader.readAsDataURL(file);
   });
+}
+
+// How far the session's MCP servers got, beside the sandbox mode.
+//
+// Connecting is a passing state and shows as a spinner; a server that failed
+// stays visible, because its tools are silently absent from the turn otherwise.
+function McpStatusIndicator({ status }: { status?: McpStatus }) {
+  if (!status || status.servers.length === 0) return null;
+  const failed = status.servers.filter((server) => server.state === 'failed');
+  const detail = failed
+    .map(
+      (server) =>
+        `${server.name}: ${server.error ?? t('mcpStatus.unknownError')}`,
+    )
+    .join('\n');
+
+  if (status.state === 'connecting') {
+    return (
+      <span
+        className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
+        title={t('mcpStatus.connectingHint')}
+      >
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+        <span className="truncate">{t('mcpStatus.connecting')}</span>
+      </span>
+    );
+  }
+  if (failed.length === 0) return null;
+
+  const partial = status.state === 'ready';
+  return (
+    <span
+      className={
+        partial
+          ? 'flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground'
+          : 'flex items-center gap-1.5 px-1 text-[11px] text-destructive'
+      }
+      title={detail}
+    >
+      <TriangleAlert className="h-3 w-3 shrink-0" />
+      <span className="truncate">
+        {partial ? t('mcpStatus.partial') : t('mcpStatus.failed')}
+      </span>
+    </span>
+  );
 }
 
 // Context pressure, beside the stop button.

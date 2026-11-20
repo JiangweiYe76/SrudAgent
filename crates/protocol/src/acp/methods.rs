@@ -62,6 +62,11 @@ pub const SRUD_SESSION_SET_TITLE: &str = "_srud/unstable/session/set_title";
 /// method to ask again. A client that changed the provider catalog uses this to
 /// refresh the session on screen without replaying it.
 pub const SRUD_SESSION_CONFIG_OPTIONS: &str = "_srud/unstable/session/config_options";
+/// Agent -> client: how far a session's MCP servers have got.
+///
+/// A session answers before its servers do, so this is how a client learns
+/// when their tools arrive or that one could not be reached.
+pub const SRUD_SESSION_MCP_STATUS: &str = "_srud/unstable/session/mcp_status";
 
 /// Client -> agent: list the skills visible from a working directory.
 ///
