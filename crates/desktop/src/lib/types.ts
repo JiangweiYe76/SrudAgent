@@ -235,6 +235,20 @@ export interface UsageState {
   timedOutputTokens: number;
 }
 
+/** One MCP server's connection state, as the agent reports it. */
+export interface McpServerStatus {
+  name: string;
+  state: 'connecting' | 'ready' | 'failed';
+  /** What went wrong, when the server failed. */
+  error?: string;
+}
+
+/** How far a session's MCP servers have got. */
+export interface McpStatus {
+  state: 'connecting' | 'ready' | 'failed';
+  servers: McpServerStatus[];
+}
+
 export interface Session {
   id: string;
   // The backend session id, once the session exists on the agent. Null until
@@ -264,6 +278,9 @@ export interface Session {
   // The sandbox mode this conversation runs in. Null for a draft and for a
   // session the agent has not loaded yet.
   sandboxMode?: SandboxModeOptions | null;
+  // The MCP servers this session runs with, and how far their connections got.
+  // Absent until the agent reports them.
+  mcpStatus?: McpStatus;
   turns: Turn[];
   // Token usage, once a step has reported any. Absent for a session whose
   // model has no configured window — the agent sends nothing to show.

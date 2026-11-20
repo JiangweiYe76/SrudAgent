@@ -13,10 +13,13 @@ use std::time::Duration;
 use srud_core::prompt;
 use srud_core::tools::ToolRegistry;
 use srud_mcp::{connect_server, HttpEndpoint, ServerCommand, Transport};
+use srud_protocol::acp::methods::SRUD_SESSION_MCP_STATUS;
 use srud_protocol::acp::{AcpError, McpServer, SessionId};
 use srud_protocol::error::INVALID_PARAMS;
+use srud_protocol::srud::methods::{McpConnectionState, McpServerStatus, SessionMcpStatus};
 
 use super::{session_not_found, Agent};
+use crate::events::EventHub;
 use crate::sessions::{McpInstructions, McpPhase, McpSession, SessionManager};
 
 /// How long one server gets to start before it is reported as failed.
@@ -56,11 +59,22 @@ impl Agent {
         if !self.sessions.set_mcp_connecting(id) {
             return Err(session_not_found(id));
         }
+        let states: Vec<McpServerStatus> = transports
+            .iter()
+            .map(|(name, _)| McpServerStatus {
+                name: name.clone(),
+                state: McpConnectionState::Connecting,
+                error: None,
+            })
+            .collect();
+        publish_mcp_status(&self.sessions, &self.hub, id, &states);
+
         let sessions = Arc::clone(&self.sessions);
         let base = Arc::clone(&self.tools);
+        let hub = self.hub.clone();
         let task_id = id.clone();
         let task = tokio::spawn(async move {
-            connect_all(sessions, base, task_id, transports).await;
+            connect_all(sessions, base, hub, task_id, transports, states).await;
         });
         self.sessions.set_mcp_task(id, task.abort_handle());
         Ok(())
@@ -78,9 +92,25 @@ impl Agent {
         servers: &[McpServer],
     ) -> Result<(), AcpError> {
         match self.sessions.mcp_phase(id) {
-            Some(McpPhase::Connecting | McpPhase::Ready) => Ok(()),
+            Some(McpPhase::Connecting | McpPhase::Ready) => {
+                // A session opened again is told the state it already had; a
+                // client that reloaded did not hear the earlier notifications.
+                self.republish_mcp_status(id);
+                Ok(())
+            }
             _ => self.start_mcp_servers(id, cwd, servers),
         }
+    }
+
+    /// Re-sends the last MCP status of a session, when it has one.
+    fn republish_mcp_status(&self, id: &SessionId) {
+        let Some(status) = self.sessions.mcp_status(id) else {
+            return;
+        };
+        self.hub.send_status(
+            SRUD_SESSION_MCP_STATUS,
+            serde_json::to_value(status).unwrap_or(serde_json::Value::Null),
+        );
     }
 
     /// Waits for a session's servers before its first turn reads the tools.
@@ -137,15 +167,17 @@ impl Agent {
 async fn connect_all(
     sessions: Arc<SessionManager>,
     base: Arc<ToolRegistry>,
+    hub: EventHub,
     id: SessionId,
     servers: Vec<(String, Transport)>,
+    mut states: Vec<McpServerStatus>,
 ) {
     let mut tools = Vec::new();
     let mut instructions = Vec::new();
     let mut failures = Vec::new();
     let mut connected = 0;
 
-    for (name, transport) in servers {
+    for (index, (name, transport)) in servers.into_iter().enumerate() {
         match tokio::time::timeout(START_TIMEOUT, connect_server(&name, transport)).await {
             Ok(Ok(server)) => {
                 connected += 1;
@@ -153,10 +185,22 @@ async fn connect_all(
                 if let Some(text) = server.instructions {
                     instructions.push(McpInstructions { server: name, text });
                 }
+                states[index].state = McpConnectionState::Ready;
             }
-            Ok(Err(err)) => failures.push(format!("{name}: {err}")),
-            Err(_) => failures.push(format!("{name}: no answer in {}s", START_TIMEOUT.as_secs())),
+            Ok(Err(err)) => {
+                let error = err.to_string();
+                states[index].state = McpConnectionState::Failed;
+                states[index].error = Some(error.clone());
+                failures.push(format!("{name}: {error}"));
+            }
+            Err(_) => {
+                let error = format!("no answer in {}s", START_TIMEOUT.as_secs());
+                states[index].state = McpConnectionState::Failed;
+                states[index].error = Some(error.clone());
+                failures.push(format!("{name}: {error}"));
+            }
         }
+        publish_mcp_status(&sessions, &hub, &id, &states);
     }
 
     if connected == 0 {
@@ -175,12 +219,52 @@ async fn connect_all(
             );
         }
         Err(duplicate) => {
-            sessions.set_mcp_failed(
-                &id,
-                format!("two MCP servers declare the same tool: {duplicate}"),
-            );
+            let reason = format!("two MCP servers declare the same tool: {duplicate}");
+            for state in &mut states {
+                if state.state == McpConnectionState::Ready {
+                    state.state = McpConnectionState::Failed;
+                    state.error = Some(reason.clone());
+                }
+            }
+            publish_mcp_status(&sessions, &hub, &id, &states);
+            sessions.set_mcp_failed(&id, reason);
         }
     }
+}
+
+/// Records and broadcasts how far one session's servers have got.
+///
+/// The aggregate fails only when no server could be reached: a partial success
+/// still attaches tools, and the per-server entries say which ones are absent.
+fn publish_mcp_status(
+    sessions: &SessionManager,
+    hub: &EventHub,
+    id: &SessionId,
+    servers: &[McpServerStatus],
+) {
+    let state = if servers
+        .iter()
+        .any(|server| server.state == McpConnectionState::Connecting)
+    {
+        McpConnectionState::Connecting
+    } else if servers
+        .iter()
+        .all(|server| server.state == McpConnectionState::Failed)
+    {
+        McpConnectionState::Failed
+    } else {
+        McpConnectionState::Ready
+    };
+    let status = SessionMcpStatus {
+        session_id: id.clone(),
+        state,
+        servers: servers.to_vec(),
+    };
+    sessions.set_mcp_status(id, status.clone());
+    hub.send_status(
+        SRUD_SESSION_MCP_STATUS,
+        serde_json::to_value(status).unwrap_or(serde_json::Value::Null),
+    );
 }
 
 /// A server's name beside the way to reach it.
@@ -276,6 +360,30 @@ mod tests {
         server
     }
 
+    /// The next `_srud/unstable/session/mcp_status` notification.
+    async fn next_status(
+        rx: &mut tokio::sync::broadcast::Receiver<srud_protocol::acp::Notification<Value>>,
+    ) -> Value {
+        let notification = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("a status notification arrives")
+            .expect("the status stream is open");
+        serde_json::to_value(notification).unwrap()
+    }
+
+    /// Statuses up to and including the first one in `wanted`.
+    async fn status_until(
+        rx: &mut tokio::sync::broadcast::Receiver<srud_protocol::acp::Notification<Value>>,
+        wanted: &str,
+    ) -> Value {
+        loop {
+            let status = next_status(rx).await;
+            if status["params"]["state"] == json!(wanted) {
+                return status;
+            }
+        }
+    }
+
     #[tokio::test]
     async fn a_stdio_server_puts_its_tools_on_the_session() {
         let _home = home();
@@ -332,6 +440,109 @@ mod tests {
         assert_eq!(mcp_phase(&agent, &id).await, McpPhase::Ready);
         let tools = agent.sessions.tools(&id).expect("the tools arrive later");
         assert!(tools.contains("mcp__docs__echo"));
+    }
+
+    #[tokio::test]
+    async fn mcp_status_reports_the_servers_as_they_settle() {
+        let _home = home();
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let mut rx = agent.subscribe_status();
+
+        let reply = result_of(
+            agent
+                .handle(request(
+                    SESSION_NEW,
+                    json!({ "cwd": "", "mcpServers": [mock_server()] }),
+                ))
+                .await,
+        );
+        let id = SessionId::new(reply["sessionId"].as_str().expect("an id").to_owned());
+
+        let connecting = next_status(&mut rx).await;
+        assert_eq!(
+            connecting["method"],
+            json!("_srud/unstable/session/mcp_status")
+        );
+        assert_eq!(connecting["params"]["sessionId"], json!(id.0.as_ref()));
+        assert_eq!(connecting["params"]["state"], json!("connecting"));
+        assert_eq!(connecting["params"]["servers"][0]["name"], json!("docs"));
+
+        let ready = status_until(&mut rx, "ready").await;
+        assert_eq!(ready["params"]["state"], json!("ready"));
+        assert_eq!(ready["params"]["servers"][0]["state"], json!("ready"));
+        assert!(ready["params"]["servers"][0].get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn mcp_status_reports_a_server_that_could_not_start() {
+        let _home = home();
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let mut rx = agent.subscribe_status();
+
+        result_of(
+            agent
+                .handle(request(
+                    SESSION_NEW,
+                    json!({
+                        "cwd": "",
+                        "mcpServers": [{
+                            "name": "dead",
+                            "command": "/nonexistent/mcp-server",
+                            "args": [],
+                            "env": [],
+                        }],
+                    }),
+                ))
+                .await,
+        );
+
+        let failed = status_until(&mut rx, "failed").await;
+        assert_eq!(failed["params"]["state"], json!("failed"));
+        assert_eq!(failed["params"]["servers"][0]["name"], json!("dead"));
+        assert_eq!(failed["params"]["servers"][0]["state"], json!("failed"));
+        assert!(
+            failed["params"]["servers"][0]["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty()),
+            "the failure carries what went wrong"
+        );
+    }
+
+    #[tokio::test]
+    async fn loading_a_live_session_republishes_its_mcp_status() {
+        let _home = home();
+        let agent = agent(scripted(vec![]));
+        initialize(&agent).await;
+        let cwd = std::env::temp_dir().join(format!("srud-mcp-status-{}", std::process::id()));
+        std::fs::create_dir_all(&cwd).expect("a directory to work in");
+        let cwd = cwd.to_string_lossy().into_owned();
+
+        let reply = result_of(
+            agent
+                .handle(request(
+                    SESSION_NEW,
+                    json!({ "cwd": cwd, "mcpServers": [mock_server()] }),
+                ))
+                .await,
+        );
+        let id = SessionId::new(reply["sessionId"].as_str().expect("an id").to_owned());
+        assert_eq!(mcp_phase(&agent, &id).await, McpPhase::Ready);
+
+        let mut rx = agent.subscribe_status();
+        result_of(
+            agent
+                .handle(request(
+                    SESSION_LOAD,
+                    json!({ "sessionId": id.0.as_ref(), "cwd": cwd, "mcpServers": [mock_server()] }),
+                ))
+                .await,
+        );
+
+        let ready = next_status(&mut rx).await;
+        assert_eq!(ready["params"]["sessionId"], json!(id.0.as_ref()));
+        assert_eq!(ready["params"]["state"], json!("ready"));
     }
 
     #[tokio::test]

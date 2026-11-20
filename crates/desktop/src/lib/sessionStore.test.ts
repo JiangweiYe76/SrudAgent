@@ -262,6 +262,24 @@ async function boot(
       },
     });
   };
+  // An MCP status notification, as the agent sends it. `sessionId` defaults to
+  // the session on screen; a test about a session being created names the id it
+  // is about to have.
+  const fireStatus = (status: Record<string, unknown>, sessionId?: string) => {
+    const id =
+      sessionId ??
+      useSessionStore
+        .getState()
+        .sessions.find((x) => x.id === useSessionStore.getState().activeId)
+        ?.backendId;
+    mocks.notifyCb?.({
+      payload: {
+        jsonrpc: '2.0',
+        method: '_srud/unstable/session/mcp_status',
+        params: { sessionId: id ?? 'S-unknown', ...status },
+      },
+    });
+  };
   const active = () => {
     const s = useSessionStore.getState();
     return s.sessions.find((x) => x.id === s.activeId) as Session;
@@ -279,6 +297,7 @@ async function boot(
     load,
     deleteGate: del,
     fire,
+    fireStatus,
     active,
     calls,
     requested,
@@ -302,6 +321,82 @@ describe('sessionStore live path', () => {
     expect(active().turns).toEqual([]);
     expect(calls).toContain('initialize');
     expect(calls).not.toContain('session/new');
+  });
+
+  it('an MCP status update lands on the session it names', async () => {
+    const { useSessionStore, fireStatus } = await boot({
+      listed: [{ sessionId: 'S1', cwd: '/tmp', title: 'Listed' }],
+    });
+    const listed = useSessionStore
+      .getState()
+      .sessions.find((s) => s.backendId === 'S1')!;
+
+    fireStatus(
+      {
+        state: 'failed',
+        servers: [{ name: 'context7', state: 'failed', error: 'boom' }],
+      },
+      'S1',
+    );
+
+    const updated = useSessionStore
+      .getState()
+      .sessions.find((s) => s.id === listed.id)!;
+    expect(updated.mcpStatus).toEqual({
+      state: 'failed',
+      servers: [{ name: 'context7', state: 'failed', error: 'boom' }],
+    });
+  });
+
+  it('an MCP status that arrives before session/new answers is kept', async () => {
+    const { useSessionStore, active, waitForBackend, fireStatus } =
+      await boot();
+
+    useSessionStore.getState().sendTurn('hi');
+    // The session the store is about to link has the backend id `S1`; the
+    // notification is allowed to arrive before the reply that names it.
+    fireStatus(
+      {
+        state: 'connecting',
+        servers: [{ name: 'context7', state: 'connecting' }],
+      },
+      'S1',
+    );
+
+    await waitForBackend();
+    expect(active().mcpStatus).toEqual({
+      state: 'connecting',
+      servers: [{ name: 'context7', state: 'connecting' }],
+    });
+  });
+
+  it('a later MCP status replaces the one before it', async () => {
+    const { useSessionStore, fireStatus } = await boot({
+      listed: [{ sessionId: 'S1', cwd: '/tmp', title: 'Listed' }],
+    });
+    fireStatus(
+      {
+        state: 'connecting',
+        servers: [{ name: 'context7', state: 'connecting' }],
+      },
+      'S1',
+    );
+
+    fireStatus(
+      {
+        state: 'ready',
+        servers: [{ name: 'context7', state: 'ready' }],
+      },
+      'S1',
+    );
+
+    const updated = useSessionStore
+      .getState()
+      .sessions.find((s) => s.backendId === 'S1')!;
+    expect(updated.mcpStatus).toEqual({
+      state: 'ready',
+      servers: [{ name: 'context7', state: 'ready' }],
+    });
   });
 
   it('clicking new chat on an empty chat opens nothing new', async () => {

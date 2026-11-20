@@ -35,6 +35,7 @@ use srud_core::session_log::{RecordError, SessionLog};
 use srud_core::session_store::{Loaded, SessionLogWriter};
 use srud_core::tools::ToolRegistry;
 use srud_protocol::acp::{SessionId, SessionInfo};
+use srud_protocol::srud::methods::SessionMcpStatus;
 
 use crate::config;
 
@@ -116,6 +117,11 @@ struct Tracked {
     mcp: Option<Arc<McpSession>>,
     /// How far this session's servers have got.
     mcp_phase: McpPhase,
+    /// What a client last heard about those servers.
+    ///
+    /// Kept beside the phase so a session opened again can be told the state it
+    /// already had, rather than showing nothing until the next change.
+    mcp_status: Option<SessionMcpStatus>,
     /// Wakes whoever is waiting for the servers to settle.
     ///
     /// Subscribed to before a wait, so the map lock is never held across one.
@@ -143,6 +149,7 @@ impl Tracked {
             thinking,
             mcp: None,
             mcp_phase: McpPhase::Idle,
+            mcp_status: None,
             mcp_changes,
             mcp_task: None,
             mcp_waited: false,
@@ -1080,6 +1087,32 @@ impl SessionManager {
             Some(_) => false,
             None => false,
         }
+    }
+
+    /// Records what a client was last told about a session's servers.
+    pub fn set_mcp_status(&self, id: &SessionId, status: SessionMcpStatus) -> bool {
+        match self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get_mut(id.0.as_ref())
+        {
+            Some(tracked) => {
+                tracked.mcp_status = Some(status);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// What a client was last told about a session's servers.
+    #[must_use]
+    pub fn mcp_status(&self, id: &SessionId) -> Option<SessionMcpStatus> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .and_then(|tracked| tracked.mcp_status.clone())
     }
 
     /// How far a session's servers have got, if the session exists.

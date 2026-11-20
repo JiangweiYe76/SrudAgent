@@ -341,6 +341,7 @@ function App() {
           usage={usage}
           sandboxMode={sandboxMode}
           onSandboxModeSelect={chooseSandboxMode}
+          mcpStatus={active?.mcpStatus}
           onHeightChange={onComposerHeight}
           showScrollToBottom={!atBottom}
           onScrollToBottom={scrollToBottom}

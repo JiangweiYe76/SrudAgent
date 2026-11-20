@@ -309,6 +309,12 @@ const en = {
   'mcp.form.save': 'Save',
   'mcp.form.saving': 'Saving…',
   'mcp.saved': 'MCP server saved.',
+  'mcpStatus.connecting': 'MCP connecting…',
+  'mcpStatus.connectingHint':
+    'The session is usable. Its MCP tools appear once the servers connect.',
+  'mcpStatus.partial': 'Some MCP servers failed',
+  'mcpStatus.failed': 'MCP servers failed',
+  'mcpStatus.unknownError': 'connection failed',
   'mcp.field.transport': 'Transport',
   'mcp.transport.stdio': 'stdio',
   'mcp.transport.http': 'HTTP',

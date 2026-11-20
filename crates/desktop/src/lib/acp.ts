@@ -66,7 +66,9 @@ interface RpcNotifyEnvelope {
   params?: Json;
 }
 
-type NotifyHandler = (params: Json) => void;
+// A notification's method and params. The method is what tells a
+// `session/update` from one of SrudAgent's own notifications.
+type NotifyHandler = (method: string, params: Json) => void;
 
 let seq = 0;
 let listening = false;
@@ -80,6 +82,10 @@ export function isTauri(): boolean {
 // for one is out of date rather than broken, and the two are told apart by what
 // the caller should do about it.
 export const SESSION_NOT_FOUND = -32001;
+
+// The agent's notification for a session's MCP connection state. Not a
+// `session/update`: it carries no transcript item and is never numbered.
+export const SRUD_SESSION_MCP_STATUS = '_srud/unstable/session/mcp_status';
 
 // Registers the callback for agent notifications.
 export function onNotify(cb: NotifyHandler): void {
@@ -98,7 +104,7 @@ async function ensureListening(): Promise<void> {
       console.warn('rpc_notify dropped', JSON.stringify(msg).slice(0, 200));
       return;
     }
-    handler((msg.params ?? {}) as Json);
+    handler(msg.method, (msg.params ?? {}) as Json);
   });
 }
 

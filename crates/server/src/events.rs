@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
+use serde_json::Value;
 use srud_core::types::{Event, EventSink, SessionId as CoreSessionId, TurnId};
 use srud_protocol::acp::{Notification, SessionId, SessionNotification};
 use srud_protocol::srud::meta::SrudMeta;
@@ -86,6 +87,12 @@ impl SeqCounter {
 #[derive(Clone)]
 pub struct EventHub {
     tx: broadcast::Sender<Notification<SessionNotification>>,
+    /// Notifications that are not part of a session's conversation stream.
+    ///
+    /// MCP connection state belongs to the session but is not a
+    /// `session/update`: it carries no transcript item and must not take a
+    /// sequence number from the stream.
+    status_tx: broadcast::Sender<Notification<Value>>,
     seq: SeqCounter,
 }
 
@@ -94,8 +101,10 @@ impl EventHub {
     #[must_use]
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
+        let (status_tx, _status_rx) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
             tx,
+            status_tx,
             seq: SeqCounter::default(),
         }
     }
@@ -106,6 +115,26 @@ impl EventHub {
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<Notification<SessionNotification>> {
         self.tx.subscribe()
+    }
+
+    /// Subscribes to notifications that are not `session/update` items.
+    #[must_use]
+    pub fn subscribe_status(&self) -> broadcast::Receiver<Notification<Value>> {
+        self.status_tx.subscribe()
+    }
+
+    /// Broadcasts one of SrudAgent's own notifications.
+    ///
+    /// `method` is the `_srud/unstable/*` name, and `params` is the payload a
+    /// client reads. Nothing here is numbered: the sequence is the
+    /// conversation's, and this is not part of it.
+    pub fn send_status(&self, method: &str, params: Value) {
+        // A send error only means there are no subscribers right now; a missing
+        // listener must never fail the work that caused the notification.
+        let _ = self.status_tx.send(Notification {
+            method: method.into(),
+            params: Some(params),
+        });
     }
 
     /// Broadcasts a notification that did not come from a turn.

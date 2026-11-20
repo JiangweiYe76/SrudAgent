@@ -154,6 +154,14 @@ fn mcp_store() -> Arc<McpStore> {
 /// [`SessionNotification`] (`sessionId`, `update`, `_meta`). Kept free of the
 /// `AppHandle` so the wire shape is unit-testable without a running app.
 fn notify_payload(notification: Notification<SessionNotification>) -> RpcNotify {
+    notification_payload(notification)
+}
+
+/// Builds the `rpc_notify` payload for a notification with any payload shape.
+///
+/// The webview reads `method` to tell a `session/update` from one of
+/// SrudAgent's own notifications; both travel on the same event.
+fn notification_payload<T: serde::Serialize>(notification: Notification<T>) -> RpcNotify {
     let body = match serde_json::to_value(notification.params) {
         Ok(value) => value,
         Err(_) => Value::Null,
@@ -188,6 +196,27 @@ fn spawn_notify_pump(app: AppHandle, agent: &Agent) {
                         "srud: notification stream lagged, {skipped} update(s) dropped; \
                          a client tracking `_meta.srud.seq` detects the gap and reloads the session"
                     );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+/// Streams SrudAgent's own notifications to the webview for the app's lifetime.
+///
+/// These are not conversation items — currently a session's MCP connection
+/// state — so they travel on a channel of their own and are never numbered.
+fn spawn_status_pump(app: AppHandle, agent: &Agent) {
+    let mut rx = agent.subscribe_status();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(notification) => {
+                    let _ = app.emit(RPC_NOTIFY_EVENT, &notification_payload(notification));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!("srud: status stream lagged, {skipped} notification(s) dropped");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -583,6 +612,7 @@ pub fn run() {
 
             let agent = build_agent(store);
             spawn_notify_pump(app.handle().clone(), &agent);
+            spawn_status_pump(app.handle().clone(), &agent);
             app.manage(AgentState(agent));
             app.manage(ShutdownState::default());
             #[cfg(target_os = "linux")]

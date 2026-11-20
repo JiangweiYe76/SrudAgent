@@ -686,6 +686,47 @@ pub struct McpCatalog {
     pub servers: Vec<McpServerSpec>,
 }
 
+/// Agent -> client: `_srud/unstable/session/mcp_status`.
+///
+/// A session answers before its servers do, so this is how a client learns
+/// when their tools arrive or that one could not be reached. Sent once when the
+/// attempt starts and again each time a server settles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMcpStatus {
+    /// The session whose servers this describes.
+    pub session_id: SessionId,
+    /// The state of the session's set of servers.
+    pub state: McpConnectionState,
+    /// One entry per server the session was opened with.
+    pub servers: Vec<McpServerStatus>,
+}
+
+/// The state of one MCP connection, or of a session's set of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpConnectionState {
+    /// A connection attempt is still running.
+    Connecting,
+    /// Every reachable server has been attached.
+    Ready,
+    /// No server could be reached.
+    Failed,
+}
+
+/// One server in a [`SessionMcpStatus`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerStatus {
+    /// The name the client gave the server.
+    pub name: String,
+    /// How far this server has got.
+    pub state: McpConnectionState,
+    /// What went wrong, when it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Client -> agent: `_srud/unstable/mcp/list`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
