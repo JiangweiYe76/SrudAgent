@@ -452,15 +452,21 @@ fn directory_is_gone(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::NotFound || err.raw_os_error() == Some(ERROR_DIRECTORY)
 }
 
-/// Reads a stream to its end, stopping once `cap` bytes have arrived.
+/// Reads a stream to its end, keeping at most `cap` bytes.
+///
+/// Draining continues past the cap: a reader that stopped there would close the
+/// read end, and the child's next write would fail with a broken pipe instead
+/// of letting it finish.
 async fn read_capped<R>(reader: R, cap: usize) -> Vec<u8>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    let mut reader = reader;
     let mut buf = Vec::new();
     // An error part-way through has already yielded what came before it, and that
     // is worth more to the model than the error.
-    let _ = reader.take(cap as u64).read_to_end(&mut buf).await;
+    let _ = (&mut reader).take(cap as u64).read_to_end(&mut buf).await;
+    let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
     buf
 }
 
@@ -666,20 +672,48 @@ mod tests {
         assert_eq!(out["exit_code"], serde_json::Value::Null);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn output_larger_than_the_capture_budget_does_not_hang() {
-        // A pipe holds far less than the capture budget, so a reader that stopped at the
-        // budget would leave the command blocked forever. The command has to
-        // finish, and the reply says the output was cut.
+        // A pipe holds far less than the capture budget, so a reader that stopped
+        // at the budget would break the pipe under the command mid-run. The
+        // command has to finish — proven by its exit code and the marker it
+        // writes last, which survives the output being cut — and the reply says
+        // the output was cut.
         let dir = scratch("flood");
+        #[cfg(unix)]
         let command = "i=0; while [ $i -lt 60000 ]; do echo a-fairly-long-line-of-padding; \
-                      i=$((i+1)); done";
-        let outcome = run(&dir, command).await;
-        let out = reply(&outcome);
+                       i=$((i+1)); done; echo done > flood-finished.txt";
+        // The Windows shell is PowerShell; cmd is only the fallback beneath it.
+        #[cfg(windows)]
+        let command = "1..60000 | ForEach-Object { 'a-fairly-long-line-of-padding' }; \
+                       'done' | Out-File -Encoding ascii flood-finished.txt";
+        let out = reply(&run(&dir, command).await);
 
         assert_eq!(out["truncated"], true);
-        assert!(!outcome.is_error, "the command finished on its own");
+        assert_eq!(out["exit_code"], 0, "the command finished on its own");
+        let marker = std::fs::read_to_string(dir.join("flood-finished.txt"))
+            .expect("the command ran to its last statement");
+        assert!(marker.contains("done"));
+    }
+
+    /// The cap limits what is kept, not what is read: a reader that stopped at
+    /// the cap would drop the read end and break the pipe under the writer.
+    /// `duplex` models that pipe — a write after the read end is gone fails with
+    /// `BrokenPipe` — so this holds on every platform, whatever the shell
+    /// tolerates.
+    #[tokio::test]
+    async fn reading_past_the_cap_lets_the_writer_finish() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let writer = tokio::spawn(async move {
+            tokio::io::AsyncWriteExt::write_all(&mut writer, &vec![b'x'; 4096]).await
+        });
+        let kept = read_capped(reader, 1024).await;
+
+        assert_eq!(kept.len(), 1024);
+        writer
+            .await
+            .expect("the writer task ran")
+            .expect("the writer reached the end without a broken pipe");
     }
 
     #[tokio::test]
@@ -765,19 +799,6 @@ mod tests {
                 stdout.len() <= MAX_OUTPUT_BYTES,
                 "the reply stays within its budget"
             );
-        }
-
-        /// A flood larger than the capture budget still finishes, rather than
-        /// blocking on a pipe nobody is reading.
-        #[tokio::test]
-        async fn output_larger_than_the_capture_budget_does_not_hang() {
-            let dir = scratch("windows-flood");
-            let command = "1..60000 | ForEach-Object { 'a-fairly-long-line-of-padding' }";
-            let outcome = run(&dir, command).await;
-            let out = reply(&outcome);
-
-            assert_eq!(out["truncated"], true);
-            assert!(!outcome.is_error, "the command finished on its own");
         }
 
         /// The environment is bare here too: what this process holds is not what
