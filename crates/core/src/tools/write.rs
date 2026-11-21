@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::{
-    denied_write, failure_text, invalid_arguments, resolve, Tool, ToolContext, ToolError,
+    denied_write, failure_text, invalid_arguments, resolve, stopped, Tool, ToolContext, ToolError,
     ToolOutcome,
 };
 
@@ -103,10 +103,26 @@ impl Tool for WriteTool {
         // the write that follows reports it if it turns out to be wrong.
         let created = existing.is_none();
 
+        // Checked before the first side effect: a stop that arrives here leaves
+        // no directory behind and no file half-written.
+        if ctx.cancel.is_cancelled() {
+            return Ok(stopped(
+                "Nothing was written. Ask again if it is still needed.",
+            ));
+        }
         if let Some(parent) = path.parent() {
             if let Err(err) = tokio::fs::create_dir_all(parent).await {
                 return Ok(ToolOutcome::failure(write_failure(&path, &err)));
             }
+        }
+        // The directory may be the slow part on a network drive, so the token is
+        // read again before the file itself changes. A directory already made
+        // above it stays if the stop arrives here — empty, and reused by the next
+        // call — but the file is untouched.
+        if ctx.cancel.is_cancelled() {
+            return Ok(stopped(
+                "Nothing was written. Ask again if it is still needed.",
+            ));
         }
         if let Err(err) = tokio::fs::write(&path, args.content.as_bytes()).await {
             return Ok(ToolOutcome::failure(write_failure(&path, &err)));
@@ -504,5 +520,28 @@ mod tests {
         let message = refusal(&outcome);
         assert!(message.contains("writable roots"), "{message}");
         assert!(!outside.exists(), "nothing was written outside the roots");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_turn_writes_nothing() {
+        let dir = scratch("stopped");
+        let context = ctx(&dir);
+        context.cancel.cancel();
+
+        let outcome = WriteTool
+            .call(
+                &context,
+                serde_json::json!({ "path": "notes.txt", "content": "text" }),
+            )
+            .await
+            .expect("the arguments match the schema");
+
+        assert!(outcome.is_error, "a stopped write is not a result");
+        assert!(
+            outcome.output.contains("Stopped by the user."),
+            "the failure names the stop: {}",
+            outcome.output
+        );
+        assert!(!dir.join("notes.txt").exists(), "no file was created");
     }
 }

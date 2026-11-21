@@ -13,8 +13,11 @@ use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
+use tokio_util::sync::CancellationToken;
 
-use super::{failure_text, invalid_arguments, resolve, Tool, ToolContext, ToolError, ToolOutcome};
+use super::{
+    failure_text, invalid_arguments, resolve, stopped, Tool, ToolContext, ToolError, ToolOutcome,
+};
 
 /// The name the model calls.
 const NAME: &str = "grep";
@@ -170,20 +173,26 @@ impl Tool for GrepTool {
         let include = args.include.as_deref().map(str::to_owned);
         let pattern = args.pattern;
         let cwd = ctx.cwd.clone();
+        let cancel = ctx.cancel.clone();
 
         // The search is a blocking walk over the filesystem, so it runs off the
-        // runtime's threads. A caller that gives up waiting for it does not stop
-        // it — the walk finishes and its result is dropped.
-        let search =
-            spawn_blocking(move || search(&cwd, &target, &pattern, include.as_deref(), limit))
-                .await
-                .map_err(|err| ToolError::InvalidArguments {
-                    name: NAME.to_owned(),
-                    message: format!("the search task did not finish: {err}"),
-                })?;
+        // runtime's threads. Dropping its handle does not stop it, so the token
+        // goes into the walk, and the thread returns `SearchError::Cancelled` when
+        // it sees the stop.
+        let search = spawn_blocking(move || {
+            search(&cwd, &target, &pattern, include.as_deref(), limit, &cancel)
+        })
+        .await
+        .map_err(|err| ToolError::InvalidArguments {
+            name: NAME.to_owned(),
+            message: format!("the search task did not finish: {err}"),
+        })?;
 
         match search {
             Ok(found) => Ok(ToolOutcome::success(found.into_json().to_string())),
+            Err(SearchError::Cancelled) => Ok(stopped(
+                "The search did not finish. Ask again if the matches are still needed.",
+            )),
             Err(SearchError::NoSuchPath { shown, cwd }) => {
                 let message = format!("Path does not exist: {shown}.");
                 let hint = format!("The working directory is {cwd}.");
@@ -242,6 +251,8 @@ impl Found {
 
 /// Why a search produced nothing.
 enum SearchError {
+    /// The turn was stopped while the walk ran.
+    Cancelled,
     /// The path to search is not there.
     NoSuchPath { shown: String, cwd: String },
     /// The pattern did not compile.
@@ -257,6 +268,7 @@ fn search(
     pattern: &str,
     include: Option<&str>,
     limit: usize,
+    cancel: &CancellationToken,
 ) -> Result<Found, SearchError> {
     if !target.exists() {
         return Err(SearchError::NoSuchPath {
@@ -323,6 +335,13 @@ fn search(
     let mut collected = Collector::new(limit);
     let mut entries = walker.build().peekable();
     while let Some(entry) = entries.next() {
+        // Checked between files, which is the finest point available: one file is
+        // searched by a single synchronous call that cannot be interrupted
+        // halfway, and a walk over a large tree spends its time moving between
+        // files anyway.
+        if cancel.is_cancelled() {
+            return Err(SearchError::Cancelled);
+        }
         let entry = match entry {
             Ok(entry) => entry,
             // A file we cannot open is skipped: the model is better served by

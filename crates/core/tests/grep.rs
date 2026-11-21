@@ -687,3 +687,26 @@ async fn a_limit_of_zero_asks_for_no_limit_and_says_nothing_was_left_out() {
         "nothing was left out, so nothing claims otherwise"
     );
 }
+
+#[tokio::test]
+async fn a_stopped_search_reports_the_stop_instead_of_matches() {
+    let dir = scratch("stopped", &[("a.rs", "needle\n")]);
+    let context = ctx(&dir);
+    context.cancel.cancel();
+
+    let outcome = GrepTool
+        .call(&context, serde_json::json!({ "pattern": "needle" }))
+        .await
+        .expect("the arguments match the schema");
+
+    assert!(outcome.is_error, "a stopped search is not a result");
+    let output = outcome.output;
+    assert!(
+        output.starts_with(FAILURE_MARKER),
+        "the model reads a failure: {output}"
+    );
+    assert!(
+        output.contains("Stopped by the user."),
+        "and it says the turn stopped: {output}"
+    );
+}

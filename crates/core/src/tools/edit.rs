@@ -7,8 +7,8 @@ use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 
 use super::{
-    denied_write, failure_text, invalid_arguments, resolve, LenientBool, Tool, ToolContext,
-    ToolError, ToolOutcome,
+    denied_write, failure_text, invalid_arguments, resolve, stopped, LenientBool, Tool,
+    ToolContext, ToolError, ToolOutcome,
 };
 
 /// The name the model calls.
@@ -157,6 +157,13 @@ impl Tool for EditTool {
         }
         let shown = path.display().to_string();
 
+        // Checked before the file is read: a stop that arrives here leaves
+        // everything as it was.
+        if ctx.cancel.is_cancelled() {
+            return Ok(stopped(
+                "Nothing was changed. Ask again if the edit is still needed.",
+            ));
+        }
         let content = match read_source(&path).await {
             Ok(content) => content,
             Err(message) => return Ok(ToolOutcome::failure(message)),
@@ -217,6 +224,13 @@ impl Tool for EditTool {
             next.replace_range(range, text);
         }
 
+        // Matching a large file takes time, so the token is read once more before
+        // the write: the file is still untouched, and a stop here leaves it so.
+        if ctx.cancel.is_cancelled() {
+            return Ok(stopped(
+                "Nothing was changed. Ask again if the edit is still needed.",
+            ));
+        }
         if let Err(err) = tokio::fs::write(&path, next.as_bytes()).await {
             return Ok(ToolOutcome::failure(write_failure(&path, &err)));
         }
@@ -1326,5 +1340,33 @@ mod tests {
         let message = refusal(&outcome);
         assert!(message.contains("writable roots"), "{message}");
         assert!(!outside.exists(), "nothing was written outside the roots");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_turn_changes_nothing() {
+        let dir = scratch("stopped");
+        std::fs::write(dir.join("notes.txt"), "one\ntwo\n").expect("fixture file");
+        let context = ctx(&dir);
+        context.cancel.cancel();
+
+        let outcome = EditTool
+            .call(
+                &context,
+                serde_json::json!({
+                    "path": "notes.txt",
+                    "edits": [{ "old_string": "one", "new_string": "three" }]
+                }),
+            )
+            .await
+            .expect("the arguments match the schema");
+
+        assert!(outcome.is_error, "a stopped edit is not a result");
+        assert!(
+            outcome.output.contains("Stopped by the user."),
+            "the failure names the stop: {}",
+            outcome.output
+        );
+        let content = std::fs::read_to_string(dir.join("notes.txt")).expect("fixture file");
+        assert_eq!(content, "one\ntwo\n", "the file was left as it was");
     }
 }
