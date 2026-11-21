@@ -32,6 +32,7 @@ use crate::prompt;
 use crate::session::Session;
 use crate::session_event::{MessageId, StepTiming};
 use crate::session_log::{entry_for, entry_in_step, RecordError, SessionLog};
+use crate::session_store::unanswered_text;
 use crate::tools::{failure_text, ToolContext, ToolError, ToolOutcome, ToolRegistry};
 use crate::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnId, TurnInput};
 
@@ -1074,18 +1075,46 @@ async fn run_step(
     }
     flush_usage(journal, usage, timing.finish()).await;
 
-    for (call, arguments) in recorded {
+    let mut unrun = recorded.into_iter();
+    while let Some((call, arguments)) = unrun.next() {
         if cancel.is_cancelled() {
+            // Neither this call nor the ones behind it will run, but both are
+            // already in the history. A provider refuses a request that carries a
+            // call with no output, so a stop has to close the log the same way a
+            // crash repair does — otherwise the next turn cannot be sent at all.
+            record_unanswered(journal, std::iter::once((call, arguments)).chain(unrun)).await;
             return Err(TurnFailure::silent(TurnEndReason::Interrupted));
         }
         if let Err(err) =
             run_recorded_tool_call(journal, tools, call, arguments, cancel.clone(), sandbox).await
         {
+            // A log that would not take this result will not take the ones behind
+            // it either, but recording them is still the only chance the history
+            // has of staying sendable, so it is attempted rather than assumed.
+            record_unanswered(journal, unrun).await;
             return Err(TurnFailure::reported(&err));
         }
     }
 
     Ok(StepOutcome::NeedsFollowUp)
+}
+
+/// Answers every recorded call the step will not run.
+///
+/// Best-effort: the turn is already ending, and a log that refuses these records
+/// is the reason it is. When the records do land, every `FunctionCall` in the
+/// history keeps its `FunctionCallOutput`, so the next request is built from a
+/// conversation the provider will accept.
+async fn record_unanswered(
+    journal: &Journal<'_>,
+    calls: impl IntoIterator<Item = (PendingToolCall, serde_json::Value)>,
+) {
+    for (call, _) in calls {
+        let outcome = ToolOutcome::failure(unanswered_text(&call.name));
+        let _ = journal
+            .record_result(call.call_id, call.name, outcome)
+            .await;
+    }
 }
 
 /// Records the step's token counts, if the provider reported any.

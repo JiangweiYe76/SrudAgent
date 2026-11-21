@@ -950,6 +950,114 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
 }
 
 #[tokio::test]
+async fn a_stopped_step_answers_the_calls_it_never_ran() {
+    let session = session();
+    let sink = Recorder::default();
+    let calls = Arc::new(Mutex::new(0));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(Stop)).expect("unique name");
+    tools
+        .register(Arc::new(Recorder0 {
+            calls: Arc::clone(&calls),
+        }))
+        .expect("unique name");
+    // Both calls are recorded before either runs, which is the state a stop can
+    // leave behind: the first one ends the turn, the second never gets a result.
+    let client = Scripted::new(vec![vec![
+        Ok(ModelEvent::ToolCall {
+            call_id: "c1".into(),
+            name: "stop".into(),
+            arguments: "{}".into(),
+        }),
+        Ok(ModelEvent::ToolCall {
+            call_id: "c2".into(),
+            name: "record".into(),
+            arguments: "{}".into(),
+        }),
+        done(),
+    ]]);
+    let log = Volatile::new();
+
+    let result = srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "go".into(),
+            images: Vec::new(),
+        },
+        client.as_ref(),
+        &tools,
+        &log,
+        &sink,
+    )
+    .await
+    .expect("turn ends");
+
+    assert_eq!(result.reason, TurnEndReason::Interrupted);
+    assert_eq!(
+        *calls.lock().expect("calls lock"),
+        0,
+        "the call behind the stop never ran"
+    );
+
+    // Every recorded call is answered. A provider refuses the request a history
+    // with a bare call would build, so the stop has to close the pair itself
+    // rather than leave it to a reload that may never happen.
+    let state = session.state();
+    let history = state.history();
+    let output_ids: Vec<&str> = history
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCallOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(output_ids, vec!["c1", "c2"]);
+
+    let unanswered = history
+        .iter()
+        .find_map(|item| match item {
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } if call_id == "c2" => Some(output.clone()),
+            _ => None,
+        })
+        .expect("the unrun call is answered");
+    assert!(
+        unanswered.starts_with(srud_core::tools::FAILURE_MARKER),
+        "the model reads the failure from the text: {unanswered}"
+    );
+    assert!(
+        unanswered.contains("did not finish"),
+        "and it says the call never returned: {unanswered}"
+    );
+}
+
+/// A tool that stops the turn that calls it, the way a user pressing stop does
+/// while a tool runs.
+struct Stop;
+
+#[async_trait::async_trait]
+impl Tool for Stop {
+    fn name(&self) -> &str {
+        "stop"
+    }
+    fn description(&self) -> &str {
+        "Stops the turn that called it."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object" })
+    }
+    async fn call(
+        &self,
+        ctx: &ToolContext,
+        _arguments: serde_json::Value,
+    ) -> Result<ToolOutcome, ToolError> {
+        ctx.cancel.cancel();
+        Ok(ToolOutcome::success("stopped"))
+    }
+}
+
+#[tokio::test]
 async fn a_read_call_reaches_the_sessions_working_directory() {
     let dir = std::env::temp_dir().join("srud-turn-loop-read");
     std::fs::create_dir_all(&dir).expect("scratch directory");

@@ -754,7 +754,11 @@ fn repairs(items: &[&SessionEvent], open: &[TurnId]) -> Vec<SessionEvent> {
 ///
 /// Different from a tool that ran and failed: nothing ran, and saying which is
 /// what keeps the model from retrying something that was already attempted.
-fn unanswered_text(name: &str) -> String {
+///
+/// Shared with the turn loop instead of duplicated: a call left open by a stop
+/// and one left open by a crash are the same gap in the log, so they get the
+/// same answer.
+pub(crate) fn unanswered_text(name: &str) -> String {
     crate::tools::failure_text(
         format!("The `{name}` call did not finish. The session stopped before it returned."),
         Some("The tool may or may not have run. Check before calling it again."),
