@@ -951,12 +951,19 @@ async fn run_step(
     sandbox: &srud_sandbox::SandboxPolicy,
     timing: &mut TokenTiming,
 ) -> Result<StepOutcome, TurnFailure> {
-    let mut stream = match client.stream(request, cancel.clone()).await {
-        Ok(stream) => stream,
-        // The request never started: a rejected key, an exhausted quota, or a
-        // provider that refused it. Its words are the only thing that tells
-        // those apart.
-        Err(error) => return Err(TurnFailure::reported(&error)),
+    // The wait for the provider's first byte is raced too: a connection that
+    // never answers would otherwise hold the stop until the request times out,
+    // and no timeout is set.
+    let mut stream = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Err(TurnFailure::silent(TurnEndReason::Interrupted)),
+        started = client.stream(request, cancel.clone()) => match started {
+            Ok(stream) => stream,
+            // The request never started: a rejected key, an exhausted quota, or a
+            // provider that refused it. Its words are the only thing that tells
+            // those apart.
+            Err(error) => return Err(TurnFailure::reported(&error)),
+        },
     };
 
     // One id per message, minted before the first chunk of it. Every chunk of this
@@ -974,12 +981,21 @@ async fn run_step(
     let mut message = String::new();
     let mut reasoning = String::new();
     let mut tool_calls: Vec<PendingToolCall> = Vec::new();
+    // Every call the model named, whole or not. A call reaches the client as soon
+    // as its name does, which is before the arguments are complete, so a step that
+    // ends early has calls on screen that never made it into the log.
+    let mut announced: Vec<(String, String)> = Vec::new();
     // The last report wins: a provider that repeats usage across chunks should
     // be read at its final word, the same as any other aggregate.
     let mut usage: Option<TokenUsage> = None;
 
     loop {
         if cancel.is_cancelled() {
+            // The calls named so far reached the client as pending ones, and none
+            // will be recorded: a step stopped mid-stream never gets to the
+            // recording it does after the stream ends. They are closed here so the
+            // client does not keep showing a call that the log never took.
+            close_announced(journal, &announced);
             // The partial message is flushed either way — a turn that was cut off
             // still said something, and the log should hold it. A refused flush
             // does not change why the turn is ending, and reporting it here would
@@ -989,9 +1005,23 @@ async fn run_step(
             return Err(TurnFailure::silent(TurnEndReason::Interrupted));
         }
 
-        let next = stream.next().await;
+        // The token is raced against the next chunk rather than the chunk being
+        // awaited alone: a provider that has gone quiet without closing the stream
+        // leaves `next` pending, and a stop pressed then would wait for the
+        // provider to speak again — which reads as a stop button that does nothing.
+        // The stream is polled first, so a chunk that has already arrived is kept:
+        // stopping ends the turn, it does not take back what was already said.
+        let next = tokio::select! {
+            biased;
+            next = stream.next() => next,
+            () = cancel.cancelled() => continue,
+        };
+
         let Some(item) = next else {
-            // The provider went away without signalling completion.
+            // The provider went away without signalling completion. The calls it
+            // named are as unrecorded as they are after a stop, and a client left
+            // with them pending reads the turn as still running.
+            close_announced(journal, &announced);
             let _ = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
             flush_usage(journal, usage, timing.finish()).await;
             return Err(TurnFailure::reported(&ModelError::Truncated));
@@ -1000,6 +1030,7 @@ async fn run_step(
         let event = match item {
             Ok(event) => event,
             Err(error) => {
+                close_announced(journal, &announced);
                 let _ =
                     flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await;
                 flush_usage(journal, usage, timing.finish()).await;
@@ -1029,6 +1060,9 @@ async fn run_step(
                 // the arguments do, so a step that only calls a tool still has a
                 // moment to start from.
                 timing.token();
+                if !announced.iter().any(|(known, _)| known == &call_id) {
+                    announced.push((call_id.clone(), name.clone()));
+                }
                 journal.sink().emit(Event::ToolCallNamed { call_id, name });
             }
             ModelEvent::ToolCall {
@@ -1052,11 +1086,19 @@ async fn run_step(
     // turn's own output, and a log that refused it means the model answered into
     // nothing. Continuing would leave the turn looking answered on the wire and
     // unfinished in the log.
-    flush_assistant(journal, &message_id, &thought_id, &message, &reasoning)
-        .await
-        .map_err(|err| TurnFailure::reported(&err))?;
+    if let Err(err) = flush_assistant(journal, &message_id, &thought_id, &message, &reasoning).await
+    {
+        // Nothing was recorded, so nothing is answered in the log; the calls the
+        // client was shown still have to be closed, or the turn ends with them
+        // drawn as running.
+        close_announced(journal, &announced);
+        return Err(TurnFailure::reported(&err));
+    }
 
     if tool_calls.is_empty() {
+        // A name the model never followed with a whole call reached the client but
+        // never the log, so nothing else would ever settle it.
+        close_announced(journal, &announced);
         flush_usage(journal, usage, timing.finish()).await;
         return Ok(StepOutcome::Finished);
     }
@@ -1068,30 +1110,52 @@ async fn run_step(
     for call in tool_calls {
         let arguments: serde_json::Value =
             serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
-        record_tool_call(journal, &call, &arguments)
-            .await
-            .map_err(|err| TurnFailure::reported(&err))?;
+        if let Err(err) = record_tool_call(journal, &call, &arguments).await {
+            // The calls before this one are in the history without an output, and
+            // the names still announced will never be recorded. The first shape is
+            // what a provider refuses, the second is what a client draws forever,
+            // so both are closed before the turn reports the failure.
+            record_unanswered(journal, recorded.into_iter().map(|(call, _)| call)).await;
+            close_announced(journal, &announced);
+            return Err(TurnFailure::reported(&err));
+        }
+        // The log has it now: closing it here would answer a call that is about to
+        // run. What stays in `announced` is therefore exactly what the log lacks.
+        announced.retain(|(known, _)| known != &call.call_id);
         recorded.push((call, arguments));
     }
+    // Names the model never completed are still on screen and will never be
+    // recorded, since only a whole call reaches the log.
+    close_announced(journal, &announced);
     flush_usage(journal, usage, timing.finish()).await;
 
     let mut unrun = recorded.into_iter();
     while let Some((call, arguments)) = unrun.next() {
         if cancel.is_cancelled() {
-            // Neither this call nor the ones behind it will run, but both are
-            // already in the history. A provider refuses a request that carries a
-            // call with no output, so a stop has to close the log the same way a
-            // crash repair does — otherwise the next turn cannot be sent at all.
-            record_unanswered(journal, std::iter::once((call, arguments)).chain(unrun)).await;
+            // Neither this call nor the ones behind it will run, and all of them
+            // are already in the history. A provider refuses a request that
+            // carries a call with no output, so a stop has to close the log the
+            // same way a crash repair does — otherwise the next turn cannot be
+            // sent at all.
+            record_unanswered(
+                journal,
+                std::iter::once(call).chain(unrun.map(|(call, _)| call)),
+            )
+            .await;
             return Err(TurnFailure::silent(TurnEndReason::Interrupted));
         }
         if let Err(err) =
-            run_recorded_tool_call(journal, tools, call, arguments, cancel.clone(), sandbox).await
+            run_recorded_tool_call(journal, tools, &call, arguments, cancel.clone(), sandbox).await
         {
             // A log that would not take this result will not take the ones behind
             // it either, but recording them is still the only chance the history
             // has of staying sendable, so it is attempted rather than assumed.
-            record_unanswered(journal, unrun).await;
+            // This call is among them: its own output is the one that was refused.
+            record_unanswered(
+                journal,
+                std::iter::once(call).chain(unrun.map(|(call, _)| call)),
+            )
+            .await;
             return Err(TurnFailure::reported(&err));
         }
     }
@@ -1099,7 +1163,30 @@ async fn run_step(
     Ok(StepOutcome::NeedsFollowUp)
 }
 
+/// Closes calls a step announced but will not record.
+///
+/// An announcement is what puts a call on screen, and only a whole call is
+/// recorded, so a name the step never follows with one leaves a row nothing would
+/// ever settle — whether the step stops mid-stream or goes on to run the calls it
+/// does have. Closed as a failure saying nothing came back.
+///
+/// Must only be given calls the log does not hold: a recorded call is closed by
+/// its own result, and closing it here as well would answer it twice.
+fn close_announced(journal: &Journal<'_>, announced: &[(String, String)]) {
+    for (call_id, name) in announced {
+        journal.sink().emit(Event::ToolCallEnd {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            result: ToolOutcome::failure(unanswered_text(name)),
+        });
+    }
+}
+
 /// Answers every recorded call the step will not run.
+///
+/// The call whose own result was refused is included: nothing of a refused record
+/// reached the log, so answering it again is what keeps it from being the one bare
+/// `FunctionCall` left behind.
 ///
 /// Best-effort: the turn is already ending, and a log that refuses these records
 /// is the reason it is. When the records do land, every `FunctionCall` in the
@@ -1107,9 +1194,9 @@ async fn run_step(
 /// conversation the provider will accept.
 async fn record_unanswered(
     journal: &Journal<'_>,
-    calls: impl IntoIterator<Item = (PendingToolCall, serde_json::Value)>,
+    calls: impl IntoIterator<Item = PendingToolCall>,
 ) {
-    for (call, _) in calls {
+    for call in calls {
         let outcome = ToolOutcome::failure(unanswered_text(&call.name));
         let _ = journal
             .record_result(call.call_id, call.name, outcome)
@@ -1228,7 +1315,7 @@ async fn record_tool_call(
 async fn run_recorded_tool_call(
     journal: &Journal<'_>,
     tools: &ToolRegistry,
-    call: PendingToolCall,
+    call: &PendingToolCall,
     arguments: serde_json::Value,
     cancel: tokio_util::sync::CancellationToken,
     sandbox: &srud_sandbox::SandboxPolicy,
@@ -1251,7 +1338,7 @@ async fn run_recorded_tool_call(
     };
 
     journal
-        .record_result(call.call_id, call.name, outcome)
+        .record_result(call.call_id.clone(), call.name.clone(), outcome)
         .await
 }
 
