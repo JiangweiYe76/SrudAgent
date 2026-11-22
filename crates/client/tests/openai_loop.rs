@@ -8,7 +8,7 @@ use srud_client::openai::{ChatClient, ClientConfig, ResponsesClient};
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
 use srud_core::session_log::Volatile;
-use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
+use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry, ToolSource};
 use srud_core::types::{Event, EventSink, ResponseItem, Role, TurnEndReason, TurnInput};
 
 /// Records events so the test can assert on order.
@@ -57,7 +57,9 @@ async fn assert_fails_cleanly(client: &dyn ModelClient) {
     let session = Session::new("workspace");
     let sink = Recorder::default();
     let mut tools = ToolRegistry::new();
-    assert!(tools.register(Arc::new(Static)).is_ok());
+    assert!(tools
+        .register(Arc::new(Static), ToolSource::Builtin)
+        .is_ok());
 
     // Bound rather than borrowed inline: `&Volatile::new()` is a borrow of a
     // temporary, which compiles today and would not survive a stricter

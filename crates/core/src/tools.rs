@@ -255,6 +255,42 @@ pub struct ToolDefinition {
     pub parameters: serde_json::Value,
 }
 
+/// Where a registered tool came from.
+///
+/// Recorded on the registration rather than on the tool itself: the same
+/// implementation may be offered by more than one source, and a source describes
+/// the relationship, not what the tool does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolSource {
+    /// Compiled into the agent.
+    Builtin,
+    /// Declared by an MCP server, named as the client names it.
+    Mcp(String),
+    /// Contributed by a plugin, named as the plugin names it.
+    Plugin(String),
+}
+
+/// One tool as the registry holds it: the implementation and its source.
+#[derive(Clone)]
+pub struct RegisteredTool {
+    source: ToolSource,
+    tool: Arc<dyn Tool>,
+}
+
+impl RegisteredTool {
+    /// The source that contributed this tool.
+    #[must_use]
+    pub fn source(&self) -> &ToolSource {
+        &self.source
+    }
+
+    /// The tool itself.
+    #[must_use]
+    pub fn tool(&self) -> &Arc<dyn Tool> {
+        &self.tool
+    }
+}
+
 /// Something went wrong at the runtime level, not inside the tool.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -279,11 +315,11 @@ pub struct DuplicateTool(pub String);
 
 /// The set of tools available to the loop.
 ///
-/// Definitions are handed to the model sorted by name, so requests are stable
-/// across runs.
+/// Each entry records the source that contributed it. Definitions are handed to
+/// the model sorted by name, so requests are stable across runs.
 #[derive(Default)]
 pub struct ToolRegistry {
-    tools: BTreeMap<String, Arc<dyn Tool>>,
+    tools: BTreeMap<String, RegisteredTool>,
 }
 
 impl std::fmt::Debug for ToolRegistry {
@@ -308,12 +344,16 @@ impl ToolRegistry {
     /// Returns [`DuplicateTool`] if the name is already taken. The name is what
     /// the model calls, so silently replacing a tool would change what an
     /// existing call means.
-    pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<(), DuplicateTool> {
+    pub fn register(
+        &mut self,
+        tool: Arc<dyn Tool>,
+        source: ToolSource,
+    ) -> Result<(), DuplicateTool> {
         let name = tool.name().to_owned();
         if self.tools.contains_key(&name) {
             return Err(DuplicateTool(name));
         }
-        self.tools.insert(name, tool);
+        self.tools.insert(name, RegisteredTool { source, tool });
         Ok(())
     }
 
@@ -321,6 +361,12 @@ impl ToolRegistry {
     #[must_use]
     pub fn contains(&self, name: &str) -> bool {
         self.tools.contains_key(name)
+    }
+
+    /// Returns the entry registered under this name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&RegisteredTool> {
+        self.tools.get(name)
     }
 
     /// Creates a registry holding these tools alongside the ones already here.
@@ -331,13 +377,13 @@ impl ToolRegistry {
     /// either here or by an earlier entry of `extra`.
     pub fn with_tools<I>(&self, extra: I) -> Result<Self, DuplicateTool>
     where
-        I: IntoIterator<Item = Arc<dyn Tool>>,
+        I: IntoIterator<Item = (Arc<dyn Tool>, ToolSource)>,
     {
         let mut merged = Self {
             tools: self.tools.clone(),
         };
-        for tool in extra {
-            merged.register(tool)?;
+        for (tool, source) in extra {
+            merged.register(tool, source)?;
         }
         Ok(merged)
     }
@@ -359,10 +405,10 @@ impl ToolRegistry {
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .values()
-            .map(|tool| ToolDefinition {
-                name: tool.name().to_owned(),
-                description: tool.description().to_owned(),
-                parameters: tool.parameters(),
+            .map(|registered| ToolDefinition {
+                name: registered.tool.name().to_owned(),
+                description: registered.tool.description().to_owned(),
+                parameters: registered.tool.parameters(),
             })
             .collect()
     }
@@ -380,10 +426,11 @@ impl ToolRegistry {
         ctx: &ToolContext,
         arguments: serde_json::Value,
     ) -> Result<ToolOutcome, ToolError> {
-        let tool = self
+        let tool = &self
             .tools
             .get(name)
-            .ok_or_else(|| ToolError::NotFound(name.to_owned()))?;
+            .ok_or_else(|| ToolError::NotFound(name.to_owned()))?
+            .tool;
         if let Err(problems) = tool.validate(&arguments) {
             return Err(ToolError::InvalidArguments {
                 name: name.to_owned(),
@@ -441,7 +488,9 @@ mod tests {
 
     fn registry() -> ToolRegistry {
         let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(Echo)).expect("fresh registry");
+        registry
+            .register(Arc::new(Echo), ToolSource::Builtin)
+            .expect("fresh registry");
         registry
     }
 
@@ -479,8 +528,60 @@ mod tests {
     #[test]
     fn duplicate_names_are_refused() {
         let mut registry = registry();
-        assert!(registry.register(Arc::new(Echo)).is_err());
+        assert!(registry
+            .register(Arc::new(Echo), ToolSource::Builtin)
+            .is_err());
         assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn a_registered_tool_keeps_its_source() {
+        let registry = registry();
+        assert_eq!(
+            registry.get("echo").expect("registered").source(),
+            &ToolSource::Builtin
+        );
+    }
+
+    #[test]
+    fn merging_keeps_each_tools_source() {
+        struct Other;
+
+        #[async_trait::async_trait]
+        impl Tool for Other {
+            fn name(&self) -> &str {
+                "other"
+            }
+            fn description(&self) -> &str {
+                "second"
+            }
+            fn parameters(&self) -> serde_json::Value {
+                serde_json::json!({ "type": "object" })
+            }
+            async fn call(
+                &self,
+                _ctx: &ToolContext,
+                _arguments: serde_json::Value,
+            ) -> Result<ToolOutcome, ToolError> {
+                Ok(ToolOutcome::success(""))
+            }
+        }
+
+        let merged = registry()
+            .with_tools([(
+                Arc::new(Other) as Arc<dyn Tool>,
+                ToolSource::Mcp("docs".into()),
+            )])
+            .expect("the names differ");
+
+        assert_eq!(
+            merged.get("echo").expect("registered").source(),
+            &ToolSource::Builtin
+        );
+        assert_eq!(
+            merged.get("other").expect("registered").source(),
+            &ToolSource::Mcp("docs".into())
+        );
     }
 
     #[test]
@@ -507,7 +608,9 @@ mod tests {
         }
 
         let mut registry = registry();
-        registry.register(Arc::new(A)).expect("unique name");
+        registry
+            .register(Arc::new(A), ToolSource::Builtin)
+            .expect("unique name");
 
         let names: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
         assert_eq!(names, vec!["aaa", "echo"]);

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use srud_core::prompt;
-use srud_core::tools::ToolRegistry;
+use srud_core::tools::{ToolRegistry, ToolSource};
 use srud_mcp::{connect_server, HttpEndpoint, ServerCommand, Transport};
 use srud_protocol::acp::methods::SRUD_SESSION_MCP_STATUS;
 use srud_protocol::acp::{AcpError, McpServer, SessionId};
@@ -181,7 +181,8 @@ async fn connect_all(
         match tokio::time::timeout(START_TIMEOUT, connect_server(&name, transport)).await {
             Ok(Ok(server)) => {
                 connected += 1;
-                tools.extend(server.tools);
+                let source = ToolSource::Mcp(name.clone());
+                tools.extend(server.tools.into_iter().map(|tool| (tool, source.clone())));
                 if let Some(text) = server.instructions {
                     instructions.push(McpInstructions { server: name, text });
                 }

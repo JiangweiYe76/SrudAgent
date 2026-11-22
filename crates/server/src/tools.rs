@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use srud_core::tools::{
     edit::EditTool, grep::GrepTool, read::ReadTool, shell::ShellTool, skill::SkillTool,
-    write::WriteTool, ToolRegistry,
+    write::WriteTool, ToolRegistry, ToolSource,
 };
 
 /// The tools every agent is built with.
@@ -20,22 +20,22 @@ use srud_core::tools::{
 pub fn standard_tools() -> Arc<ToolRegistry> {
     let mut tools = ToolRegistry::new();
     tools
-        .register(Arc::new(ReadTool))
+        .register(Arc::new(ReadTool), ToolSource::Builtin)
         .expect("the registry is fresh");
     tools
-        .register(Arc::new(EditTool))
+        .register(Arc::new(EditTool), ToolSource::Builtin)
         .expect("the registry is fresh");
     tools
-        .register(Arc::new(WriteTool))
+        .register(Arc::new(WriteTool), ToolSource::Builtin)
         .expect("the registry is fresh");
     tools
-        .register(Arc::new(ShellTool::default()))
+        .register(Arc::new(ShellTool::default()), ToolSource::Builtin)
         .expect("the registry is fresh");
     tools
-        .register(Arc::new(GrepTool))
+        .register(Arc::new(GrepTool), ToolSource::Builtin)
         .expect("the registry is fresh");
     tools
-        .register(Arc::new(SkillTool))
+        .register(Arc::new(SkillTool), ToolSource::Builtin)
         .expect("the registry is fresh");
     Arc::new(tools)
 }

@@ -1,7 +1,7 @@
 //! The tools a connected server declares, as the agent's registry sees them.
 
 use serde_json::json;
-use srud_core::tools::{ToolContext, ToolRegistry};
+use srud_core::tools::{ToolContext, ToolRegistry, ToolSource};
 use srud_mcp::{connect_server, ServerCommand};
 use tokio_util::sync::CancellationToken;
 
@@ -26,7 +26,12 @@ async fn registry() -> ToolRegistry {
         .await
         .expect("connect");
     ToolRegistry::new()
-        .with_tools(connected.tools)
+        .with_tools(
+            connected
+                .tools
+                .into_iter()
+                .map(|tool| (tool, ToolSource::Mcp("docs".into()))),
+        )
         .expect("the mock server declares no duplicate names")
 }
 
@@ -40,6 +45,18 @@ async fn names_each_tool_after_its_server() {
         .collect();
 
     assert_eq!(names, ["mcp__docs__add", "mcp__docs__echo"]);
+}
+
+#[tokio::test]
+async fn every_tool_keeps_the_server_as_its_source() {
+    let registry = registry().await;
+    assert_eq!(
+        registry
+            .get("mcp__docs__echo")
+            .expect("the echo tool is registered")
+            .source(),
+        &ToolSource::Mcp("docs".into())
+    );
 }
 
 #[tokio::test]
