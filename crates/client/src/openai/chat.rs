@@ -392,7 +392,9 @@ fn apply_thinking(body: &mut serde_json::Value, thinking: &ThinkingRequest) {
 ///
 /// A user's text and the images sent with it are recorded as separate items,
 /// but the API reads them as one message, so consecutive user items are folded
-/// into a single message whose content is a part list.
+/// into a single message whose content is a part list. Consecutive function
+/// calls are folded the same way: providers expect parallel calls to share one
+/// assistant message before their tool messages.
 fn to_messages(items: &[ModelRequestItem]) -> Vec<ChatCompletionRequestMessage> {
     let mut messages: Vec<ChatCompletionRequestMessage> = Vec::with_capacity(items.len());
     for item in items {
@@ -406,10 +408,43 @@ fn to_messages(items: &[ModelRequestItem]) -> Vec<ChatCompletionRequestMessage> 
             ModelRequestItem::Image { mime, data } => {
                 push_user_part(&mut messages, image_part(mime, data));
             }
+            ModelRequestItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => push_tool_call(&mut messages, call_id, name, arguments),
             item => messages.push(to_message(item)),
         }
     }
     messages
+}
+
+/// Appends a call to the trailing assistant message, starting one if needed.
+fn push_tool_call(
+    messages: &mut Vec<ChatCompletionRequestMessage>,
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+) {
+    let call = ChatCompletionMessageToolCalls::Function(ChatCompletionMessageToolCall {
+        id: call_id.to_owned(),
+        function: FunctionCall {
+            name: name.to_owned(),
+            arguments: arguments.to_owned(),
+        },
+    });
+
+    if let Some(ChatCompletionRequestMessage::Assistant(assistant)) = messages.last_mut() {
+        assistant.tool_calls.get_or_insert_with(Vec::new).push(call);
+        return;
+    }
+
+    messages.push(ChatCompletionRequestMessage::Assistant(
+        ChatCompletionRequestAssistantMessage {
+            tool_calls: Some(vec![call]),
+            ..Default::default()
+        },
+    ));
 }
 
 /// Appends a part to the trailing user message, starting one if the last
@@ -460,8 +495,8 @@ fn image_part(mime: &str, data: &str) -> ChatCompletionRequestUserMessageContent
 
 /// Maps one recorded request item onto an API message.
 ///
-/// Each recorded call becomes its own assistant message, which the API accepts
-/// because the matching tool message follows immediately.
+/// Consecutive function calls are folded by [`to_messages`] into one assistant
+/// message, which is the shape providers expect for parallel calls.
 fn to_message(item: &ModelRequestItem) -> ChatCompletionRequestMessage {
     match item {
         ModelRequestItem::Message { role, content } => match role {
@@ -983,6 +1018,46 @@ mod tests {
         assert_eq!(messages[2]["tool_calls"][0]["id"], "c1");
         assert_eq!(messages[3]["role"], "tool");
         assert_eq!(messages[3]["tool_call_id"], "c1");
+    }
+
+    #[test]
+    fn parallel_calls_share_one_assistant_message() {
+        let request = ModelRequest {
+            items: vec![
+                ModelRequestItem::FunctionCall {
+                    call_id: "c1".into(),
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                },
+                ModelRequestItem::FunctionCall {
+                    call_id: "c2".into(),
+                    name: "grep".into(),
+                    arguments: "{}".into(),
+                },
+                ModelRequestItem::FunctionCallOutput {
+                    call_id: "c1".into(),
+                    output: "a".into(),
+                },
+                ModelRequestItem::FunctionCallOutput {
+                    call_id: "c2".into(),
+                    output: "b".into(),
+                },
+            ],
+            tools: Vec::new(),
+            instructions: None,
+        };
+
+        let messages = serde_json::to_value(&to_request("gpt-x", &request).messages)
+            .expect("messages serialize");
+
+        assert_eq!(messages[0]["role"], "assistant");
+        assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(messages[0]["tool_calls"][0]["id"], "c1");
+        assert_eq!(messages[0]["tool_calls"][1]["id"], "c2");
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[1]["tool_call_id"], "c1");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "c2");
     }
 
     #[test]
