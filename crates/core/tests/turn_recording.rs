@@ -20,7 +20,7 @@ use srud_core::client::{
 use srud_core::session::Session;
 use srud_core::session_event::{MessageId, SessionEvent};
 use srud_core::session_log::{RecordError, SessionLog, Volatile};
-use srud_core::tools::{Tool, ToolContext, ToolOutcome, ToolRegistry, ToolSource};
+use srud_core::tools::{RegisteredTool, Risk, Tool, ToolContext, ToolOutcome, ToolRegistry};
 use srud_core::types::{Event, EventSink, ResponseItem, TurnEndReason, TurnInput};
 use srud_core::{run_turn, run_turn_with, TurnError, TurnOptions};
 
@@ -299,7 +299,7 @@ impl Tool for Echo {
 fn tools() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry
-        .register(Arc::new(Echo), ToolSource::Builtin)
+        .register(RegisteredTool::builtin(Risk::Unknown, Arc::new(Echo)))
         .expect("a fresh registry");
     registry
 }
@@ -1663,7 +1663,7 @@ async fn a_failed_tool_is_recorded_as_failed() {
     ]);
     let mut tools = ToolRegistry::new();
     tools
-        .register(Arc::new(Refusing), ToolSource::Builtin)
+        .register(RegisteredTool::builtin(Risk::Unknown, Arc::new(Refusing)))
         .expect("a fresh registry");
 
     run_turn(

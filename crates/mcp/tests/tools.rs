@@ -1,7 +1,7 @@
 //! The tools a connected server declares, as the agent's registry sees them.
 
 use serde_json::json;
-use srud_core::tools::{ToolContext, ToolRegistry, ToolSource};
+use srud_core::tools::{RegisteredTool, Risk, ToolContext, ToolId, ToolRegistry, ToolSource};
 use srud_mcp::{connect_server, ServerCommand};
 use tokio_util::sync::CancellationToken;
 
@@ -25,14 +25,15 @@ async fn registry() -> ToolRegistry {
     let connected = connect_server("docs", mock_server())
         .await
         .expect("connect");
-    ToolRegistry::new()
-        .with_tools(
-            connected
-                .tools
-                .into_iter()
-                .map(|tool| (tool, ToolSource::Mcp("docs".into()))),
+    ToolRegistry::from_tools(connected.tools.into_iter().map(|tool| {
+        RegisteredTool::new(
+            ToolSource::Mcp("docs".into()),
+            tool.local,
+            Risk::Unknown,
+            tool.tool,
         )
-        .expect("the mock server declares no duplicate names")
+    }))
+    .expect("the mock server declares no duplicate names")
 }
 
 #[tokio::test]
@@ -54,8 +55,12 @@ async fn every_tool_keeps_the_server_as_its_source() {
         registry
             .get("mcp__docs__echo")
             .expect("the echo tool is registered")
-            .source(),
-        &ToolSource::Mcp("docs".into())
+            .descriptor()
+            .id,
+        ToolId {
+            source: ToolSource::Mcp("docs".into()),
+            local: "echo".into(),
+        }
     );
 }
 
@@ -67,7 +72,7 @@ async fn keeps_the_name_reproducible_when_the_server_has_spaces_in_it() {
     let names: Vec<String> = connected
         .tools
         .iter()
-        .map(|tool| tool.name().to_owned())
+        .map(|tool| tool.tool.name().to_owned())
         .collect();
 
     assert!(

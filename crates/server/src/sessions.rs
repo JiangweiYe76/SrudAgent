@@ -33,7 +33,7 @@ use srud_core::session::Session;
 use srud_core::session_event::SessionEvent;
 use srud_core::session_log::{RecordError, SessionLog};
 use srud_core::session_store::{Loaded, SessionLogWriter};
-use srud_core::tools::ToolRegistry;
+use srud_core::tools::{Diagnostic, ToolRegistry};
 use srud_protocol::acp::{SessionId, SessionInfo};
 use srud_protocol::srud::methods::SessionMcpStatus;
 
@@ -63,6 +63,8 @@ pub struct McpSession {
     pub instructions: Vec<McpInstructions>,
     /// Servers that could not be reached, in the order the client named them.
     pub failures: Vec<String>,
+    /// Tools the policy left out when it assembled the set above.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// One server's usage notes, as the handshake returned them.

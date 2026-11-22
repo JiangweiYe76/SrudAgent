@@ -63,7 +63,7 @@ use std::time::Duration;
 use serde_json::Value;
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
-use srud_core::tools::ToolRegistry;
+use srud_core::tools::{ToolPolicy, ToolRegistry};
 use srud_protocol::acp::methods::INITIALIZE;
 use srud_protocol::acp::{
     AcpError, Implementation, InitializeRequest, InitializeResponse, JsonRpcMessage,
@@ -140,6 +140,8 @@ pub struct Agent {
     /// `_srud/unstable/mcp/*`, when the host supplied a file for them.
     mcp: Option<Arc<McpStore>>,
     tools: Arc<ToolRegistry>,
+    /// Which offered tools a session keeps when its sources are assembled.
+    tool_policy: ToolPolicy,
     sessions: Arc<SessionManager>,
     hub: EventHub,
     active_sinks: Mutex<HashMap<SessionId, TurnSink>>,
@@ -197,6 +199,7 @@ impl Agent {
             providers,
             mcp: None,
             tools,
+            tool_policy: ToolPolicy::default(),
             sessions: Arc::new(SessionManager::new()),
             hub: EventHub::new(),
             active_sinks: Mutex::new(HashMap::new()),

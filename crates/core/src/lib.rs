@@ -40,8 +40,8 @@ pub use session_store::{
     read as read_session_log, ReadLog, SessionLogWriter, SessionWriter, SkipReason,
 };
 pub use tools::{
-    DuplicateTool, RegisteredTool, Tool, ToolContext, ToolDefinition, ToolError, ToolOutcome,
-    ToolRegistry, ToolSource,
+    Diagnostic, DuplicateTool, RegisteredTool, Risk, Selection, Tool, ToolContext, ToolDefinition,
+    ToolDescriptor, ToolError, ToolId, ToolOutcome, ToolPolicy, ToolRegistry, ToolSource,
 };
 pub use turn::{run_turn, run_turn_after, run_turn_with, TurnError, TurnOptions, TurnResult};
 pub use types::{

@@ -19,9 +19,17 @@ pub const TOOL_PREFIX: &str = "mcp__";
 /// One connected server: the tools it declares, and how it asks to be used.
 pub struct Connected {
     /// The tools, named for the model.
-    pub tools: Vec<Arc<dyn AgentTool>>,
+    pub tools: Vec<ConnectedTool>,
     /// The usage notes from the handshake, when the server sent any.
     pub instructions: Option<String>,
+}
+
+/// One tool a server declares, with the server's own name for it.
+pub struct ConnectedTool {
+    /// The name the server knows the tool by.
+    pub local: String,
+    /// The tool, named for the model.
+    pub tool: Arc<dyn AgentTool>,
 }
 
 /// Connects one server and returns what it declares, named for the model.
@@ -44,14 +52,16 @@ pub async fn connect_server(
     let tools = tools
         .into_iter()
         .map(|tool| {
-            Arc::new(McpTool {
+            let local = tool.name.to_string();
+            let tool = Arc::new(McpTool {
                 client: Arc::clone(&client),
                 server: server.to_owned(),
-                name: tool_name(server, tool.name.as_ref()),
-                remote: tool.name.to_string(),
+                name: tool_name(server, &local),
+                remote: local.clone(),
                 description: tool.description.as_deref().unwrap_or_default().to_owned(),
                 parameters: serde_json::Value::Object((*tool.input_schema).clone()),
-            }) as Arc<dyn AgentTool>
+            }) as Arc<dyn AgentTool>;
+            ConnectedTool { local, tool }
         })
         .collect();
     Ok(Connected {

@@ -630,10 +630,10 @@ mod tests {
     fn registry() -> super::super::ToolRegistry {
         let mut registry = super::super::ToolRegistry::new();
         registry
-            .register(
+            .register(super::super::RegisteredTool::builtin(
+                super::super::Risk::ReadOnly,
                 std::sync::Arc::new(ReadTool),
-                super::super::ToolSource::Builtin,
-            )
+            ))
             .expect("fresh registry");
         registry
     }

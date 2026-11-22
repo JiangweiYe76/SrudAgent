@@ -30,7 +30,9 @@ use srud_client::openai::{ChatClient, ClientConfig, ResponsesClient};
 use srud_core::client::ModelClient;
 use srud_core::session::Session;
 use srud_core::session_log::Volatile;
-use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry, ToolSource};
+use srud_core::tools::{
+    RegisteredTool, Risk, Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry,
+};
 use srud_core::types::{Event, EventSink, ResponseItem, TurnEndReason, TurnInput};
 
 /// What the tool returns; the model has to relay it back for the round trip to
@@ -198,7 +200,10 @@ async fn run(client: &dyn ModelClient, text: &str, with_tool: bool) -> Outcome {
     let mut tools = ToolRegistry::new();
     if with_tool {
         assert!(tools
-            .register(Arc::new(SecretCode), ToolSource::Builtin)
+            .register(RegisteredTool::builtin(
+                Risk::ReadOnly,
+                Arc::new(SecretCode)
+            ))
             .is_ok());
     }
 
