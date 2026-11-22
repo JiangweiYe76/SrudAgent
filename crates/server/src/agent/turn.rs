@@ -140,7 +140,7 @@ impl Agent {
     /// settles. The caller then refuses rather than starting a second turn on a
     /// session that still has one: two turns would record into one history in
     /// whatever order they happened to finish.
-    async fn interrupt_and_wait(&self, session_id: &SessionId) -> bool {
+    pub(super) async fn interrupt_and_wait(&self, session_id: &SessionId) -> bool {
         // Loop, because a turn that had not claimed the session yet when the
         // first signal arrived claims it just after — the same reason
         // `shutdown` re-signals while it drains.
