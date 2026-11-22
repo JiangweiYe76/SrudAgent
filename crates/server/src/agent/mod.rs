@@ -185,6 +185,19 @@ impl Agent {
         Self::with_method_table(model, tools, Some(providers), MethodTable::builtin())
     }
 
+    /// Applies the policy to the agent's tool set and to every session it opens.
+    ///
+    /// The default keeps every tool and lets a builtin hold its name against a
+    /// plugin or an MCP server.
+    #[must_use]
+    pub fn with_tool_policy(mut self, policy: ToolPolicy) -> Self {
+        let (tools, _) = crate::tools::rebuild(&self.tools, Vec::new(), &policy)
+            .expect("the agent's tool set has unique names");
+        self.tools = tools;
+        self.tool_policy = policy;
+        self
+    }
+
     /// Creates an agent whose method table the caller supplies, so a host can
     /// answer methods this build does not implement.
     #[must_use]
@@ -381,6 +394,23 @@ mod tests {
     use srud_protocol::acp::methods::{INITIALIZE, SESSION_NEW};
     use srud_protocol::acp::{AcpError, RequestId};
     use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND};
+
+    #[test]
+    fn a_tool_policy_filters_the_agent_set() {
+        use srud_core::tools::{ToolId, ToolSource};
+
+        let policy = srud_core::tools::ToolPolicy {
+            deny: vec![ToolId {
+                source: ToolSource::Builtin,
+                local: "shell".into(),
+            }],
+            ..srud_core::tools::ToolPolicy::default()
+        };
+        let agent = Agent::new(scripted(vec![]), crate::standard_tools()).with_tool_policy(policy);
+
+        assert!(agent.tools.contains("read"));
+        assert!(!agent.tools.contains("shell"));
+    }
 
     #[tokio::test]
     async fn requests_before_initialize_are_refused() {

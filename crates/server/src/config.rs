@@ -31,6 +31,12 @@ pub const PROVIDERS_FILE: &str = "providers.json";
 /// so what it holds is what they put there, not an internal record.
 pub const MCP_FILE: &str = "mcp.json";
 
+/// The file the tool policy is configured in.
+///
+/// Beside the provider and MCP files: it decides which tools a session keeps,
+/// and is the user's to edit.
+pub const TOOLS_FILE: &str = "tools.json";
+
 /// Why the configuration directory could not be established.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -120,6 +126,19 @@ pub fn providers_path() -> Result<PathBuf, ConfigError> {
 /// put it under.
 pub fn mcp_path() -> Result<PathBuf, ConfigError> {
     Ok(home().ok_or(ConfigError::NoHome)?.join(MCP_FILE))
+}
+
+/// The tool policy file, whether or not it exists yet.
+///
+/// Not created here: a file with no policy and no file at all mean the same
+/// thing to the agent, and only one of them looks edited.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoHome`] when there is no configuration directory to
+/// put it under.
+pub fn tools_path() -> Result<PathBuf, ConfigError> {
+    Ok(home().ok_or(ConfigError::NoHome)?.join(TOOLS_FILE))
 }
 
 /// Makes a file readable only by its owner.

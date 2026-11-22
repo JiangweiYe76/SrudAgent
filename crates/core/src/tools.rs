@@ -297,6 +297,70 @@ pub struct ToolId {
     pub local: String,
 }
 
+impl std::fmt::Display for ToolId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.source {
+            ToolSource::Builtin => write!(f, "builtin/{}", self.local),
+            ToolSource::Mcp(server) => write!(f, "mcp:{server}/{}", self.local),
+            ToolSource::Plugin(plugin) => write!(f, "plugin:{plugin}/{}", self.local),
+        }
+    }
+}
+
+impl std::str::FromStr for ToolId {
+    type Err = InvalidToolId;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (prefix, local) = text
+            .split_once('/')
+            .ok_or_else(|| InvalidToolId(text.to_owned()))?;
+        if local.is_empty() || local.contains('/') {
+            return Err(InvalidToolId(text.to_owned()));
+        }
+
+        let source = if prefix == "builtin" {
+            ToolSource::Builtin
+        } else {
+            let (kind, name) = prefix
+                .split_once(':')
+                .ok_or_else(|| InvalidToolId(text.to_owned()))?;
+            if name.is_empty() || name.contains('/') {
+                return Err(InvalidToolId(text.to_owned()));
+            }
+            match kind {
+                "mcp" => ToolSource::Mcp(name.to_owned()),
+                "plugin" => ToolSource::Plugin(name.to_owned()),
+                _ => return Err(InvalidToolId(text.to_owned())),
+            }
+        };
+
+        Ok(Self {
+            source,
+            local: local.to_owned(),
+        })
+    }
+}
+
+impl Serialize for ToolId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Why a string is not a tool id.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "`{0}` is not a tool id; write builtin/<name>, mcp:<server>/<name> or plugin:<plugin>/<name>"
+)]
+pub struct InvalidToolId(pub String);
+
 /// What a registered tool is, without the schema of its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolDescriptor {
@@ -405,7 +469,8 @@ pub enum Diagnostic {
 /// Applied after every source has contributed. The defaults keep everything and
 /// give a builtin tool precedence over a plugin or an MCP server offering the
 /// same model-visible name.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ToolPolicy {
     /// Tools refused even when their source offers them.
     pub deny: Vec<ToolId>,
@@ -786,6 +851,51 @@ mod tests {
             merged.get("other").expect("registered").source(),
             &ToolSource::Mcp("docs".into())
         );
+    }
+
+    #[test]
+    fn a_tool_id_round_trips_through_its_text_form() {
+        for text in ["builtin/read", "mcp:docs/echo", "plugin:docs/echo"] {
+            let id: ToolId = text.parse().expect("a valid id");
+            assert_eq!(id.to_string(), text);
+
+            let json = serde_json::to_string(&id).expect("an id serialises");
+            assert_eq!(json, format!("\"{text}\""));
+            assert_eq!(
+                serde_json::from_str::<ToolId>(&json).expect("an id reads back"),
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_tool_id_is_refused() {
+        for text in [
+            "",
+            "read",
+            "builtin/",
+            "builtin/read/extra",
+            "mcp:/echo",
+            "mcp:docs",
+            "unknown/read",
+        ] {
+            assert!(text.parse::<ToolId>().is_err(), "{text:?} parsed");
+        }
+    }
+
+    #[test]
+    fn a_policy_reads_from_json() {
+        let policy: ToolPolicy =
+            serde_json::from_str(r#"{"deny":["builtin/shell"],"overridable":["builtin/read"]}"#)
+                .expect("a valid policy");
+
+        assert_eq!(policy.deny[0].to_string(), "builtin/shell");
+        assert_eq!(policy.overridable[0].to_string(), "builtin/read");
+    }
+
+    #[test]
+    fn a_policy_refuses_an_unknown_key() {
+        assert!(serde_json::from_str::<ToolPolicy>(r#"{"denny":["builtin/shell"]}"#).is_err());
     }
 
     #[test]
