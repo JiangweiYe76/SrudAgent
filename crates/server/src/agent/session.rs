@@ -12,7 +12,7 @@ use srud_protocol::acp::{
     AcpError, CloseSessionRequest, DeleteSessionRequest, ListSessionsRequest, ListSessionsResponse,
     NewSessionRequest, NewSessionResponse, SessionId,
 };
-use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST};
+use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, SESSION_BUSY};
 use srud_protocol::srud::meta::SrudMeta;
 use srud_protocol::srud::methods::{
     ForkSessionRequest, ForkSessionResponse, SetSessionTitleRequest, SetSessionTitleResponse,
@@ -107,8 +107,16 @@ impl Agent {
 
     pub(super) async fn handle_close(&self, params: Value) -> Result<(), AcpError> {
         let request: CloseSessionRequest = parse_params(params)?;
-        let session = self.require_session(&request.session_id)?;
-        session.interrupt();
+        self.require_session(&request.session_id)?;
+        // ACP requires the ongoing work to be cancelled and finished before the
+        // resources are released, so the turn is stopped and awaited rather than
+        // left running against a session the agent no longer holds.
+        if !self.interrupt_and_wait(&request.session_id).await {
+            return Err(AcpError::new(
+                SESSION_BUSY,
+                "the running turn did not stop; try again once it has",
+            ));
+        }
         // Closing leaves the log where it is: the session is over, not deleted, and
         // is what the next `session/list` reports so a client can load it again.
         self.sessions.forget(&request.session_id);
@@ -117,6 +125,21 @@ impl Agent {
 
     pub(super) async fn handle_delete(&self, params: Value) -> Result<(), AcpError> {
         let request: DeleteSessionRequest = parse_params(params)?;
+        // ACP defines `session/delete` as removing the session from `session/list`,
+        // not as stopping it: a client that wants a running session gone cancels or
+        // closes it first. Refusing keeps the two meanings apart and keeps a turn
+        // from writing into a log this call is about to unlink.
+        if self
+            .active_sinks
+            .lock()
+            .expect("active sinks lock poisoned")
+            .contains_key(&request.session_id)
+        {
+            return Err(AcpError::new(
+                SESSION_BUSY,
+                "the session has an active turn; cancel it before deleting",
+            ));
+        }
         if !self.sessions.remove(&request.session_id).await {
             return Err(session_not_found(&request.session_id));
         }
@@ -226,7 +249,7 @@ mod tests {
         SESSION_PROMPT, SRUD_SESSION_FORK, SRUD_SESSION_SET_TITLE,
     };
     use srud_protocol::acp::{Response, SessionId};
-    use srud_protocol::error::{INVALID_PARAMS, INVALID_REQUEST, SESSION_NOT_FOUND};
+    use srud_protocol::error::{INVALID_PARAMS, INVALID_REQUEST, SESSION_BUSY, SESSION_NOT_FOUND};
 
     #[tokio::test]
     async fn session_new_returns_an_opaque_id() {
@@ -496,6 +519,127 @@ mod tests {
                 .await,
         );
         assert_eq!(i32::from(error.code), SESSION_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_refuses_a_session_with_a_turn_in_flight() {
+        // ACP scopes `session/delete` to `session/list`: it removes a stored
+        // conversation rather than stopping one. Refusing here keeps the turn
+        // from writing into a log this call is about to unlink.
+        let model = stalling(vec![ModelEvent::TextDelta {
+            delta: "partial".into(),
+        }]);
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-delete-busy"),
+        );
+        let agent = Arc::new(agent(model));
+        initialize(&agent).await;
+        let session_id = new_session_in(&agent, "").await;
+
+        let prompt_agent = Arc::clone(&agent);
+        let prompt_session = session_id.clone();
+        let prompt = tokio::spawn(async move {
+            prompt_agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": prompt_session.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "go" }]
+                    }),
+                ))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let error = error_of(
+            agent
+                .handle(request(
+                    SESSION_DELETE,
+                    json!({ "sessionId": session_id.0.as_ref() }),
+                ))
+                .await,
+        );
+        assert_eq!(i32::from(error.code), SESSION_BUSY);
+
+        // The refusal left the session where it was, turn included.
+        let listed = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
+        assert!(
+            listed["sessions"]
+                .as_array()
+                .expect("sessions is an array")
+                .iter()
+                .any(|info| info["sessionId"] == json!(session_id.0.as_ref())),
+            "the session is still listed"
+        );
+
+        agent
+            .handle(request(
+                SESSION_CANCEL,
+                json!({ "sessionId": session_id.0.as_ref() }),
+            ))
+            .await;
+        let _ = prompt.await.expect("the prompt task finishes");
+    }
+
+    #[tokio::test]
+    async fn close_stops_the_turn_before_it_deregisters() {
+        // ACP says the agent must cancel the ongoing work and then free the
+        // resources, so the turn has to be over when close answers — and it ends
+        // because close stopped it, not because the test sent a cancel first.
+        let model = stalling(vec![ModelEvent::TextDelta {
+            delta: "partial".into(),
+        }]);
+        let _env = crate::test_env::Guard::take(&[crate::config::HOME_VAR]);
+        std::env::set_var(
+            crate::config::HOME_VAR,
+            crate::test_env::unique_dir("srud-close-running"),
+        );
+        let agent = Arc::new(agent(model));
+        initialize(&agent).await;
+        let session_id = new_session_in(&agent, "").await;
+
+        let prompt_agent = Arc::clone(&agent);
+        let prompt_session = session_id.clone();
+        let prompt = tokio::spawn(async move {
+            prompt_agent
+                .handle(request(
+                    SESSION_PROMPT,
+                    json!({
+                        "sessionId": prompt_session.0.as_ref(),
+                        "prompt": [{ "type": "text", "text": "go" }]
+                    }),
+                ))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let reply = agent
+            .handle(request(
+                SESSION_CLOSE,
+                json!({ "sessionId": session_id.0.as_ref() }),
+            ))
+            .await;
+        assert!(matches!(reply.inner(), Response::Result { .. }));
+        assert!(
+            prompt.is_finished(),
+            "close answered only after the turn settled"
+        );
+
+        let result = result_of(prompt.await.expect("the prompt task finishes"));
+        assert_eq!(result["stopReason"], json!("cancelled"));
+
+        // Closed, not deleted: the log survives and the session is listed again.
+        let listed = result_of(agent.handle(request(SESSION_LIST, json!({}))).await);
+        assert!(
+            listed["sessions"]
+                .as_array()
+                .expect("sessions is an array")
+                .iter()
+                .any(|info| info["sessionId"] == json!(session_id.0.as_ref())),
+            "closing keeps the session on disk"
+        );
     }
 
     #[tokio::test]
