@@ -70,10 +70,13 @@ impl Agent {
         publish_mcp_status(&self.sessions, &self.hub, id, &states);
 
         let sessions = Arc::clone(&self.sessions);
-        let base = Arc::clone(&self.tools);
+        let base = self.tools_for(id);
         let hub = self.hub.clone();
         let task_id = id.clone();
-        let policy = self.tool_policy.clone();
+        let policy = self
+            .sessions
+            .tool_policy(id)
+            .unwrap_or_else(|| self.tool_policy.clone());
         let task = tokio::spawn(async move {
             connect_all(sessions, base, policy, hub, task_id, transports, states).await;
         });

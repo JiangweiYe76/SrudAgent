@@ -39,6 +39,12 @@ pub struct SrudMeta {
     /// `session/new` response for the client to report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Tools this session refuses or lets a lower-precedence source replace.
+    ///
+    /// Sent on `session/new`, `session/load` and `session/resume`; the agent
+    /// merges it with the policy from its configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_policy: Option<SrudToolPolicy>,
     /// One session's notification sequence number.
     ///
     /// Every notification the session emits carries the next number, starting at
@@ -113,6 +119,18 @@ pub struct SrudMeta {
     /// client can tell the copy it just applied from one still to come.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seq: Option<u64>,
+}
+
+/// A session's tool policy, as a client sends it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SrudToolPolicy {
+    /// Tools the session refuses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny: Vec<String>,
+    /// Builtin tools another source may replace by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overridable: Vec<String>,
 }
 
 /// One finished turn, as `_meta.srud.turns` reports it.
@@ -266,6 +284,21 @@ mod tests {
     #[test]
     fn empty_meta_produces_no_wrapper() {
         assert_eq!(SrudMeta::default().to_meta(), None);
+    }
+
+    #[test]
+    fn a_session_tool_policy_travels_under_srud() {
+        let meta = SrudMeta {
+            tool_policy: Some(SrudToolPolicy {
+                deny: vec!["builtin/shell".into()],
+                overridable: vec!["builtin/read".into()],
+            }),
+            ..Default::default()
+        };
+
+        let wrapped = meta.to_meta().expect("a policy is not empty");
+
+        assert_eq!(SrudMeta::from_meta(&wrapped), Some(meta));
     }
 
     #[test]
