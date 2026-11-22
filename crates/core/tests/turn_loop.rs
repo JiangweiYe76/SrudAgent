@@ -10,7 +10,9 @@ use srud_core::client::{
 };
 use srud_core::session::Session;
 use srud_core::session_log::Volatile;
-use srud_core::tools::{Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry};
+use srud_core::tools::{
+    RegisteredTool, Risk, Tool, ToolContext, ToolError, ToolOutcome, ToolRegistry,
+};
 use srud_core::types::{
     Event, EventSink, ImagePart, Op, ResponseItem, Role, TurnEndReason, TurnInput,
 };
@@ -124,9 +126,12 @@ fn tool_registry() -> (ToolRegistry, Arc<Mutex<usize>>) {
     let calls = Arc::new(Mutex::new(0));
     let mut registry = ToolRegistry::new();
     registry
-        .register(Arc::new(Recorder0 {
-            calls: Arc::clone(&calls),
-        }))
+        .register(RegisteredTool::builtin(
+            Risk::Unknown,
+            Arc::new(Recorder0 {
+                calls: Arc::clone(&calls),
+            }),
+        ))
         .expect("unique name");
     (registry, calls)
 }
@@ -703,7 +708,10 @@ async fn rejected_arguments_reach_the_model_as_a_marked_failure() {
     let sink = Recorder::default();
     let mut tools = ToolRegistry::new();
     tools
-        .register(std::sync::Arc::new(srud_core::tools::read::ReadTool))
+        .register(RegisteredTool::builtin(
+            Risk::ReadOnly,
+            std::sync::Arc::new(srud_core::tools::read::ReadTool),
+        ))
         .expect("fresh registry");
     // Offset 0 passes the schema's `minimum: 1` only because the tool checks it,
     // which makes this the argument rejection a model actually produces.
@@ -957,11 +965,16 @@ async fn a_stopped_step_answers_the_calls_it_never_ran() {
     let sink = Recorder::default();
     let calls = Arc::new(Mutex::new(0));
     let mut tools = ToolRegistry::new();
-    tools.register(Arc::new(Stop)).expect("unique name");
     tools
-        .register(Arc::new(Recorder0 {
-            calls: Arc::clone(&calls),
-        }))
+        .register(RegisteredTool::builtin(Risk::Unknown, Arc::new(Stop)))
+        .expect("unique name");
+    tools
+        .register(RegisteredTool::builtin(
+            Risk::Unknown,
+            Arc::new(Recorder0 {
+                calls: Arc::clone(&calls),
+            }),
+        ))
         .expect("unique name");
     // Both calls are recorded before either runs, which is the state a stop can
     // leave behind: the first one ends the turn, the second never gets a result.
@@ -1236,7 +1249,10 @@ async fn a_read_call_reaches_the_sessions_working_directory() {
     let sink = Recorder::default();
     let mut tools = ToolRegistry::new();
     tools
-        .register(Arc::new(srud_core::tools::read::ReadTool))
+        .register(RegisteredTool::builtin(
+            Risk::ReadOnly,
+            Arc::new(srud_core::tools::read::ReadTool),
+        ))
         .expect("unique name");
     let client = Scripted::new(vec![
         vec![

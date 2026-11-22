@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use srud_core::prompt;
-use srud_core::tools::ToolRegistry;
+use srud_core::tools::{RegisteredTool, Risk, ToolPolicy, ToolRegistry, ToolSource};
 use srud_mcp::{connect_server, HttpEndpoint, ServerCommand, Transport};
 use srud_protocol::acp::methods::SRUD_SESSION_MCP_STATUS;
 use srud_protocol::acp::{AcpError, McpServer, SessionId};
@@ -70,11 +70,15 @@ impl Agent {
         publish_mcp_status(&self.sessions, &self.hub, id, &states);
 
         let sessions = Arc::clone(&self.sessions);
-        let base = Arc::clone(&self.tools);
+        let base = self.tools_for(id);
         let hub = self.hub.clone();
         let task_id = id.clone();
+        let policy = self
+            .sessions
+            .tool_policy(id)
+            .unwrap_or_else(|| self.tool_policy.clone());
         let task = tokio::spawn(async move {
-            connect_all(sessions, base, hub, task_id, transports, states).await;
+            connect_all(sessions, base, policy, hub, task_id, transports, states).await;
         });
         self.sessions.set_mcp_task(id, task.abort_handle());
         Ok(())
@@ -167,6 +171,7 @@ impl Agent {
 async fn connect_all(
     sessions: Arc<SessionManager>,
     base: Arc<ToolRegistry>,
+    policy: ToolPolicy,
     hub: EventHub,
     id: SessionId,
     servers: Vec<(String, Transport)>,
@@ -181,7 +186,14 @@ async fn connect_all(
         match tokio::time::timeout(START_TIMEOUT, connect_server(&name, transport)).await {
             Ok(Ok(server)) => {
                 connected += 1;
-                tools.extend(server.tools);
+                tools.extend(server.tools.into_iter().map(|tool| {
+                    RegisteredTool::new(
+                        ToolSource::Mcp(name.clone()),
+                        tool.local,
+                        Risk::Unknown,
+                        tool.tool,
+                    )
+                }));
                 if let Some(text) = server.instructions {
                     instructions.push(McpInstructions { server: name, text });
                 }
@@ -207,14 +219,15 @@ async fn connect_all(
         sessions.set_mcp_failed(&id, failures.join("; "));
         return;
     }
-    match base.with_tools(tools) {
-        Ok(registry) => {
+    match crate::tools::rebuild(&base, tools, &policy) {
+        Ok((registry, diagnostics)) => {
             sessions.set_mcp(
                 &id,
                 Arc::new(McpSession {
-                    tools: Arc::new(registry),
+                    tools: registry,
                     instructions,
                     failures,
+                    diagnostics,
                 }),
             );
         }

@@ -8,9 +8,10 @@
 
 use super::{parse_params, session_not_found, Agent};
 use serde_json::Value;
+use srud_core::tools::{ToolId, ToolPolicy};
 use srud_protocol::acp::{
     AcpError, CloseSessionRequest, DeleteSessionRequest, ListSessionsRequest, ListSessionsResponse,
-    NewSessionRequest, NewSessionResponse, SessionId,
+    Meta, NewSessionRequest, NewSessionResponse, SessionId,
 };
 use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, SESSION_BUSY};
 use srud_protocol::srud::meta::SrudMeta;
@@ -64,6 +65,10 @@ impl Agent {
         // on their way by the time it can be used. A transport this agent does
         // not declare fails the call; a server that cannot be reached leaves the
         // session running without its tools.
+        if let Err(err) = self.prepare_session_tools(&session_id, request.meta.as_ref()) {
+            self.sessions.remove(&session_id).await;
+            return Err(err);
+        }
         if let Err(err) = self.start_mcp_servers(&session_id, &cwd, &request.mcp_servers) {
             self.sessions.remove(&session_id).await;
             return Err(err);
@@ -216,6 +221,71 @@ impl Agent {
             meta: None,
         })
     }
+
+    /// Applies a client's tool policy to one session.
+    ///
+    /// A session that named no policy keeps the agent's own set. A policy the
+    /// client sent narrows that set now, so a session without MCP servers still
+    /// runs on what it asked for.
+    ///
+    /// # Errors
+    ///
+    /// [`INVALID_PARAMS`] for a tool id this build cannot parse, and the
+    /// session-not-found error when the session went away.
+    pub(super) fn prepare_session_tools(
+        &self,
+        id: &SessionId,
+        meta: Option<&Meta>,
+    ) -> Result<(), AcpError> {
+        let Some(extra) = session_tool_policy(meta)? else {
+            return Ok(());
+        };
+        let mut policy = self.tool_policy.clone();
+        policy.deny.extend(extra.deny);
+        policy.overridable.extend(extra.overridable);
+
+        let (tools, _) =
+            crate::tools::rebuild(&self.tools, Vec::new(), &policy).map_err(|err| {
+                AcpError::new(
+                    INTERNAL_ERROR,
+                    format!("cannot assemble the session's tools: {err}"),
+                )
+            })?;
+        if !self.sessions.set_tool_policy(id, policy) || !self.sessions.set_tools(id, tools) {
+            return Err(session_not_found(id));
+        }
+        Ok(())
+    }
+}
+
+/// Reads a client's tool policy from `_meta.srud`, when it sent one.
+fn session_tool_policy(meta: Option<&Meta>) -> Result<Option<ToolPolicy>, AcpError> {
+    let Some(policy) = meta
+        .and_then(SrudMeta::from_meta)
+        .and_then(|srud| srud.tool_policy)
+    else {
+        return Ok(None);
+    };
+
+    let policy = ToolPolicy {
+        deny: tool_ids(policy.deny, "deny")?,
+        overridable: tool_ids(policy.overridable, "overridable")?,
+    };
+    if policy.deny.is_empty() && policy.overridable.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(policy))
+}
+
+/// Parses the ids in one policy list, naming the field a bad one came from.
+fn tool_ids(values: Vec<String>, field: &str) -> Result<Vec<ToolId>, AcpError> {
+    values
+        .into_iter()
+        .map(|text| {
+            text.parse::<ToolId>()
+                .map_err(|err| AcpError::new(INVALID_PARAMS, format!("{field}: {err}")))
+        })
+        .collect()
 }
 
 /// Derives a session title from the message that opened it.
@@ -250,6 +320,35 @@ mod tests {
     };
     use srud_protocol::acp::{Response, SessionId};
     use srud_protocol::error::{INVALID_PARAMS, INVALID_REQUEST, SESSION_BUSY, SESSION_NOT_FOUND};
+
+    #[tokio::test]
+    async fn a_session_tool_policy_narrows_its_tools() {
+        let _home = home();
+        let agent = crate::Agent::new(scripted(vec![]), crate::standard_tools());
+        initialize(&agent).await;
+
+        let reply = result_of(
+            agent
+                .handle(request(
+                    SESSION_NEW,
+                    json!({
+                        "cwd": "",
+                        "mcpServers": [],
+                        "_meta": {
+                            "srud": {
+                                "toolPolicy": { "deny": ["builtin/shell"] }
+                            }
+                        }
+                    }),
+                ))
+                .await,
+        );
+        let id = SessionId::new(reply["sessionId"].as_str().expect("an id").to_owned());
+
+        let tools = agent.sessions.tools(&id).expect("the session was prepared");
+        assert!(tools.contains("read"));
+        assert!(!tools.contains("shell"));
+    }
 
     #[tokio::test]
     async fn session_new_returns_an_opaque_id() {

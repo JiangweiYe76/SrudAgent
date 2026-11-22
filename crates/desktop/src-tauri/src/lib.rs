@@ -29,8 +29,8 @@ use srud_protocol::acp::{
 use srud_protocol::error::{INTERNAL_ERROR, INVALID_PARAMS};
 use srud_protocol::transport::tauri::{NotifyBody, RpcNotify, RpcRequest, RPC_NOTIFY_EVENT};
 use srud_server::{
-    config, standard_tools, Agent, McpStore, Model, ModelFactory, ModelProviders, Provider,
-    ProviderError, ProviderStore, RpcReply,
+    config, load_tool_policy, standard_tools, Agent, McpStore, Model, ModelFactory, ModelProviders,
+    Provider, ProviderError, ProviderStore, RpcReply,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -119,10 +119,19 @@ fn build_agent(store: Arc<ProviderStore>) -> Arc<Agent> {
     // default the store points at, when it points at anything. Having none is
     // not fatal — the store can be filled later through the panel.
     let model: Option<Arc<dyn ModelClient>> = starting_client(&store, factory.as_ref());
-    Arc::new(
-        Agent::with_providers(model, tools, ModelProviders::new(store, factory))
-            .with_mcp_store(mcp_store()),
-    )
+    let agent = Agent::with_providers(model, tools, ModelProviders::new(store, factory))
+        .with_mcp_store(mcp_store());
+    let agent = match load_tool_policy() {
+        Ok(policy) => agent.with_tool_policy(policy),
+        Err(err) => {
+            eprintln!(
+                "{} could not be read ({err}); starting with the default tool policy",
+                config::TOOLS_FILE
+            );
+            agent
+        }
+    };
+    Arc::new(agent)
 }
 
 /// The MCP server file, read at startup and shared by every request.

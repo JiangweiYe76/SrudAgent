@@ -33,7 +33,7 @@ use srud_core::session::Session;
 use srud_core::session_event::SessionEvent;
 use srud_core::session_log::{RecordError, SessionLog};
 use srud_core::session_store::{Loaded, SessionLogWriter};
-use srud_core::tools::ToolRegistry;
+use srud_core::tools::{Diagnostic, ToolPolicy, ToolRegistry};
 use srud_protocol::acp::{SessionId, SessionInfo};
 use srud_protocol::srud::methods::SessionMcpStatus;
 
@@ -63,6 +63,8 @@ pub struct McpSession {
     pub instructions: Vec<McpInstructions>,
     /// Servers that could not be reached, in the order the client named them.
     pub failures: Vec<String>,
+    /// Tools the policy left out when it assembled the set above.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// One server's usage notes, as the handshake returned them.
@@ -130,6 +132,11 @@ struct Tracked {
     mcp_task: Option<tokio::task::AbortHandle>,
     /// Whether a turn has already spent the bounded wait for this attempt.
     mcp_waited: bool,
+    /// The tools this session runs with after its own policy narrowed the
+    /// agent's set. `None` until the session is prepared.
+    tools: Option<Arc<ToolRegistry>>,
+    /// The policy this session was prepared with.
+    tool_policy: Option<ToolPolicy>,
 }
 
 impl Tracked {
@@ -153,6 +160,8 @@ impl Tracked {
             mcp_changes,
             mcp_task: None,
             mcp_waited: false,
+            tools: None,
+            tool_policy: None,
         }
     }
 
@@ -1175,13 +1184,61 @@ impl SessionManager {
             .and_then(|tracked| tracked.mcp.clone())
     }
 
-    /// The tools this session runs with, when its MCP servers contributed any.
+    /// The tools this session runs with.
     ///
-    /// `None` is a session that attached no servers: it runs on the agent's own
-    /// set, which is not this registry's to hand out.
+    /// An MCP set replaces the prepared base once it attaches. `None` is a
+    /// session that was never prepared, which runs on the agent's own set.
     #[must_use]
     pub fn tools(&self, id: &SessionId) -> Option<Arc<ToolRegistry>> {
-        self.mcp(id).map(|mcp| Arc::clone(&mcp.tools))
+        let sessions = self.sessions.lock().expect("session map lock poisoned");
+        let tracked = sessions.get(id.0.as_ref())?;
+        tracked
+            .mcp
+            .as_ref()
+            .map(|mcp| Arc::clone(&mcp.tools))
+            .or_else(|| tracked.tools.clone())
+    }
+
+    /// Sets the tools this session was prepared with, returning whether it exists.
+    pub fn set_tools(&self, id: &SessionId, tools: Arc<ToolRegistry>) -> bool {
+        match self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get_mut(id.0.as_ref())
+        {
+            Some(tracked) => {
+                tracked.tools = Some(tools);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets the policy this session was prepared with, returning whether it exists.
+    pub fn set_tool_policy(&self, id: &SessionId, policy: ToolPolicy) -> bool {
+        match self
+            .sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get_mut(id.0.as_ref())
+        {
+            Some(tracked) => {
+                tracked.tool_policy = Some(policy);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The policy this session was prepared with, when it has been.
+    #[must_use]
+    pub fn tool_policy(&self, id: &SessionId) -> Option<ToolPolicy> {
+        self.sessions
+            .lock()
+            .expect("session map lock poisoned")
+            .get(id.0.as_ref())
+            .and_then(|tracked| tracked.tool_policy.clone())
     }
 
     /// Drops a session from memory, keeping its log, and returns whether it was held.

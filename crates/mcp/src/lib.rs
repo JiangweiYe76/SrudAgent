@@ -15,5 +15,5 @@ mod transport;
 
 pub use client::{Client, ToolInfo};
 pub use error::McpError;
-pub use tools::{connect_server, Connected, TOOL_PREFIX};
+pub use tools::{connect_server, Connected, ConnectedTool, TOOL_PREFIX};
 pub use transport::{HttpEndpoint, ServerCommand, Transport};
