@@ -172,7 +172,7 @@ export function ProviderDetail({
         </p>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pb-2">
         {/* Side by side: `flex-1` here splits the row's width. */}
         <div className="flex gap-2">
           <Field label={t('providers.field.id')} className="flex-1">
