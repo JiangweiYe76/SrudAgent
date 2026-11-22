@@ -14,7 +14,7 @@ use tokio::process::Command;
 
 use srud_sandbox::{wrap_argv, SandboxPolicy, SandboxUnavailable};
 
-use super::{failure_text, Tool, ToolContext, ToolError, ToolOutcome};
+use super::{failure_text, stopped, Tool, ToolContext, ToolError, ToolOutcome};
 
 /// The name the model calls.
 const NAME: &str = "shell";
@@ -296,9 +296,9 @@ impl Tool for ShellTool {
             res = tokio::time::timeout(self.timeout, handle) => res,
             _ = ctx.cancel.cancelled() => {
                 abort_handle.abort();
-                let message = "Stopped by the user.".to_owned();
-                let hint = "The command was interrupted. Whatever it started may still be                             running: the signal reaches the shell, not its children.";
-                return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
+                let hint = "The command was interrupted. Whatever it started may still be running: \
+                            the signal reaches the shell, not its children.";
+                return Ok(stopped(hint));
             }
         };
 
@@ -313,7 +313,9 @@ impl Tool for ShellTool {
                 // The signal reaches the shell, not what the shell started: a process
                 // tree is not something this holds a handle to.
                 let message = format!("Stopped after {:?} without finishing.", self.timeout);
-                let hint = "Whatever the command started may still be running: the signal                             reaches the shell, not its children. Check for a leftover process                             before retrying, and split the work into steps that finish inside                             the limit.";
+                let hint = "Whatever the command started may still be running: the signal reaches \
+                            the shell, not its children. Check for a leftover process before \
+                            retrying, and split the work into steps that finish inside the limit.";
                 return Ok(ToolOutcome::failure(failure_text(message, Some(hint))));
             }
         };
@@ -635,6 +637,37 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stops_a_command_that_is_still_running() {
+        // The token fires while `sleep` runs, so the stop has to end the call
+        // then — not when the command finishes, and not at the tool's timeout.
+        let dir = scratch("stopped-running");
+        let context = ctx(&dir);
+        let cancel = context.cancel.clone();
+        let stopper = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            cancel.cancel();
+        });
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            ShellTool::new(Duration::from_secs(60))
+                .call(&context, serde_json::json!({ "command": "sleep 30" })),
+        )
+        .await
+        .expect("the stop ended the call rather than waiting for the command")
+        .expect("the arguments match the schema");
+        stopper.abort();
+
+        assert!(outcome.is_error, "a stopped command is not a result");
+        assert!(
+            outcome.output.contains("Stopped by the user."),
+            "the failure names the stop: {}",
+            outcome.output
+        );
+    }
+
     #[tokio::test]
     async fn a_command_that_cannot_be_started_is_a_failed_outcome() {
         // A path nothing has created, so the spawn itself fails. `scratch` would have
@@ -835,6 +868,39 @@ mod tests {
             assert!(
                 outcome.output.contains("Stopped after"),
                 "the reply says it was stopped: {}",
+                outcome.output
+            );
+        }
+
+        /// A command still running is ended by the stop, not by its own timeout
+        /// or by finishing.
+        #[tokio::test]
+        async fn stops_a_command_that_is_still_running() {
+            let dir = scratch("windows-stopped-running");
+            let context = ctx(&dir);
+            let cancel = context.cancel.clone();
+            let stopper = tokio::spawn(async move {
+                // Long enough for the shell to have started the command.
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                cancel.cancel();
+            });
+
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(10),
+                ShellTool::new(Duration::from_secs(60)).call(
+                    &context,
+                    serde_json::json!({ "command": "Start-Sleep -Seconds 30" }),
+                ),
+            )
+            .await
+            .expect("the stop ended the call rather than waiting for the command")
+            .expect("the arguments match the schema");
+            stopper.abort();
+
+            assert!(outcome.is_error, "a stopped command is not a result");
+            assert!(
+                outcome.output.contains("Stopped by the user."),
+                "the failure names the stop: {}",
                 outcome.output
             );
         }

@@ -191,6 +191,15 @@ pub fn failure_text(message: impl AsRef<str>, hint: Option<&str>) -> String {
     text
 }
 
+/// The outcome a tool reports when the turn is stopped while it runs.
+///
+/// A failed outcome rather than an error: the call was dispatched, so the log
+/// has to pair it with a result, and the model reads what happened from the
+/// text. `hint` says what the tool left undone, which only the tool knows.
+pub(crate) fn stopped(hint: &str) -> ToolOutcome {
+    ToolOutcome::failure(failure_text("Stopped by the user.", Some(hint)))
+}
+
 /// A tool the model can call.
 ///
 /// Implementations must be `Send + Sync` because the registry is shared across

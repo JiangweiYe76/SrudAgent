@@ -5,8 +5,11 @@ use std::path::Path;
 use serde::Deserialize;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio_util::sync::CancellationToken;
 
-use super::{failure_text, invalid_arguments, resolve, Tool, ToolContext, ToolError, ToolOutcome};
+use super::{
+    failure_text, invalid_arguments, resolve, stopped, Tool, ToolContext, ToolError, ToolOutcome,
+};
 
 /// The name the model calls.
 const NAME: &str = "read";
@@ -121,8 +124,15 @@ impl Tool for ReadTool {
             Err(err) => return Ok(ToolOutcome::failure(open_failure(&path, &err))),
         };
 
-        let window = match read_window(file, offset, args.limit).await {
+        let window = match read_window(file, offset, args.limit, &ctx.cancel).await {
             Ok(window) => window,
+            Err(ScanError::Cancelled) => {
+                // Nothing has been returned, and the scan can be run again from
+                // the same offset because it changed nothing on the way.
+                return Ok(stopped(
+                    "The file was not read to the end. Ask again if it is still needed.",
+                ));
+            }
             Err(ScanError::NoSuchLine(line)) => {
                 let message = format!("{shown} has no line {line}.");
                 let hint = if offset == 1 {
@@ -174,6 +184,8 @@ struct Window {
 
 /// What stopped a scan.
 enum ScanError {
+    /// The turn was stopped while the scan ran.
+    Cancelled,
     /// The file does not reach the requested line.
     NoSuchLine(usize),
     /// One line is larger than the whole budget, so it cannot come back whole.
@@ -194,9 +206,24 @@ impl From<std::io::Error> for ScanError {
 ///
 /// Bytes are streamed through a fixed buffer: reaching a line deep in a large
 /// file costs no memory, and only the window itself is kept.
-async fn read_window(file: File, offset: usize, limit: Option<usize>) -> Result<Window, ScanError> {
+///
+/// The token is checked on every pass through the scan loop rather than once
+/// around it: a scan skimming past thousands of lines has to stop partway, and
+/// each pass consumes no more than one buffer's worth.
+///
+/// Generic over the reader so a test can drive the scan chunk by chunk, which a
+/// file on disk does not allow.
+async fn read_window<R>(
+    file: R,
+    offset: usize,
+    limit: Option<usize>,
+    cancel: &CancellationToken,
+) -> Result<Window, ScanError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
     let mut reader = BufReader::new(file);
-    skim_to(&mut reader, offset).await?;
+    skim_to(&mut reader, offset, cancel).await?;
 
     let mut content = String::new();
     // The bytes of the line being assembled; a line is added to `content` only
@@ -205,6 +232,9 @@ async fn read_window(file: File, offset: usize, limit: Option<usize>) -> Result<
     let mut lines_taken = 0usize;
 
     loop {
+        if cancel.is_cancelled() {
+            return Err(ScanError::Cancelled);
+        }
         if limit.is_some_and(|limit| lines_taken == limit) {
             // Asked once, so `truncated` is a fact about the file rather than a
             // guess that would send the caller to a line that does not exist.
@@ -266,9 +296,22 @@ fn window(content: String, offset: usize, lines_taken: usize, truncated: bool) -
 }
 
 /// Reads past the lines before `offset`, keeping none of them.
-async fn skim_to(reader: &mut BufReader<File>, offset: usize) -> Result<(), ScanError> {
+///
+/// A large offset turns this into the longest part of a read, so the token is
+/// checked here as well, not only while the window is being collected.
+async fn skim_to<R>(
+    reader: &mut BufReader<R>,
+    offset: usize,
+    cancel: &CancellationToken,
+) -> Result<(), ScanError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
     let mut line = 1;
     while line < offset {
+        if cancel.is_cancelled() {
+            return Err(ScanError::Cancelled);
+        }
         let chunk = reader.fill_buf().await?;
         if chunk.is_empty() {
             return Err(ScanError::NoSuchLine(offset));
@@ -309,8 +352,14 @@ fn open_failure(path: &Path, err: &std::io::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::{AsyncRead, ReadBuf};
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
 
     /// A directory for one test to read from, emptied first so a rerun starts
     /// from the same place.
@@ -699,5 +748,79 @@ mod tests {
         assert_eq!(out["content"], line.as_str());
         assert_eq!(out["end_line_number"], 1);
         assert_eq!(out["truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn a_stopped_turn_reads_nothing() {
+        let dir = scratch_with("stopped", "notes.txt", "one\ntwo\n");
+        let context = ctx(&dir);
+        context.cancel.cancel();
+
+        let outcome = ReadTool
+            .call(&context, serde_json::json!({ "path": "notes.txt" }))
+            .await
+            .expect("the arguments match the schema");
+
+        assert!(outcome.is_error, "a stopped read is not a result");
+        assert!(
+            outcome.output.contains("Stopped by the user."),
+            "the failure names the stop: {}",
+            outcome.output
+        );
+    }
+
+    /// A reader that serves its text once and signals the stop as it does.
+    ///
+    /// The stop therefore arrives while the scan is running, which a file on disk
+    /// cannot be made to produce on demand.
+    struct StopsAfterOneChunk {
+        cancel: CancellationToken,
+        served: bool,
+    }
+
+    impl AsyncRead for StopsAfterOneChunk {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if !self.served {
+                self.served = true;
+                buf.put_slice(b"one\ntwo\n");
+                self.cancel.cancel();
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stop_while_the_window_is_collected_ends_the_read() {
+        let cancel = CancellationToken::new();
+        let reader = StopsAfterOneChunk {
+            cancel: cancel.clone(),
+            served: false,
+        };
+
+        let result = read_window(reader, 1, None, &cancel).await;
+
+        assert!(
+            matches!(result, Err(ScanError::Cancelled)),
+            "the stop ends the read rather than returning what it had"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_while_skipping_to_the_offset_ends_the_read() {
+        let cancel = CancellationToken::new();
+        let reader = StopsAfterOneChunk {
+            cancel: cancel.clone(),
+            served: false,
+        };
+
+        // Past the chunk the reader serves, so the stop lands in the skip rather
+        // than in the window being collected.
+        let result = read_window(reader, 5, None, &cancel).await;
+
+        assert!(matches!(result, Err(ScanError::Cancelled)));
     }
 }

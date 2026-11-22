@@ -155,8 +155,15 @@ pub enum Event {
     /// when the arguments are whole and the tool is about to run. A log cut short
     /// mid-stream has to answer "was anything attempted", and a name on its own is
     /// not an attempt — it is the model thinking about one.
+    ///
+    /// A name the turn never follows with a whole call is closed by
+    /// [`Event::ToolCallEnd`] alone: the call is on screen, the log never took it.
     ToolCallNamed { call_id: String, name: String },
-    /// A tool call finished.
+    /// A tool call is over.
+    ///
+    /// Whether it ran or not: a call that reached the log has an
+    /// [`Event::ToolCallBegin`] before it and ends here with its result, while one
+    /// that was only named ends here with the failure saying nothing came back.
     ToolCallEnd {
         call_id: String,
         name: String,

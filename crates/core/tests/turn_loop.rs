@@ -1,8 +1,10 @@
 //! End-to-end tests for the turn loop against a scripted model.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use futures::stream;
+use futures::StreamExt;
 use srud_core::client::{
     ModelClient, ModelError, ModelEvent, ModelRequest, ModelRequestItem, ModelStream,
 };
@@ -947,6 +949,281 @@ async fn history_stays_consistent_when_several_tools_run_in_one_step() {
         .collect();
     assert_eq!(call_ids, vec!["c1", "c2"]);
     assert_eq!(output_ids, vec!["c1", "c2"]);
+}
+
+#[tokio::test]
+async fn a_stopped_step_answers_the_calls_it_never_ran() {
+    let session = session();
+    let sink = Recorder::default();
+    let calls = Arc::new(Mutex::new(0));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(Stop)).expect("unique name");
+    tools
+        .register(Arc::new(Recorder0 {
+            calls: Arc::clone(&calls),
+        }))
+        .expect("unique name");
+    // Both calls are recorded before either runs, which is the state a stop can
+    // leave behind: the first one ends the turn, the second never gets a result.
+    let client = Scripted::new(vec![vec![
+        Ok(ModelEvent::ToolCall {
+            call_id: "c1".into(),
+            name: "stop".into(),
+            arguments: "{}".into(),
+        }),
+        Ok(ModelEvent::ToolCall {
+            call_id: "c2".into(),
+            name: "record".into(),
+            arguments: "{}".into(),
+        }),
+        done(),
+    ]]);
+    let log = Volatile::new();
+
+    let result = srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "go".into(),
+            images: Vec::new(),
+        },
+        client.as_ref(),
+        &tools,
+        &log,
+        &sink,
+    )
+    .await
+    .expect("turn ends");
+
+    assert_eq!(result.reason, TurnEndReason::Interrupted);
+    assert_eq!(
+        *calls.lock().expect("calls lock"),
+        0,
+        "the call behind the stop never ran"
+    );
+
+    // Every recorded call is answered. A provider refuses the request a history
+    // with a bare call would build, so the stop has to close the pair itself
+    // rather than leave it to a reload that may never happen.
+    let state = session.state();
+    let history = state.history();
+    let output_ids: Vec<&str> = history
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCallOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(output_ids, vec!["c1", "c2"]);
+
+    let unanswered = history
+        .iter()
+        .find_map(|item| match item {
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } if call_id == "c2" => Some(output.clone()),
+            _ => None,
+        })
+        .expect("the unrun call is answered");
+    assert!(
+        unanswered.starts_with(srud_core::tools::FAILURE_MARKER),
+        "the model reads the failure from the text: {unanswered}"
+    );
+    assert!(
+        unanswered.contains("did not finish"),
+        "and it says the call never returned: {unanswered}"
+    );
+}
+
+/// A tool that stops the turn that calls it, the way a user pressing stop does
+/// while a tool runs.
+struct Stop;
+
+#[async_trait::async_trait]
+impl Tool for Stop {
+    fn name(&self) -> &str {
+        "stop"
+    }
+    fn description(&self) -> &str {
+        "Stops the turn that called it."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object" })
+    }
+    async fn call(
+        &self,
+        ctx: &ToolContext,
+        _arguments: serde_json::Value,
+    ) -> Result<ToolOutcome, ToolError> {
+        ctx.cancel.cancel();
+        Ok(ToolOutcome::success("stopped"))
+    }
+}
+
+/// A client that names a tool call and then goes quiet without closing the
+/// stream, the way a provider stalls in the middle of a large call.
+struct StallsAfterNaming;
+
+#[async_trait::async_trait]
+impl ModelClient for StallsAfterNaming {
+    async fn stream(
+        &self,
+        _request: ModelRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ModelStream, ModelError> {
+        Ok(Box::pin(
+            stream::once(async {
+                Ok(ModelEvent::ToolCallNamed {
+                    call_id: "c1".into(),
+                    name: "write".into(),
+                })
+            })
+            .chain(stream::pending()),
+        ))
+    }
+}
+
+/// A client whose request never starts, so there is no stream to read.
+struct StallsBeforeStreaming;
+
+#[async_trait::async_trait]
+impl ModelClient for StallsBeforeStreaming {
+    async fn stream(
+        &self,
+        _request: ModelRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ModelStream, ModelError> {
+        futures::future::pending().await
+    }
+}
+
+/// Runs one turn, interrupting the session after a short delay, and returns how
+/// it ended, how long that took, and every event it emitted.
+async fn stopped_turn(client: &dyn ModelClient) -> (TurnEndReason, Duration, Vec<Event>) {
+    let session = Arc::new(session());
+    let interrupt = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            session.interrupt();
+        })
+    };
+    let tools = ToolRegistry::new();
+    let log = Volatile::new();
+    let sink = Recorder::default();
+    let started = Instant::now();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        srud_core::run_turn(
+            &session,
+            TurnInput {
+                text: "go".into(),
+                images: Vec::new(),
+            },
+            client,
+            &tools,
+            &log,
+            &sink,
+        ),
+    )
+    .await
+    .expect("the turn ends on the stop rather than waiting for the provider")
+    .expect("the turn itself ends");
+
+    interrupt.abort();
+    (result.reason, started.elapsed(), sink.events())
+}
+
+#[tokio::test]
+async fn a_stop_ends_a_stream_that_has_gone_quiet() {
+    let (reason, elapsed, events) = stopped_turn(&StallsAfterNaming).await;
+
+    assert_eq!(reason, TurnEndReason::Interrupted);
+    // The stop is signalled after 50ms; a second is room for a loaded machine and
+    // still far from the timeout that would mean the stop was never seen.
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "the stop did not wait for the provider to speak again: {elapsed:?}"
+    );
+
+    // The named call was on screen from the moment its name arrived. It never
+    // reached the log, so nothing else would ever settle it, and a client would
+    // keep drawing it as running after the turn was over.
+    let ended: Vec<&Event> = events
+        .iter()
+        .filter(|event| matches!(event, Event::ToolCallEnd { .. }))
+        .collect();
+    assert_eq!(ended.len(), 1, "the named call is closed once");
+    let Event::ToolCallEnd {
+        call_id, result, ..
+    } = ended[0]
+    else {
+        unreachable!("filtered to ToolCallEnd");
+    };
+    assert_eq!(call_id, "c1");
+    assert!(result.is_error, "nothing ran, so the call did not succeed");
+}
+
+#[tokio::test]
+async fn a_stop_ends_a_request_that_never_answered() {
+    let (reason, elapsed, _) = stopped_turn(&StallsBeforeStreaming).await;
+
+    assert_eq!(reason, TurnEndReason::Interrupted);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "the stop did not wait for a connection that never opened: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_name_the_model_never_completes_is_closed_when_the_step_ends() {
+    // A name reaches the client before its arguments do. When the model reports
+    // completion without ever finishing the call, the log never takes it and
+    // nothing else would settle the row the client is already drawing.
+    let session = session();
+    let sink = Recorder::default();
+    let client = Scripted::new(vec![vec![
+        Ok(ModelEvent::ToolCallNamed {
+            call_id: "c1".into(),
+            name: "record".into(),
+        }),
+        done(),
+    ]]);
+
+    let result = srud_core::run_turn(
+        &session,
+        TurnInput {
+            text: "go".into(),
+            images: Vec::new(),
+        },
+        client.as_ref(),
+        &ToolRegistry::new(),
+        &Volatile::new(),
+        &sink,
+    )
+    .await
+    .expect("the turn ends");
+
+    assert_eq!(result.reason, TurnEndReason::Completed);
+    let events = sink.events();
+    let begun = events
+        .iter()
+        .filter(|event| matches!(event, Event::ToolCallBegin { .. }))
+        .count();
+    let ended: Vec<&Event> = events
+        .iter()
+        .filter(|event| matches!(event, Event::ToolCallEnd { .. }))
+        .collect();
+    assert_eq!(begun, 0, "nothing was run");
+    assert_eq!(ended.len(), 1, "the named call is still closed once");
+    let Event::ToolCallEnd {
+        call_id, result, ..
+    } = ended[0]
+    else {
+        unreachable!("filtered to ToolCallEnd");
+    };
+    assert_eq!(call_id, "c1");
+    assert!(result.is_error, "nothing ran, so the call did not succeed");
 }
 
 #[tokio::test]

@@ -929,6 +929,126 @@ async fn a_turn_that_cannot_record_stops_rather_than_announcing() {
 }
 
 #[tokio::test]
+async fn a_batch_whose_record_fails_answers_what_it_already_took() {
+    // The log takes the first call and refuses the second. Left alone, the first
+    // stays in the history with no output — the shape a provider rejects — and the
+    // second is on the client with nothing that will ever settle it.
+    struct RefusesTheSecondCall {
+        calls: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl SessionLog for RefusesTheSecondCall {
+        async fn record(&self, entry: &SessionEvent) -> Result<(), RecordError> {
+            if let SessionEvent::Item {
+                item: ResponseItem::FunctionCall { .. },
+                ..
+            } = entry
+            {
+                let mut calls = self.calls.lock().expect("call count lock");
+                *calls += 1;
+                if *calls == 2 {
+                    return Err(RecordError::Io {
+                        what: "the second call".into(),
+                        source: std::io::Error::other("no space left on device"),
+                    });
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let log = RefusesTheSecondCall {
+        calls: Mutex::new(0),
+    };
+    let timeline = Timeline::default();
+    let session = session();
+    let model = Scripted::new(vec![vec![
+        ModelEvent::ToolCallNamed {
+            call_id: "c1".into(),
+            name: "echo".into(),
+        },
+        ModelEvent::ToolCall {
+            call_id: "c1".into(),
+            name: "echo".into(),
+            arguments: r#"{"text":"a"}"#.into(),
+        },
+        ModelEvent::ToolCallNamed {
+            call_id: "c2".into(),
+            name: "echo".into(),
+        },
+        ModelEvent::ToolCall {
+            call_id: "c2".into(),
+            name: "echo".into(),
+            arguments: r#"{"text":"b"}"#.into(),
+        },
+        ModelEvent::Done,
+    ]]);
+
+    let result = run_turn(
+        &session,
+        TurnInput {
+            text: "go".into(),
+            images: Vec::new(),
+        },
+        &model,
+        &tools(),
+        &log,
+        &timeline,
+    )
+    .await
+    .expect("the turn ends rather than panicking");
+
+    assert_eq!(result.reason, TurnEndReason::Error);
+
+    let state = session.state();
+    let history = state.history();
+    let calls: Vec<&str> = history
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCall { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let outputs: Vec<&str> = history
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCallOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        vec!["c1"],
+        "only the call the log took is in the history"
+    );
+    assert_eq!(
+        outputs,
+        vec!["c1"],
+        "and it is answered, so the history stays sendable"
+    );
+
+    let closed: Vec<String> = timeline
+        .events
+        .lock()
+        .expect("timeline lock")
+        .iter()
+        .filter_map(|event| match event {
+            Event::ToolCallEnd {
+                call_id, result, ..
+            } => Some(format!("{call_id}:{}", result.is_error)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        closed,
+        vec!["c1:true", "c2:true"],
+        "both are closed on the client: {:?}",
+        timeline.kinds()
+    );
+}
+
+#[tokio::test]
 async fn a_refused_turn_end_still_announces_the_ending() {
     // The asymmetry, deliberately: a log one record short is recoverable, while a
     // turn left open on the wire is not — the caller waits on it to close.
