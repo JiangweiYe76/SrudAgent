@@ -10,9 +10,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::{stream, StreamExt};
 use srud_core::prompt;
 use srud_core::tools::{RegisteredTool, Risk, ToolPolicy, ToolRegistry, ToolSource};
-use srud_mcp::{connect_server, HttpEndpoint, ServerCommand, Transport};
+use srud_mcp::{connect_server, ConnectedTool, HttpEndpoint, ServerCommand, Transport};
 use srud_protocol::acp::methods::SRUD_SESSION_MCP_STATUS;
 use srud_protocol::acp::{AcpError, McpServer, SessionId};
 use srud_protocol::error::INVALID_PARAMS;
@@ -24,6 +25,12 @@ use crate::sessions::{McpInstructions, McpPhase, McpSession, SessionManager};
 
 /// How long one server gets to start before it is reported as failed.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How many servers are connected at once.
+///
+/// Each attempt owns a child process or a remote endpoint, so this bounds the
+/// processes started together rather than the work left to do.
+const MAX_CONCURRENT_CONNECTS: usize = 4;
 
 /// How long a first prompt waits for servers that are still connecting.
 ///
@@ -163,11 +170,20 @@ impl Agent {
     }
 }
 
+/// What one server contributed, or why it contributed nothing.
+enum Settled {
+    Connected {
+        tools: Vec<ConnectedTool>,
+        instructions: Option<String>,
+    },
+    Failed(String),
+}
+
 /// Connects one session's servers and attaches what they contribute.
 ///
-/// Servers are connected one after another: each owns a child process or a
-/// remote endpoint, and the wait is per server rather than per session. A
-/// server that does not answer is left out; the others still attach.
+/// Servers are connected concurrently, so a slow one does not push the others
+/// behind it. A server that does not answer is left out; the others still
+/// attach.
 async fn connect_all(
     sessions: Arc<SessionManager>,
     base: Arc<ToolRegistry>,
@@ -177,16 +193,56 @@ async fn connect_all(
     servers: Vec<(String, Transport)>,
     mut states: Vec<McpServerStatus>,
 ) {
+    let names: Vec<String> = states.iter().map(|state| state.name.clone()).collect();
+    let mut settled: Vec<Option<Settled>> = names.iter().map(|_| None).collect();
+
+    let mut pending = stream::iter(servers.into_iter().enumerate().map(
+        |(index, (name, transport))| async move {
+            let result =
+                tokio::time::timeout(START_TIMEOUT, connect_server(&name, transport)).await;
+            (index, result)
+        },
+    ))
+    .buffer_unordered(MAX_CONCURRENT_CONNECTS);
+
+    while let Some((index, result)) = pending.next().await {
+        match result {
+            Ok(Ok(server)) => {
+                states[index].state = McpConnectionState::Ready;
+                settled[index] = Some(Settled::Connected {
+                    tools: server.tools,
+                    instructions: server.instructions,
+                });
+            }
+            Ok(Err(err)) => {
+                let error = err.to_string();
+                states[index].state = McpConnectionState::Failed;
+                states[index].error = Some(error.clone());
+                settled[index] = Some(Settled::Failed(error));
+            }
+            Err(_) => {
+                let error = format!("no answer in {}s", START_TIMEOUT.as_secs());
+                states[index].state = McpConnectionState::Failed;
+                states[index].error = Some(error.clone());
+                settled[index] = Some(Settled::Failed(error));
+            }
+        }
+        publish_mcp_status(&sessions, &hub, &id, &states);
+    }
+
     let mut tools = Vec::new();
     let mut instructions = Vec::new();
     let mut failures = Vec::new();
     let mut connected = 0;
-
-    for (index, (name, transport)) in servers.into_iter().enumerate() {
-        match tokio::time::timeout(START_TIMEOUT, connect_server(&name, transport)).await {
-            Ok(Ok(server)) => {
+    for (index, outcome) in settled.into_iter().enumerate() {
+        match outcome {
+            Some(Settled::Connected {
+                tools: server_tools,
+                instructions: text,
+            }) => {
                 connected += 1;
-                tools.extend(server.tools.into_iter().map(|tool| {
+                let name = names[index].clone();
+                tools.extend(server_tools.into_iter().map(|tool| {
                     RegisteredTool::new(
                         ToolSource::Mcp(name.clone()),
                         tool.local,
@@ -194,25 +250,20 @@ async fn connect_all(
                         tool.tool,
                     )
                 }));
-                if let Some(text) = server.instructions {
-                    instructions.push(McpInstructions { server: name, text });
+                if let Some(text) = text {
+                    instructions.push(McpInstructions {
+                        server: names[index].clone(),
+                        text,
+                    });
                 }
-                states[index].state = McpConnectionState::Ready;
             }
-            Ok(Err(err)) => {
-                let error = err.to_string();
-                states[index].state = McpConnectionState::Failed;
-                states[index].error = Some(error.clone());
-                failures.push(format!("{name}: {error}"));
+            Some(Settled::Failed(error)) => {
+                failures.push(format!("{}: {error}", names[index]));
             }
-            Err(_) => {
-                let error = format!("no answer in {}s", START_TIMEOUT.as_secs());
-                states[index].state = McpConnectionState::Failed;
-                states[index].error = Some(error.clone());
-                failures.push(format!("{name}: {error}"));
-            }
+            // Every future yields an outcome; a missing one would be a bug in
+            // the fan-out rather than a server state.
+            None => {}
         }
-        publish_mcp_status(&sessions, &hub, &id, &states);
     }
 
     if connected == 0 {

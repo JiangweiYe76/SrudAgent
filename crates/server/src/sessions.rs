@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::{stream, StreamExt};
 use tokio::sync::watch;
 
 use chrono::{Datelike, SecondsFormat};
@@ -49,6 +50,12 @@ const WORKSPACES_DIR: &str = "workspaces";
 /// record of what happened: a session's log outlives its workspace, and a
 /// workspace is removed when the session is.
 const SESSIONS_DIR: &str = "sessions";
+
+/// How many stored logs are read at once while a listing is built.
+///
+/// Each log is a whole conversation, so one long file would otherwise hold
+/// every later session behind it.
+const MAX_SUMMARIZED_LOGS: usize = 8;
 
 /// What a session's MCP servers contributed.
 ///
@@ -1397,11 +1404,19 @@ impl SessionManager {
 
         // A log that cannot be read describes no session, and one session being
         // unreadable is not a reason to fail the listing of all the others.
+        let summaries = stream::iter(log_files().await.unwrap_or_default())
+            .map(|path| async move {
+                srud_core::session_store::summarize(&path)
+                    .await
+                    .ok()
+                    .map(|summary| (path, summary))
+            })
+            .buffer_unordered(MAX_SUMMARIZED_LOGS)
+            .collect::<Vec<_>>()
+            .await;
+
         let mut stored = Vec::new();
-        for path in log_files().await.unwrap_or_default() {
-            let Ok(summary) = srud_core::session_store::summarize(&path).await else {
-                continue;
-            };
+        for (path, summary) in summaries.into_iter().flatten() {
             // A log named for some other session describes one `session/load`
             // cannot find, so listing it would offer a client a session that
             // cannot be opened.
