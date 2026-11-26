@@ -362,6 +362,11 @@ export const ChatInput = memo(function ChatInput({
                 <img
                   src={imageSrc(image)}
                   alt=""
+                  // A 64px square over the picture as it was sent: the decode
+                  // is the cost, so it goes off the main thread and waits
+                  // until the box is near enough to be drawn.
+                  decoding="async"
+                  loading="lazy"
                   className="h-full w-full object-cover"
                 />
               </button>

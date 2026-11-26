@@ -398,6 +398,12 @@ const TurnView = memo(function TurnView({
                   <img
                     src={imageSrc(image)}
                     alt=""
+                    // The box is 96px square and the source is the picture as
+                    // it was sent, so the decode is the expensive part of this
+                    // row: off the main thread, and not at all until it is
+                    // scrolled near.
+                    decoding="async"
+                    loading="lazy"
                     className="h-full w-full object-cover"
                   />
                 </button>
