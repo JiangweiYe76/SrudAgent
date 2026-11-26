@@ -16,6 +16,7 @@ import {
 import { toast } from 'sonner';
 import { t } from '@/lib/i18n';
 import { isTauri, readClipboard, readImageFile } from '@/lib/acp';
+import { imageSrc } from '@/lib/images';
 import type {
   Attachment,
   McpStatus,
@@ -24,7 +25,7 @@ import type {
 } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { ContextMenu } from '@/components/ContextMenu';
-import { Modal, ModalContent } from '@/components/ui/modal';
+import { ImagePreview } from '@/components/ImagePreview';
 import { SandboxModeSelect } from '@/components/SandboxModeSelect';
 import { UsageModal } from '@/components/UsageModal';
 
@@ -108,6 +109,8 @@ export const ChatInput = memo(function ChatInput({
   const [draftSelection, setDraftSelection] = useState<DraftSelection | null>(
     null,
   );
+  // The shared dialog closes by asking for `null`, which is the state itself.
+  const closePreview = () => setPreview(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Reads started by a paste resolve after the event, so the list they append
@@ -479,26 +482,7 @@ export const ChatInput = memo(function ChatInput({
           onOpenChange={setUsageOpen}
         />
       )}
-      <Modal
-        open={preview !== null}
-        onOpenChange={(open) => {
-          if (!open) setPreview(null);
-        }}
-      >
-        <ModalContent
-          title={t('chat.image.preview')}
-          className="max-h-[90vh] max-w-[90vw]"
-          overlayClassName="bg-black/70"
-        >
-          {preview && (
-            <img
-              src={imageSrc(preview)}
-              alt={t('chat.image.preview')}
-              className="max-h-[80vh] max-w-[80vw] object-contain"
-            />
-          )}
-        </ModalContent>
-      </Modal>
+      <ImagePreview image={preview} onClose={closePreview} />
     </div>
   );
 
@@ -571,10 +555,6 @@ export const ChatInput = memo(function ChatInput({
     </div>
   );
 });
-
-function imageSrc(image: Attachment): string {
-  return `data:${image.mime};base64,${image.data}`;
-}
 
 // An attachment out of image bytes the host read off the clipboard.
 function attachmentOf(image: { mime: string; data: string }): Attachment {
