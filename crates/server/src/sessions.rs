@@ -400,6 +400,34 @@ async fn find_log(id: &SessionId) -> Result<PathBuf, RestoreError> {
         .ok_or_else(|| RestoreError::NotFound(id.clone()))
 }
 
+/// Removes the date directories a deleted log leaves behind.
+///
+/// Logs are filed under `sessions/YYYY/MM/DD/`, so the last log of a day leaves
+/// three levels that describe nothing. Each is removed only when empty:
+/// `remove_dir` refuses a directory that still holds something, which keeps
+/// another session's log, and a directory a concurrent write just made, in
+/// place. The walk stops at `sessions/` — the store's root stays even when
+/// it is empty.
+async fn prune_empty_log_dirs(log: &Path) {
+    let Some(home) = config::home() else {
+        return;
+    };
+    let root = home.join(SESSIONS_DIR);
+    let mut dir = match log.parent() {
+        Some(dir) if dir.starts_with(&root) => dir,
+        _ => return,
+    };
+    while dir != root {
+        if tokio::fs::remove_dir(dir).await.is_err() {
+            break;
+        }
+        match dir.parent() {
+            Some(parent) if parent.starts_with(&root) => dir = parent,
+            _ => break,
+        }
+    }
+}
+
 /// Opens the log for a session about to work in `cwd`.
 ///
 /// Laid out by date: `sessions/YYYY/MM/DD/session-<ts>-<id>.jsonl`.
@@ -1362,7 +1390,8 @@ impl SessionManager {
         // cannot act on whether it went — so its removal is detached rather
         // than held open: a workspace of thousands of files would otherwise
         // hold the delete, and its row, open for as long as it took.
-        let _ = tokio::fs::remove_file(path).await;
+        let _ = tokio::fs::remove_file(&path).await;
+        prune_empty_log_dirs(&path).await;
         if is_our_workspace(&cwd) && !shared {
             tokio::spawn(async move {
                 let _ = tokio::fs::remove_dir_all(cwd).await;
@@ -2175,6 +2204,40 @@ mod tests {
         assert!(manager.remove(&id).await);
 
         assert!(manager.list(None).await.is_empty(), "the log went too");
+    }
+
+    #[tokio::test]
+    async fn removing_the_last_log_takes_its_date_directories() {
+        // The log's own directory says nothing once empty. The store root stays:
+        // it is where the next session's log goes.
+        let (manager, _env) = manager();
+        let id = create(&manager).await;
+        let log = session_log_path(&id);
+        let day = log.parent().expect("the day directory").to_path_buf();
+        let month = day.parent().expect("the month directory").to_path_buf();
+        let year = month.parent().expect("the year directory").to_path_buf();
+        let root = year.parent().expect("the store root").to_path_buf();
+
+        assert!(manager.remove(&id).await);
+
+        assert!(!day.exists(), "{day:?} went with its last log");
+        assert!(!month.exists(), "{month:?} went with its last day");
+        assert!(!year.exists(), "{year:?} went with its last month");
+        assert!(root.exists(), "{root:?} is the store and stays");
+    }
+
+    #[tokio::test]
+    async fn removing_one_of_two_logs_keeps_their_date_directories() {
+        let (manager, _env) = manager();
+        let first = create(&manager).await;
+        let second = create(&manager).await;
+        let first_log = session_log_path(&first);
+        let day = first_log.parent().expect("the day directory").to_path_buf();
+        assert_eq!(session_log_path(&second).parent(), Some(day.as_path()));
+
+        assert!(manager.remove(&first).await);
+
+        assert!(day.exists(), "{day:?} still holds the other log");
     }
 
     #[tokio::test]
