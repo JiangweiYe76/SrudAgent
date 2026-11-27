@@ -19,12 +19,13 @@ import {
 } from 'lucide-react';
 import type { Attachment, ContextBlock, Step, Turn } from '@/lib/types';
 import { t } from '@/lib/i18n';
+import { imageSrc } from '@/lib/images';
 import { Markdown } from '@/components/Markdown';
 import { JsonBlock } from '@/components/JsonBlock';
 import { DiffBlock } from '@/components/DiffBlock';
 import { TurnErrorNotice } from '@/components/TurnErrorNotice';
 import { MessageContextMenu } from '@/components/MessageContextMenu';
-import { Modal, ModalContent } from '@/components/ui/modal';
+import { ImagePreview } from '@/components/ImagePreview';
 import {
   Collapsible,
   CollapsibleContent,
@@ -395,8 +396,14 @@ const TurnView = memo(function TurnView({
                   className="h-24 w-24 cursor-zoom-in overflow-hidden rounded-lg border border-border"
                 >
                   <img
-                    src={`data:${image.mime};base64,${image.data}`}
+                    src={imageSrc(image)}
                     alt=""
+                    // The box is 96px square and the source is the picture as
+                    // it was sent, so the decode is the expensive part of this
+                    // row: off the main thread, and not at all until it is
+                    // scrolled near.
+                    decoding="async"
+                    loading="lazy"
                     className="h-full w-full object-cover"
                   />
                 </button>
@@ -583,6 +590,7 @@ export const MessageList = memo(function MessageList({
   const followingRef = useRef(true);
   // The image opened from a message, shown large over the transcript.
   const [preview, setPreview] = useState<Attachment | null>(null);
+  const closePreview = useCallback(() => setPreview(null), []);
 
   // The ref decides whether the list follows; the host is told only when that
   // changes. A scroll event fires many times on the way up, and reporting every
@@ -727,26 +735,7 @@ export const MessageList = memo(function MessageList({
           />
         ))}
       </div>
-      <Modal
-        open={preview !== null}
-        onOpenChange={(open) => {
-          if (!open) setPreview(null);
-        }}
-      >
-        <ModalContent
-          title={t('chat.image.preview')}
-          className="max-h-[90vh] max-w-[90vw]"
-          overlayClassName="bg-black/70"
-        >
-          {preview && (
-            <img
-              src={`data:${preview.mime};base64,${preview.data}`}
-              alt={t('chat.image.preview')}
-              className="max-h-[80vh] max-w-[80vw] object-contain"
-            />
-          )}
-        </ModalContent>
-      </Modal>
+      <ImagePreview image={preview} onClose={closePreview} />
     </div>
   );
 });
