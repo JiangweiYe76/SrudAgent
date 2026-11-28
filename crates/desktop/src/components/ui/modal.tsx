@@ -29,6 +29,10 @@ export function ModalContent({
         aria-describedby={undefined}
         className={cn(
           'fixed top-1/2 left-1/2 z-50 flex -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-[0_12px_40px_rgba(0,0,0,0.18)] outline-none',
+          // Keep a fixed-size dialog inside the viewport. Zoom shrinks the CSS
+          // viewport rather than the window, so a dialog sized for 100% would
+          // otherwise lose its edges — including the close button — at 150%.
+          'max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)]',
           className,
         )}
         {...props}
